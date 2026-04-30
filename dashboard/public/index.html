@@ -756,6 +756,15 @@
       0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--yellow) 50%, transparent); }
       50% { opacity: 0.5; box-shadow: 0 0 0 4px color-mix(in srgb, var(--yellow) 0%, transparent); }
     }
+    .browser-pulse-dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); margin-right: 6px; vertical-align: middle;
+      animation: browserPulse 1.5s ease-in-out infinite;
+    }
+    @keyframes browserPulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 50%, transparent); }
+      50% { opacity: 0.5; box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 0%, transparent); }
+    }
 
     /* ── Terminal sub-tabs ────────────────────────────────────────────────── */
     .term-tabs {
@@ -1854,7 +1863,7 @@
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
       gap: 12px;
-      background: color-mix(in srgb, var(--base) 70%, transparent);
+      background: color-mix(in srgb, var(--base) 92%, transparent);
       backdrop-filter: blur(2px);
       z-index: 10;
     }
@@ -4783,12 +4792,13 @@
           <button id="mindSearchOnlyBtn" type="button" onclick="MindUI.toggleSearchOnly()"
             title="When on, hide non-matching nodes instead of dimming them"
             style="background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--subtext0);cursor:pointer;font-size:11px;padding:3px 8px;flex-shrink:0;">Search only: off</button>
-          <button class="tab-bar-btn" onclick="MindUI.build()" title="Rebuild the brain from all sources">Rebuild</button>
-          <button class="tab-bar-btn" onclick="MindUI.update()" title="Incremental update (only changed files)">Update</button>
+          <button class="tab-bar-btn" onclick="MindUI.build()" title="Build or rebuild the brain from all sources">Build</button>
           <button class="tab-bar-btn" id="mindWatchBtn" onclick="MindUI.toggleWatch()" title="Watch the active repo and auto-update">Watch: off</button>
         </div>
         <div class="mind-tabs" role="tablist">
           <button class="mind-tab mind-view-btn active" data-view="dashboard" onclick="MindUI.setView('dashboard')">Dashboard</button>
+          <button class="mind-tab mind-view-btn" data-view="wakeup" onclick="MindUI.setView('wakeup')" title="Preview the context every dispatched worker starts with">Worker context</button>
+          <button class="mind-tab mind-view-btn" data-view="query" onclick="MindUI.setView('query')" title="BM25 + temporal sub-graph queries">Query</button>
           <button class="mind-tab mind-view-btn" data-view="communities" onclick="MindUI.setView('communities')">Communities</button>
           <button class="mind-tab mind-view-btn" data-view="hotspots" onclick="MindUI.setView('hotspots')">Hotspots</button>
           <button class="mind-tab mind-view-btn" data-view="map" onclick="MindUI.setView('map')" title="Communities as super-nodes - bridges between clusters">Map</button>
@@ -5356,6 +5366,9 @@
         <button class="settings-nav-btn active" data-settings-tab="plugins" onclick="switchSettingsTab('plugins', this)" id="settingsPluginsBtn">
           <i data-lucide="puzzle" style="width:14px;height:14px;"></i> Plugins
         </button>
+        <button class="settings-nav-btn" data-settings-tab="browser" onclick="switchSettingsTab('browser', this); refreshBrowserSettings();">
+          <i data-lucide="globe" style="width:14px;height:14px;"></i> Browser
+        </button>
         <button class="settings-nav-btn" data-settings-tab="mcp" onclick="switchSettingsTab('mcp', this); refreshMcpServers();">
           <i data-lucide="plug" style="width:14px;height:14px;"></i> MCP Servers
         </button>
@@ -5449,19 +5462,16 @@
               <div style="display:flex;gap:0;"><input id="settingsXaiKey" type="password" placeholder="xai-..." style="border-radius:var(--radius) 0 0 var(--radius);flex:1;"><button type="button" onclick="toggleSecretField('settingsXaiKey',this)" style="background:var(--surface0);border:1px solid var(--surface1);border-left:none;border-radius:0 var(--radius) var(--radius) 0;padding:0 10px;cursor:pointer;color:var(--subtext0);display:flex;align-items:center;" title="Show/hide"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
             </div>
           </div>
-          <div class="settings-section">
-            <div class="settings-section-title">Browser Automation</div>
-            <div class="settings-section-desc">AI-controlled browser sessions for account creation and authentication. Requires <code>playwright-core</code> to be installed. Embedded pages now use their own site-defined colors without a Symphonee dark-mode override.</div>
+          <!-- Browser automation settings now live in their own dedicated
+               Settings -> Browser tab. Hidden DOM kept so saveSettings() can
+               still serialise BrowserCredentials without a guard. -->
+          <div class="settings-section" style="display:none;">
             <div id="settingsBrowserCreds">
-              <div style="font-size:11px;color:var(--subtext0);margin-bottom:6px;">Saved credentials (AI-owned accounts):</div>
-              <div id="browserCredList" style="margin-bottom:8px;"></div>
+              <div id="browserCredList"></div>
             </div>
-            <div style="display:flex;gap:8px;">
-              <input id="browserCredName" type="text" placeholder="Account name" style="flex:1;padding:6px 8px;background:var(--surface1);border:1px solid var(--surface2);border-radius:var(--radius);color:var(--text);font-size:12px;">
-              <input id="browserCredEmail" type="email" placeholder="Email" style="flex:1;padding:6px 8px;background:var(--surface1);border:1px solid var(--surface2);border-radius:var(--radius);color:var(--text);font-size:12px;">
-              <input id="browserCredPass" type="password" placeholder="Password" style="flex:1;padding:6px 8px;background:var(--surface1);border:1px solid var(--surface2);border-radius:var(--radius);color:var(--text);font-size:12px;">
-              <button class="modal-btn" onclick="addBrowserCredential()" style="padding:6px 12px;font-size:11px;white-space:nowrap;">Add</button>
-            </div>
+            <input id="browserCredName" type="text" />
+            <input id="browserCredEmail" type="email" />
+            <input id="browserCredPass" type="password" />
           </div>
         </div>
 
@@ -5499,6 +5509,72 @@
             <button onclick="browsePlugins()" style="font-size:11px;padding:6px 14px;background:var(--surface1);border:1px solid var(--overlay0);color:var(--text);border-radius:var(--radius);cursor:pointer;">Browse Plugins</button>
           </div>
           <div id="pluginSettingsContainer"><div style="color:var(--subtext0);padding:12px;">No plugins installed.</div></div>
+        </div>
+
+        <!-- Browser Tab -->
+        <div class="settings-tab" id="settingsTab-browser">
+          <div class="settings-section">
+            <div class="settings-section-title">Browser Router</div>
+            <div class="settings-section-desc">Symphonee picks between three browser drivers automatically. Configure the defaults the heuristic uses when a request is ambiguous.</div>
+            <div class="modal-field">
+              <label>Default driver (when no signals are present)</label>
+              <select id="settingsBrowserRouterDefault" style="width:100%;">
+                <option value="auto">Auto (let the heuristic decide)</option>
+                <option value="in-app-agent">In-app agent (LLM loop on the live webview, user can take over)</option>
+                <option value="stagehand">Stagehand (sandboxed headless Chromium)</option>
+                <option value="browser-use">browser-use (deterministic typed actions)</option>
+              </select>
+            </div>
+            <div class="modal-field">
+              <label class="plugin-setting-toggle" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+                <span class="sy-switch"><input id="settingsBrowserRouterPreferStagehand" type="checkbox"><span class="plugin-setting-track"></span></span>
+                <span style="font-size:12px;color:var(--subtext0);" data-toggle-label="off">Off</span>
+                <span style="font-size:12px;color:var(--text);">Prefer Stagehand for ambiguous short verb-noun phrases (advanced)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">In-app Agent (default driver)</div>
+            <div class="settings-section-desc">The LLM tool-use loop that drives the live in-app webview. Free-text goals route here by default.</div>
+            <div class="modal-field">
+              <label>Default model</label>
+              <div style="font-size:11px;color:var(--subtext0);margin-bottom:4px;font-style:italic;">Selects the default AI when not set. Only models for which you have an API key in Settings -&gt; AI Keys appear here.</div>
+              <select id="settingsInAppAgentModel" data-options-from="aiModels" style="width:100%;"></select>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">Stagehand (sandboxed driver)</div>
+            <div class="settings-section-desc">Headless Chromium with a screencast view. Used for sandboxed sessions and schema-validated extraction. Local-only -- never contacts Browserbase cloud.</div>
+            <div class="modal-field">
+              <label>Model</label>
+              <div style="font-size:11px;color:var(--subtext0);margin-bottom:4px;font-style:italic;">Selects the default AI when not set. Only models for which you have an API key in Settings -&gt; AI Keys appear here.</div>
+              <select id="settingsStagehandModel" data-options-from="aiModels" style="width:100%;"></select>
+            </div>
+            <div class="modal-field">
+              <label class="plugin-setting-toggle" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">
+                <span class="sy-switch"><input id="settingsStagehandHeadless" type="checkbox"><span class="plugin-setting-track"></span></span>
+                <span style="font-size:12px;color:var(--subtext0);" data-toggle-label="off">Off</span>
+                <span style="font-size:12px;color:var(--text);">Run Chromium headless (recommended -- the in-app screencast is your view; turn off only to see the external Chrome window)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">Saved browser credentials</div>
+            <div class="settings-section-desc">AI-owned accounts the browser drivers can use to sign in. Stored encrypted at rest.</div>
+            <div id="settingsBrowserCredsBrowser">
+              <div style="font-size:11px;color:var(--subtext0);margin-bottom:6px;">Saved credentials:</div>
+              <div id="browserCredListBrowser" style="margin-bottom:8px;"></div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <input id="browserCredNameBrowser" type="text" placeholder="Account name" style="flex:1;padding:6px 8px;background:var(--surface1);border:1px solid var(--surface2);border-radius:var(--radius);color:var(--text);font-size:12px;">
+              <input id="browserCredEmailBrowser" type="email" placeholder="Email" style="flex:1;padding:6px 8px;background:var(--surface1);border:1px solid var(--surface2);border-radius:var(--radius);color:var(--text);font-size:12px;">
+              <input id="browserCredPassBrowser" type="password" placeholder="Password" style="flex:1;padding:6px 8px;background:var(--surface1);border:1px solid var(--surface2);border-radius:var(--radius);color:var(--text);font-size:12px;">
+              <button class="modal-btn" onclick="addBrowserCredentialBrowserTab()" style="padding:6px 12px;font-size:11px;white-space:nowrap;">Add</button>
+            </div>
+          </div>
         </div>
 
         <!-- MCP Servers Tab -->
@@ -5679,6 +5755,28 @@
                 <input type="checkbox" id="settingsIncognitoMode" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;" onchange="checkSettingsNeedRestart()">
                 <span style="font-size:12px;color:var(--text);">Enable incognito mode</span>
               </label>
+            </div>
+          </div>
+          <div class="settings-section" id="settingsSection-videoUse" style="display:none;">
+            <div class="settings-section-title">Video Use</div>
+            <div class="settings-section-desc">Video tooling and transcription settings live here because they are local machine/runtime preferences rather than plugin navigation.</div>
+            <div class="modal-field">
+              <label>ElevenLabs API Key</label>
+              <div style="font-size:11px;color:var(--subtext0);margin-bottom:4px;">Optional. If set, transcription uses ElevenLabs Scribe. Otherwise Video Use falls back to local Whisper when available.</div>
+              <div style="display:flex;gap:0;">
+                <input id="pluginSetting_video-use_ElevenLabsApiKey" type="password" placeholder="Optional ElevenLabs key" data-plugin="video-use" data-key="ElevenLabsApiKey" class="plugin-setting-input" style="border-radius:var(--radius) 0 0 var(--radius);flex:1;">
+                <button type="button" onclick="toggleSecretField('pluginSetting_video-use_ElevenLabsApiKey',this)" style="background:var(--surface0);border:1px solid var(--surface1);border-left:none;border-radius:0 var(--radius) var(--radius) 0;padding:0 10px;cursor:pointer;color:var(--subtext0);display:flex;align-items:center;" title="Show/hide"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+              </div>
+            </div>
+            <div class="modal-field">
+              <label>ffmpeg executable</label>
+              <div style="font-size:11px;color:var(--subtext0);margin-bottom:4px;">Default `ffmpeg` assumes it is already on your PATH.</div>
+              <input id="pluginSetting_video-use_FfmpegPath" type="text" placeholder="ffmpeg" data-plugin="video-use" data-key="FfmpegPath" class="plugin-setting-input">
+            </div>
+            <div class="modal-field">
+              <label>ffprobe executable</label>
+              <div style="font-size:11px;color:var(--subtext0);margin-bottom:4px;">Default `ffprobe` assumes it is already on your PATH.</div>
+              <input id="pluginSetting_video-use_FfprobePath" type="text" placeholder="ffprobe" data-plugin="video-use" data-key="FfprobePath" class="plugin-setting-input">
             </div>
           </div>
           <!--
@@ -6368,6 +6466,9 @@ requestAnimationFrame(fitTerminalNow);
           break;
         }
         case 'term-started':
+          if (msg.termId && msg.cwd && termInstances.has(msg.termId)) {
+            termInstances.get(msg.termId).cwd = msg.cwd;
+          }
           document.getElementById('statusDot').className = 'status-dot connected';
           document.getElementById('connectionStatus').textContent = 'Connected';
           syncAiControls();
@@ -6383,6 +6484,15 @@ requestAnimationFrame(fitTerminalNow);
             // Main already created in HTML
           }
           break;
+        case 'term-cwd': {
+          const tid = msg.termId || 'main';
+          const inst = termInstances.get(tid);
+          if (inst) inst.cwd = msg.cwd || inst.cwd || '';
+          if (tid === activeTermId && msg.repo && msg.repo !== activeRepo) {
+            selectRepo(msg.repo);
+          }
+          break;
+        }
         case 'term-spawned': {
           // Orchestrator spawned a visible terminal - create tab for it
           const tid = msg.termId;
@@ -7534,8 +7644,9 @@ let filesMode = 'view'; // view, diff, edit
 function populateFilesRepoSelect() {
   const select = document.getElementById('filesRepoSelect');
   const repos = configData.Repos || {};
+  const repoNames = _repoNamesForSpace(repos, window._spacesCache || {}, activeSpace);
   select.innerHTML = '<option value="">Select repo...</option>';
-  for (const name of Object.keys(repos)) {
+  for (const name of repoNames) {
     const opt = document.createElement('option');
     opt.value = name;
     opt.textContent = name;
@@ -11501,6 +11612,9 @@ function launchAiWith(cli) {
     const st = getTermAi(termId);
     st.cli = cli;
     st.launched = true;
+    try {
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'term-ai-state', termId, cli, launched: true }));
+    } catch (_) {}
     const inst = termInstances.get(termId);
     // Update tab label
     const tabEl = termId === 'main'
@@ -11542,6 +11656,9 @@ function stopAi(termId) {
   }, 1000);
   st.launched = false;
   st.cli = null;
+  try {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'term-ai-state', termId: tid, cli: null, launched: false }));
+  } catch (_) {}
   const inst = termInstances.get(tid);
   // Restore tab label
   const shellLabel = getShellLabel(tid);
@@ -11581,6 +11698,9 @@ function resumeAiSession() {
   const st = getTermAi(activeTermId);
   st.cli = activeCli;
   st.launched = true;
+  try {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'term-ai-state', termId: activeTermId, cli: activeCli, launched: true }));
+  } catch (_) {}
   const cfg = CLI_CONFIG[activeCli];
   const tabEl = activeTermId === 'main'
     ? document.getElementById('mainTermTab')
@@ -12661,10 +12781,10 @@ async function viewWorkItem(id) {
         </div>
       </div>
       <div style="margin-top:20px;padding:14px;background:var(--surface0);border-radius:var(--radius-lg);border:1px solid var(--surface1);">
-        ${configData.Repos && Object.keys(configData.Repos).length > 0 ? `
+        ${configData.Repos && _repoNamesForSpace(configData.Repos, window._spacesCache || {}, activeSpace).length > 0 ? `
           <div style="display:flex;align-items:center;gap:10px;">
             <select id="startWorkRepo" onchange="selectRepo(this.value)" style="padding:7px 10px;background:var(--base);border:1px solid var(--surface1);border-radius:var(--radius);color:var(--text);font:12px var(--font-ui);outline:none;flex:1;">
-              ${Object.keys(configData.Repos).map(r => `<option value="${esc(r)}"${r === activeRepo ? ' selected' : ''}>${esc(r)}</option>`).join('')}
+              ${_repoNamesForSpace(configData.Repos, window._spacesCache || {}, activeSpace).map(r => `<option value="${esc(r)}"${r === activeRepo ? ' selected' : ''}>${esc(r)}</option>`).join('')}
             </select>
             <button class="btn btn-primary" onclick="startWorking(${wi.id})" style="flex-shrink:0;width:auto;padding:7px 16px;"><i data-lucide="play"></i> Start Working</button>
           </div>
@@ -13454,7 +13574,7 @@ function _mentionItems(query, repos) {
       out.push({ type: 'skill', slug: s.slug, label: s.slug, desc: 'SKILL', hint: s.description || '' });
     }
   });
-  Object.keys(repos || {}).forEach(name => {
+  _repoNamesForSpace(repos || {}, window._spacesCache || {}, activeSpace).forEach(name => {
     if (!q || name.toLowerCase().includes(q)) {
       out.push({ type: 'repo', slug: name, label: name, desc: 'REPO' });
     }
@@ -17094,6 +17214,38 @@ function _appendBrowserAgentWaitingRow(message) {
   return row;
 }
 
+// ── Automation tab activity indicator ──────────────────────────────────────
+// Mirrors the orchestrator-tab pulse: a green pulse dot appears on the left
+// of the Automation parent tab whenever automation is running (Stagehand or
+// browser-use). Pings are debounced -- the dot stays for 8s after the last
+// signal, then disappears.
+const _automationActivity = { lastPing: 0, idleTimer: null };
+function _markAutomationActive() {
+  _automationActivity.lastPing = Date.now();
+  const btn = document.getElementById('automationTabBtn');
+  if (btn && !btn.querySelector('.browser-pulse-dot')) {
+    const dot = document.createElement('span');
+    dot.className = 'browser-pulse-dot';
+    btn.insertBefore(dot, btn.firstChild);
+  }
+  if (_automationActivity.idleTimer) clearTimeout(_automationActivity.idleTimer);
+  _automationActivity.idleTimer = setTimeout(() => {
+    if (Date.now() - _automationActivity.lastPing >= 8000) {
+      const b = document.getElementById('automationTabBtn');
+      const d = b && b.querySelector('.browser-pulse-dot');
+      if (d) d.remove();
+    }
+  }, 8500);
+}
+// Backwards-compat alias for older call sites.
+function _markBrowserTabActive() { _markAutomationActive(); }
+function _focusAutomationBrowser() {
+  try {
+    if (typeof switchTab === 'function') switchTab('automation');
+    if (typeof switchAutomationSubTab === 'function') switchAutomationSubTab('browser');
+  } catch (_) {}
+}
+
 // ── Stagehand screencast viewer ────────────────────────────────────────────
 // Renders the CDP screencast frames broadcast by the Stagehand plugin so the
 // user sees Stagehand's session inside the same Browser tab they use for the
@@ -17101,6 +17253,11 @@ function _appendBrowserAgentWaitingRow(message) {
 const _stagehandCast = { lastFrame: 0, idleTimer: null, img: null };
 function handleStagehandScreencast(msg) {
   if (!msg || !msg.data) return;
+  _markAutomationActive();
+  // First-frame fallback: if the dispatch broadcast was missed (or dropped
+  // because the user was switching tabs), the first screencast frame still
+  // pulls them onto the Browser tab so they don't miss the run.
+  if (!_stagehandCast.lastFrame) _focusAutomationBrowser();
   const overlay = document.getElementById('stagehandScreencastOverlay');
   const canvas = document.getElementById('stagehandScreencastCanvas');
   const urlEl = document.getElementById('stagehandScreencastUrl');
@@ -17116,14 +17273,17 @@ function handleStagehandScreencast(msg) {
     }
   }, 8500);
 
-  if (!_stagehandCast.img) _stagehandCast.img = new Image();
-  const img = _stagehandCast.img;
+  // Use a fresh Image per frame so a slow decode never gets cancelled by the
+  // next frame's src assignment, and so the canvas keeps showing the latest
+  // fully-decoded frame even when frames arrive faster than the GPU draws.
+  const img = new Image();
   img.onload = () => {
     const ctx = canvas.getContext('2d');
-    canvas.width = img.naturalWidth || canvas.clientWidth || 1280;
-    canvas.height = img.naturalHeight || canvas.clientHeight || 720;
+    if (canvas.width !== img.naturalWidth) canvas.width = img.naturalWidth || 1280;
+    if (canvas.height !== img.naturalHeight) canvas.height = img.naturalHeight || 720;
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   };
+  img.onerror = () => { /* ignore malformed frame */ };
   img.src = 'data:image/jpeg;base64,' + msg.data;
 }
 function closeStagehandScreencast() {
@@ -17133,14 +17293,49 @@ function closeStagehandScreencast() {
 }
 function handleBrowserRouterDispatch(msg) {
   if (!msg) return;
-  if (msg.driver === 'stagehand') {
+  _markAutomationActive();
+  const fallbacks = Array.isArray(msg.fallbacks) ? msg.fallbacks : [];
+  const stagehandFallback = fallbacks.find(f => f && f.from === 'stagehand');
+  // Start: switch to Automation -> Browser so the user watches the run live.
+  if (!msg.phase || msg.phase === 'start') {
+    _focusAutomationBrowser();
+    if (msg.driver === 'stagehand') {
+      const overlay = document.getElementById('stagehandScreencastOverlay');
+      if (overlay && overlay.style.display === 'none') overlay.style.display = 'block';
+    }
+  }
+  // End/error: bring the user back to the Terminal so they can see the
+  // final result printed by whatever called the router. Hide the screencast
+  // overlay too so it doesn't keep showing the last frame.
+  if (msg.phase === 'end' || msg.phase === 'error') {
+    try {
+      if (typeof switchTab === 'function') switchTab('terminal');
+    } catch (_) {}
     const overlay = document.getElementById('stagehandScreencastOverlay');
-    if (overlay && overlay.style.display === 'none') overlay.style.display = 'block';
+    if (overlay) overlay.style.display = 'none';
+    // Stop the Chromium-side screencast so we're not paying for frames the
+    // user can no longer see.
+    fetch('/api/plugins/stagehand/screencast/stop', { method: 'POST' }).catch(() => {});
+  }
+  if (stagehandFallback && typeof notify === 'function') {
+    notify(
+      'Stagehand unavailable',
+      (stagehandFallback.reason || 'Stagehand failed') + '. Fell back to browser-use.',
+      { icon: 'alert-triangle' }
+    );
+  } else if (msg.phase === 'error' && msg.driver === 'stagehand' && typeof notify === 'function') {
+    notify(
+      'Stagehand failed',
+      msg.error || 'Browser automation failed before a fallback could run.',
+      { icon: 'alert-circle' }
+    );
   }
 }
 
 function handleBrowserAgentStep(msg) {
-  if (!msg || msg.threadId !== _browserAgentState.threadId) return;
+  if (!msg) return;
+  _markBrowserTabActive();
+  if (msg.threadId !== _browserAgentState.threadId) return;
   switch (msg.kind) {
     case 'provider': {
       const state = document.getElementById('inappAgentState');
@@ -19661,6 +19856,10 @@ async function _saveAuditToNote() {
 })();
 
 // ── Spaces (non-git workspaces) ─────────────────────────────────────────
+const CORE_SPACE_PLUGIN_IDS = new Set(['browser-use', 'video-use', 'stagehand']);
+function isCoreSpacePluginId(id) {
+  return CORE_SPACE_PLUGIN_IDS.has(id);
+}
 // Single wizard handles both create and edit. In edit mode it pre-populates
 // identity, repos, and plugins from the existing space so the user can adjust
 // any of them in one place (matches the create flow 1:1).
@@ -19690,7 +19889,7 @@ async function openAddSpaceDialog(opts = {}) {
       .flatMap(([, s]) => s.repos || [])
   );
   const freeRepos = Object.keys(allRepos).filter(r => !takenRepos.has(r));
-  const pluginList = Array.isArray(allPlugins) ? allPlugins : [];
+  const pluginList = (Array.isArray(allPlugins) ? allPlugins : []).filter(p => p && !isCoreSpacePluginId(p.id));
   const originalRepos = isEdit ? (Array.isArray(opts.repos) ? opts.repos.slice() : []) : [];
 
   let overlay = document.getElementById('_asoOverlay');
@@ -19785,7 +19984,7 @@ async function openAddSpaceDialog(opts = {}) {
           }).join('')
         : '<div style="padding:12px 10px;color:var(--subtext0);font-size:11px;">No plugins installed. Install plugins from Settings &rsaquo; Plugins.</div>';
       bodyHtml = `
-        <p style="font-size:11px;color:var(--subtext0);margin:0 0 10px;line-height:1.5;">Choose which plugins are surfaced while this space is active. Leave all unchecked to show every plugin.</p>
+        <p style="font-size:11px;color:var(--subtext0);margin:0 0 10px;line-height:1.5;">Choose which plugins are surfaced while this space is active. Leave all unchecked to show every plugin. Browser tools are always available and are not listed here.</p>
         <div style="max-height:240px;overflow-y:auto;border:1px solid var(--surface1);border-radius:var(--radius);padding:4px;">${items}</div>`;
     }
 
@@ -20156,12 +20355,26 @@ document.addEventListener('DOMContentLoaded', () => { setTimeout(_refreshSpaceSw
 let activeSpace = localStorage.getItem('symphonee-space') || '';
 let activeRepo  = localStorage.getItem('symphonee-repo')  || '';
 
+function _repoNamesForSpace(repos, spaces, spaceName) {
+  const repoNames = Object.keys(repos || {});
+  if (!spaceName) return repoNames;
+  const members = spaces && spaces[spaceName] && Array.isArray(spaces[spaceName].repos)
+    ? spaces[spaceName].repos
+    : [];
+  return members.filter(r => Object.prototype.hasOwnProperty.call(repos || {}, r));
+}
+
 async function loadRepoList() {
   try {
     const [repos, spaces] = await Promise.all([
       fetch('/api/repos').then(r => r.json()).catch(() => ({})),
       fetch('/api/spaces').then(r => r.json()).catch(() => ({})),
     ]);
+    window._spacesCache = spaces || {};
+    if (configData) {
+      configData.Repos = repos || {};
+      configData.Spaces = spaces || {};
+    }
     const repoNames = Object.keys(repos);
     const spaceNames = Object.keys(spaces);
 
@@ -20181,6 +20394,18 @@ async function loadRepoList() {
     if (activeSpace && !spaces[activeSpace]) { activeSpace = ''; localStorage.removeItem('symphonee-space'); }
     if (activeRepo && !repoNames.includes(activeRepo)) { activeRepo = ''; localStorage.removeItem('symphonee-repo'); }
 
+    const activeSpaceRepos = _repoNamesForSpace(repos, spaces, activeSpace);
+    if (activeSpace && activeRepo && !activeSpaceRepos.includes(activeRepo)) {
+      activeRepo = '';
+      filesCurrentRepo = '';
+      localStorage.removeItem('symphonee-repo');
+    }
+    if (activeSpace && !activeRepo && activeSpaceRepos.length === 1) {
+      activeRepo = activeSpaceRepos[0];
+      filesCurrentRepo = activeRepo;
+      localStorage.setItem('symphonee-repo', activeRepo);
+    }
+
     // If an activeRepo is set and belongs to a space, snap to that space on
     // very first boot only (i.e. when the user has no stored space preference
     // at all). After that, spaces and repos are fully independent - an
@@ -20195,6 +20420,9 @@ async function loadRepoList() {
     loadRepoList._snappedOwnerOnce = true;
 
     if (activeRepo) filesCurrentRepo = activeRepo;
+    if (!activeRepo && filesCurrentRepo) filesCurrentRepo = '';
+
+    try { populateFilesRepoSelect(); } catch (_) {}
 
     // Keep the header chip in sync.
     try { _refreshSpaceSwitcher(); } catch (_) {}
@@ -20431,7 +20659,7 @@ async function openManageSpaceDialog(name) {
   } catch (_) {}
   const s = spaces[name] || {};
   const repoNames = Object.keys(repos);
-  const pluginList = Array.isArray(plugins) ? plugins : [];
+  const pluginList = (Array.isArray(plugins) ? plugins : []).filter(p => p && !isCoreSpacePluginId(p.id));
 
   const toggle = (dataAttr, val, checked) =>
     '<label class="ms-toggle"><input type="checkbox" ' + dataAttr + '="' + esc(val) + '"' + (checked ? ' checked' : '') + '><span class="ms-toggle-track"></span></label>';
@@ -20493,7 +20721,7 @@ async function openManageSpaceDialog(name) {
       '</div>' +
       '<div class="ms-tab-panel" id="msTabPlugins">' +
         '<div class="ms-list">' + pluginsHtml + '</div>' +
-        '<div class="ms-tab-hint">Leave all off to surface every installed plugin while this space is active.</div>' +
+        '<div class="ms-tab-hint">Leave all off to surface every installed plugin while this space is active. Browser tools remain available even when not listed here.</div>' +
       '</div>' +
       '<div style="display:flex;gap:8px;margin-top:16px;flex-shrink:0;">' +
         '<div style="flex:1;"></div>' +
@@ -20580,9 +20808,12 @@ async function applyPluginSpaceFilter() {
   } catch (_) { window._spacesCache = window._spacesCache || {}; }
   if (activeSpace) {
     const spaces = window._spacesCache;
-    const preset = spaces[activeSpace] && Array.isArray(spaces[activeSpace].plugins)
-      ? spaces[activeSpace].plugins : [];
-    if (preset.length) allowed = new Set(preset);
+    const preset = (spaces[activeSpace] && Array.isArray(spaces[activeSpace].plugins)
+      ? spaces[activeSpace].plugins : []).filter(id => !isCoreSpacePluginId(id));
+    if (preset.length) {
+      allowed = new Set(preset);
+      CORE_SPACE_PLUGIN_IDS.forEach(id => allowed.add(id));
+    }
   }
   document.querySelectorAll('[data-plugin-id]').forEach(el => {
     const id = el.getAttribute('data-plugin-id');
@@ -21246,6 +21477,13 @@ async function saveSettings() {
       },
       OrchestrateResultDelivery: 'inject',
       BrowserCredentials: configData.BrowserCredentials || {},
+      BrowserRouter: {
+        default: _txt('settingsBrowserRouterDefault') || 'auto',
+        preferStagehand: _chk('settingsBrowserRouterPreferStagehand'),
+      },
+      InAppAgent: {
+        model: _txt('settingsInAppAgentModel') || undefined,
+      },
       DefaultCli: defaultCli,
       Repos: configData.Repos || {},
     };
@@ -21255,8 +21493,9 @@ async function saveSettings() {
       body: JSON.stringify(payload),
     });
     const data = await res.json();
-    // Also save plugin settings
+    // Also save plugin settings + the Browser tab's plugin-scoped fields.
     await savePluginSettings();
+    await saveBrowserSettings();
     if (data.ok) {
       const needsRestart = document.getElementById('settingsSaveBtn')?._needsRestart;
       if (needsRestart) {
@@ -22879,7 +23118,7 @@ let _cmdSelectedIdx = 0;
 let _cmdFiltered = [];
 
 function getCmdActions() {
-  const repos = configData.Repos ? Object.keys(configData.Repos) : [];
+  const repos = configData.Repos ? _repoNamesForSpace(configData.Repos, window._spacesCache || {}, activeSpace) : [];
   const isIncognito = configData.IncognitoMode === true;
   // Palette feature flags derive from provider contributions, not plugin ids,
   // so a Jira or GitLab plugin unlocks the same surfaces without core edits.
@@ -23572,9 +23811,10 @@ async function openRepoMapModal() {
   document.body.appendChild(overlay);
   try {
     const repos = await fetch('/api/repos').then(r => r.json());
+    const spaces = window._spacesCache || await fetch('/api/spaces').then(r => r.json()).catch(() => ({}));
     const ctx = await fetch('/api/ui/context').then(r => r.json());
     const sel = document.getElementById('repoMapRepo');
-    sel.innerHTML = Object.keys(repos || {}).map(n => `<option value="${escapeHtml(n)}" ${n===ctx.activeRepo?'selected':''}>${escapeHtml(n)}${n===ctx.activeRepo?' (active)':''}</option>`).join('');
+    sel.innerHTML = _repoNamesForSpace(repos || {}, spaces || {}, activeSpace).map(n => `<option value="${escapeHtml(n)}" ${n===ctx.activeRepo?'selected':''}>${escapeHtml(n)}${n===ctx.activeRepo?' (active)':''}</option>`).join('');
   } catch (_) {}
   if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
   // Mount Monaco
@@ -24899,7 +25139,11 @@ function toggleOpenTabMenu() {
     try {
       if (activeSpace && window._spacesCache) {
         var preset = window._spacesCache[activeSpace] && window._spacesCache[activeSpace].plugins;
-        if (Array.isArray(preset) && preset.length) allowed = new Set(preset);
+        if (Array.isArray(preset)) preset = preset.filter(function(id) { return !isCoreSpacePluginId(id); });
+        if (Array.isArray(preset) && preset.length) {
+          allowed = new Set(preset);
+          CORE_SPACE_PLUGIN_IDS.forEach(function(id) { allowed.add(id); });
+        }
       }
     } catch (_) {}
     for (var i = 0; i < pluginTabRegistry.length; i++) {
@@ -25179,6 +25423,11 @@ async function refreshPluginActivation() {
 // Render plugin settings fields in the Settings > Plugins tab
 function renderPluginSettings(plugins) {
   var container = document.getElementById('pluginSettingsContainer');
+  void refreshSpecialSettingsPanels(plugins);
+  // Hide plugins whose settings live on purpose-built settings tabs instead of
+  // the generic Plugins list.
+  var SPECIAL_SETTINGS_PLUGIN_IDS = { 'stagehand': true, 'browser-use': true, 'video-use': true };
+  plugins = (plugins || []).filter(function (p) { return p && !SPECIAL_SETTINGS_PLUGIN_IDS[p.id]; });
   if (!plugins.length) { container.innerHTML = '<div style="color:var(--subtext0);padding:12px;">No plugins installed.</div>'; return; }
 
   // Vertical nav column + settings panel (matching main settings pattern)
@@ -25220,15 +25469,28 @@ function renderPluginSettings(plugins) {
     for (var j = 0; j < settings.length; j++) {
       var s = settings[j];
       var fieldId = 'pluginSetting_' + p.id + '_' + s.key;
-      var inputType = s.secret ? 'password' : 'text';
+      var isSecret = !!(s.secret || s.sensitive);
       nav += '<div class="modal-field">';
       nav += '<label>' + (s.label || s.key) + '</label>';
       if (s.description) nav += '<div style="font-size:11px;color:var(--subtext0);margin-bottom:4px;">' + s.description + '</div>';
-      if (s.secret) {
+      if (isSecret) {
         nav += '<div style="display:flex;gap:0;">';
         nav += '<input id="' + fieldId + '" type="password" placeholder="' + (s.placeholder || '') + '" data-plugin="' + p.id + '" data-key="' + s.key + '" class="plugin-setting-input" style="border-radius:var(--radius) 0 0 var(--radius);flex:1;">';
         nav += '<button type="button" onclick="toggleSecretField(\'' + fieldId + '\',this)" style="background:var(--surface0);border:1px solid var(--surface1);border-left:none;border-radius:0 var(--radius) var(--radius) 0;padding:0 10px;cursor:pointer;color:var(--subtext0);display:flex;align-items:center;" title="Show/hide"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button>';
         nav += '</div>';
+      } else if (s.type === 'select' || s.optionsFrom) {
+        var hint = s.optionsFrom === 'aiModels'
+          ? 'Selects the default AI when not set. Only models for which you have an API key in Settings -> AI Keys appear here.'
+          : (s.hint || '');
+        if (hint) nav += '<div style="font-size:11px;color:var(--subtext0);margin-bottom:4px;font-style:italic;">' + hint + '</div>';
+        nav += '<select id="' + fieldId + '" data-plugin="' + p.id + '" data-key="' + s.key + '"'
+          + (s.optionsFrom ? ' data-options-from="' + s.optionsFrom + '"' : '')
+          + ' class="plugin-setting-input"></select>';
+      } else if (s.type === 'boolean') {
+        nav += '<label class="plugin-setting-toggle" style="display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;">';
+        nav += '<span class="sy-switch"><input id="' + fieldId + '" type="checkbox" data-plugin="' + p.id + '" data-key="' + s.key + '" class="plugin-setting-input plugin-setting-bool"><span class="plugin-setting-track"></span></span>';
+        nav += '<span style="font-size:12px;color:var(--subtext0);" data-toggle-label="off">Off</span>';
+        nav += '</label>';
       } else {
         nav += '<input id="' + fieldId + '" type="text" placeholder="' + (s.placeholder || '') + '" data-plugin="' + p.id + '" data-key="' + s.key + '" class="plugin-setting-input">';
       }
@@ -25261,6 +25523,17 @@ function renderPluginSettings(plugins) {
     }
   });
 
+  // Populate any dynamic select fields (e.g. type=select with optionsFrom='aiModels')
+  // before loading values, so the saved value lands on a real option.
+  plugins.forEach(function (p) {
+    (p.settings || []).forEach(function (s) {
+      if (!(s.type === 'select' || s.optionsFrom)) return;
+      var el = document.getElementById('pluginSetting_' + p.id + '_' + s.key);
+      if (!el) return;
+      _populatePluginSettingOptions(el, s);
+    });
+  });
+
   // Load current values
   plugins.forEach(function (p) {
     if (!p.settings || !p.settings.length) return;
@@ -25268,11 +25541,115 @@ function renderPluginSettings(plugins) {
       (p.settings || []).forEach(function (s) {
         var el = document.getElementById('pluginSetting_' + p.id + '_' + s.key);
         if (!el) return;
-        if (cfg[s.key] !== undefined) el.value = cfg[s.key];
-        else if (s.secret && cfg[s.key + 'Set']) el.placeholder = '(configured)';
+        if (s.type === 'boolean') {
+          // Apply current value (fall back to manifest default when undefined)
+          var current = cfg[s.key];
+          if (current === undefined) current = !!s.default;
+          el.checked = !!current;
+          _syncPluginToggleVisual(el);
+          el.addEventListener('change', function () { _syncPluginToggleVisual(el); });
+          return;
+        }
+        if (cfg[s.key] !== undefined) {
+          el.value = cfg[s.key];
+          // Browsers ignore .value if no matching <option> exists yet (dynamic
+          // selects). Re-apply once the populate fetch resolves.
+          if (el.tagName === 'SELECT' && el.value !== cfg[s.key]) {
+            el.dataset.pendingValue = cfg[s.key];
+          }
+        } else if ((s.secret || s.sensitive) && cfg[s.key + 'Set']) el.placeholder = '(configured)';
       });
     }).catch(function () {});
   });
+}
+
+async function refreshSpecialSettingsPanels(plugins) {
+  var installed = Array.isArray(plugins) ? plugins : [];
+  var videoSection = document.getElementById('settingsSection-videoUse');
+  if (!videoSection) return;
+  var hasVideoUse = installed.some(function (p) { return p && p.id === 'video-use'; });
+  videoSection.style.display = hasVideoUse ? '' : 'none';
+  videoSection.querySelectorAll('.plugin-setting-input').forEach(function (el) { el.disabled = !hasVideoUse; });
+  if (!hasVideoUse) return;
+  try {
+    var res = await fetch('/api/plugins/video-use/config', { cache: 'no-store' });
+    var cfg = res.ok ? await res.json() : {};
+    var elevenLabsEl = document.getElementById('pluginSetting_video-use_ElevenLabsApiKey');
+    var ffmpegEl = document.getElementById('pluginSetting_video-use_FfmpegPath');
+    var ffprobeEl = document.getElementById('pluginSetting_video-use_FfprobePath');
+    if (elevenLabsEl) {
+      elevenLabsEl.value = cfg.ElevenLabsApiKey || '';
+      elevenLabsEl.placeholder = cfg.ElevenLabsApiKeySet ? '(configured)' : 'Optional ElevenLabs key';
+    }
+    if (ffmpegEl) ffmpegEl.value = cfg.FfmpegPath || 'ffmpeg';
+    if (ffprobeEl) ffprobeEl.value = cfg.FfprobePath || 'ffprobe';
+  } catch (_) {}
+}
+
+// Drives the visual state of the boolean plugin-setting toggle: track color,
+// thumb position, and the "On"/"Off" label next to it.
+function _syncPluginToggleVisual(input) {
+  if (!input) return;
+  var label = input.closest('label.plugin-setting-toggle');
+  if (!label) return;
+  var text = label.querySelector('[data-toggle-label]');
+  var on = !!input.checked;
+  if (text) { text.textContent = on ? 'On' : 'Off'; text.dataset.toggleLabel = on ? 'on' : 'off'; }
+}
+
+// Resolves dropdown options for plugin settings. Static: setting.options array.
+// Dynamic: setting.optionsFrom = 'aiModels' fetches /api/ai/providers and
+// shows only providers the user has saved a key for, grouped by provider.
+function _populatePluginSettingOptions(el, setting) {
+  if (!el || el.tagName !== 'SELECT') return;
+  var defaultLabel = setting.placeholder || 'Default (selects automatically)';
+  el.innerHTML = '<option value="">' + defaultLabel + '</option>';
+
+  if (Array.isArray(setting.options) && setting.options.length) {
+    setting.options.forEach(function (opt) {
+      var value = typeof opt === 'string' ? opt : opt.value;
+      var label = typeof opt === 'string' ? opt : (opt.label || opt.value);
+      var o = document.createElement('option');
+      o.value = value; o.textContent = label;
+      el.appendChild(o);
+    });
+    _applyPendingPluginSelectValue(el);
+    return;
+  }
+
+  if (setting.optionsFrom === 'aiModels') {
+    fetch('/api/ai/providers').then(function (r) { return r.json(); }).then(function (data) {
+      var providers = (data && data.providers) || [];
+      var configured = providers.filter(function (p) { return p.configured && p.models && p.models.length; });
+      if (!configured.length) {
+        var empty = document.createElement('option');
+        empty.value = ''; empty.textContent = 'No AI keys saved -- add one in Settings -> AI Keys';
+        empty.disabled = true;
+        el.innerHTML = '';
+        el.appendChild(empty);
+        return;
+      }
+      configured.forEach(function (p) {
+        var group = document.createElement('optgroup');
+        group.label = p.label;
+        p.models.forEach(function (m) {
+          var o = document.createElement('option');
+          o.value = m.id; o.textContent = m.label;
+          group.appendChild(o);
+        });
+        el.appendChild(group);
+      });
+      _applyPendingPluginSelectValue(el);
+    }).catch(function () {});
+  }
+}
+
+function _applyPendingPluginSelectValue(el) {
+  if (el && el.dataset && el.dataset.pendingValue) {
+    var v = el.dataset.pendingValue;
+    delete el.dataset.pendingValue;
+    el.value = v;
+  }
 }
 
 function switchPluginSettingsTab(pluginId, btn) {
@@ -25290,19 +25667,24 @@ function toggleSecretField(fieldId, btn) {
 }
 
 // ── Browser Credential Management ───────────────────────────────────────
-function renderBrowserCreds() {
+function _renderBrowserCredsInto(listEl) {
+  if (!listEl) return;
   const creds = configData.BrowserCredentials || {};
-  const list = document.getElementById('browserCredList');
-  if (!list) return;
   const entries = Object.entries(creds);
-  if (!entries.length) { list.innerHTML = '<div style="font-size:11px;color:var(--subtext1);padding:4px 0;">No credentials saved.</div>'; return; }
-  list.innerHTML = entries.map(([name, data]) =>
+  if (!entries.length) { listEl.innerHTML = '<div style="font-size:11px;color:var(--subtext1);padding:4px 0;">No credentials saved.</div>'; return; }
+  listEl.innerHTML = entries.map(([name, data]) =>
     `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--surface0);">
       <span style="font-size:12px;color:var(--text);flex:1;">${esc(name)}</span>
       <span style="font-size:11px;color:var(--subtext0);flex:1;">${esc(data.email || '')}</span>
       <button class="modal-btn" onclick="removeBrowserCredential('${esc(name)}')" style="padding:2px 8px;font-size:10px;color:var(--red);">Remove</button>
     </div>`
   ).join('');
+}
+function renderBrowserCreds() {
+  // Render into both surfaces (legacy AI Tools section, and the dedicated
+  // Browser settings tab) so credentials stay in sync wherever the user looks.
+  _renderBrowserCredsInto(document.getElementById('browserCredList'));
+  _renderBrowserCredsInto(document.getElementById('browserCredListBrowser'));
 }
 
 function addBrowserCredential() {
@@ -25317,10 +25699,88 @@ function addBrowserCredential() {
   document.getElementById('browserCredPass').value = '';
   renderBrowserCreds();
 }
+function addBrowserCredentialBrowserTab() {
+  const name = document.getElementById('browserCredNameBrowser').value.trim();
+  const email = document.getElementById('browserCredEmailBrowser').value.trim();
+  const pass = document.getElementById('browserCredPassBrowser').value;
+  if (!name || !email || !pass) { toast('All fields required', 'error'); return; }
+  if (!configData.BrowserCredentials) configData.BrowserCredentials = {};
+  configData.BrowserCredentials[name] = { email, password: pass };
+  document.getElementById('browserCredNameBrowser').value = '';
+  document.getElementById('browserCredEmailBrowser').value = '';
+  document.getElementById('browserCredPassBrowser').value = '';
+  renderBrowserCreds();
+}
 
 function removeBrowserCredential(name) {
   if (configData.BrowserCredentials) delete configData.BrowserCredentials[name];
   renderBrowserCreds();
+}
+
+// ── Browser settings tab loader / saver ────────────────────────────────────
+async function refreshBrowserSettings() {
+  // Router defaults (live in main config under BrowserRouter).
+  const r = (configData.BrowserRouter || {});
+  const defEl = document.getElementById('settingsBrowserRouterDefault');
+  if (defEl) defEl.value = r.default || 'auto';
+  const preferEl = document.getElementById('settingsBrowserRouterPreferStagehand');
+  if (preferEl) {
+    preferEl.checked = r.preferStagehand !== false;
+    _syncPluginToggleVisual(preferEl);
+    if (!preferEl._wired) { preferEl.addEventListener('change', () => _syncPluginToggleVisual(preferEl)); preferEl._wired = true; }
+  }
+
+  // Populate dynamic model dropdowns.
+  const inAppModelEl = document.getElementById('settingsInAppAgentModel');
+  if (inAppModelEl) _populatePluginSettingOptions(inAppModelEl, { optionsFrom: 'aiModels', placeholder: 'Default (auto-pick from saved keys)' });
+  const stagehandModelEl = document.getElementById('settingsStagehandModel');
+  if (stagehandModelEl) _populatePluginSettingOptions(stagehandModelEl, { optionsFrom: 'aiModels', placeholder: 'Default (Claude Sonnet 4.6)' });
+
+  // Stagehand plugin settings live on the plugin's own config endpoint.
+  try {
+    const res = await fetch('/api/plugins/stagehand/config', { cache: 'no-store' });
+    const cfg = res.ok ? await res.json() : {};
+    if (stagehandModelEl) {
+      if (cfg.model !== undefined) {
+        stagehandModelEl.value = cfg.model;
+        if (stagehandModelEl.value !== cfg.model) stagehandModelEl.dataset.pendingValue = cfg.model;
+      }
+    }
+    const headlessEl = document.getElementById('settingsStagehandHeadless');
+    if (headlessEl) {
+      // Manifest default is on; treat undefined as on.
+      headlessEl.checked = cfg.headless !== false;
+      _syncPluginToggleVisual(headlessEl);
+      if (!headlessEl._wired) { headlessEl.addEventListener('change', () => _syncPluginToggleVisual(headlessEl)); headlessEl._wired = true; }
+    }
+  } catch (_) {}
+
+  // In-app agent model (lives under InAppAgent in main config).
+  const inApp = (configData.InAppAgent || {});
+  if (inAppModelEl && inApp.model) {
+    inAppModelEl.value = inApp.model;
+    if (inAppModelEl.value !== inApp.model) inAppModelEl.dataset.pendingValue = inApp.model;
+  }
+
+  // Refresh the credentials list.
+  renderBrowserCreds();
+}
+
+async function saveBrowserSettings() {
+  // Router and in-app agent prefs go into the main config payload via
+  // saveSettings(); this helper just persists the plugin-scoped Stagehand
+  // settings out-of-band so a single Save click writes everything.
+  try {
+    const stagehandModel = (document.getElementById('settingsStagehandModel') || {}).value || '';
+    const stagehandHeadless = !!(document.getElementById('settingsStagehandHeadless') || {}).checked;
+    const body = { headless: stagehandHeadless };
+    if (stagehandModel) body.model = stagehandModel;
+    await fetch('/api/plugins/stagehand/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (_) {}
 }
 
 var _registryPlugins = [];
@@ -25557,9 +26017,17 @@ async function savePluginSettings() {
   var inputs = document.querySelectorAll('.plugin-setting-input');
   var byPlugin = {};
   inputs.forEach(function (el) {
+    if (el.disabled) return;
     var pid = el.dataset.plugin;
     var key = el.dataset.key;
-    var val = el.value.trim();
+    if (!pid || !key) return;
+    if (el.classList.contains('plugin-setting-bool') || el.type === 'checkbox') {
+      // Always persist booleans -- empty value would falsely flip the toggle off.
+      if (!byPlugin[pid]) byPlugin[pid] = {};
+      byPlugin[pid][key] = !!el.checked;
+      return;
+    }
+    var val = (el.value || '').trim();
     if (!val) return; // skip empty (don't overwrite with blank)
     if (!byPlugin[pid]) byPlugin[pid] = {};
     byPlugin[pid][key] = val;

@@ -1138,8 +1138,28 @@ function saveBrowserLearning(summary) {
 }
 
 // ── Runner ────────────────────────────────────────────────────────────────
-async function runThread({ thread, task, agent, providerEntry, model, broadcast, credentials }) {
+async function runThread(args) {
+  const { thread, broadcast } = args;
   thread.running = true;
+  // Outer guard so ANY throw between here and the main loop's own try/catch
+  // still lands in thread.lastResult instead of silently rejecting up to the
+  // /chat handler's `.catch(() => {})`. The router polls lastResult to know
+  // when the run is over, so leaving it null = it never sees the result.
+  try {
+    return await _runThreadInner(args);
+  } catch (e) {
+    if (typeof broadcast === 'function') {
+      try { broadcast({ type: 'browser-agent-step', threadId: thread.id, kind: 'error', message: e && e.message || String(e), at: Date.now() }); } catch (_) {}
+    }
+    thread.lastResult = { ok: false, kind: 'error', error: e && e.message || String(e), finishedAt: Date.now() };
+    return thread.lastResult;
+  } finally {
+    thread.running = false;
+    pruneThreads();
+  }
+}
+
+async function _runThreadInner({ thread, task, agent, providerEntry, model, broadcast, credentials }) {
   const emit = (step) => {
     if (typeof broadcast === 'function') {
       broadcast({ type: 'browser-agent-step', threadId: thread.id, ...step, at: Date.now() });
@@ -1153,8 +1173,8 @@ async function runThread({ thread, task, agent, providerEntry, model, broadcast,
 
   try { await agent.launch({}); } catch (e) {
     emit({ kind: 'error', message: 'Failed to open browser: ' + e.message });
-    thread.running = false;
-    return { ok: false, error: e.message };
+    thread.lastResult = { ok: false, kind: 'error', error: 'Failed to open browser: ' + e.message, finishedAt: Date.now() };
+    return thread.lastResult;
   }
 
   // Reset thread state when provider changes mid-thread to avoid mixed formats.
@@ -1202,14 +1222,15 @@ async function runThread({ thread, task, agent, providerEntry, model, broadcast,
         const msg = e.message || '';
         if (thread.stopped && isAbortError(e)) {
           emit({ kind: 'stopped' });
-          return { ok: true, stopped: true };
+          thread.lastResult = { ok: true, kind: 'stopped', stopped: true, finishedAt: Date.now() };
+          return thread.lastResult;
         }
         if (msg.includes('429')) {
           saveBrowserLearning('Rate limit hit mid-task. Reduce steps: prefer direct URL navigation over multi-step UI clicks. Use Haiku model for browser tasks.');
         }
         emit({ kind: 'error', message: providerEntry.adapter.label + ' API error: ' + msg });
-        thread.running = false;
-        return { ok: false, error: msg };
+        thread.lastResult = { ok: false, kind: 'error', error: providerEntry.adapter.label + ' API error: ' + msg, finishedAt: Date.now() };
+        return thread.lastResult;
       } finally {
         thread.abortController = null;
       }
@@ -1286,14 +1307,14 @@ async function runThread({ thread, task, agent, providerEntry, model, broadcast,
     if (!finalSummary) finalSummary = iter >= MAX_ITERATIONS ? `Stopped after ${MAX_ITERATIONS} steps.` : 'Done.';
     const finalReport = buildFinalBrowserReport(finalSummary, actionReports);
     emit({ kind: 'done', summary: finalSummary, markdown: finalReport, reports: actionReports });
-    return { ok: true, summary: finalSummary, iterations: iter, report: finalReport, actionReports };
+    thread.lastResult = { ok: true, kind: 'done', summary: finalSummary, iterations: iter, report: finalReport, actionReports, finishedAt: Date.now() };
+    return thread.lastResult;
   } catch (e) {
     emit({ kind: 'error', message: e.message });
-    return { ok: false, error: e.message };
-  } finally {
-    thread.running = false;
-    pruneThreads();
+    thread.lastResult = { ok: false, kind: 'error', error: e.message, finishedAt: Date.now() };
+    return thread.lastResult;
   }
+  // running=false + pruneThreads moved to outer runThread wrapper.
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -1341,6 +1362,7 @@ function mountBrowserAgentChatRoutes(addRoute, json, { getConfig, agent, broadca
     if (thread.running) return json(res, { error: 'Thread already running. Stop it first.' }, 409);
     thread.stopped = false;
     thread.resumed = false;
+    thread.lastResult = null;
     const model = body.model || entry.adapter.defaultModel;
 
     const credentials = getConfig().BrowserCredentials || {};
@@ -1424,6 +1446,10 @@ function mountBrowserAgentChatRoutes(addRoute, json, { getConfig, agent, broadca
       running: !!(t && t.running),
       stopped: !!(t && t.stopped),
       messages: t ? t.messages.length : 0,
+      // lastResult is set by runThread on done/error so callers (incl. the
+      // browser router) can pick up the final outcome without needing to
+      // subscribe to broadcast events.
+      lastResult: (t && t.lastResult) || null,
       providers,
       defaultProvider: providers.length ? (pickProvider(registry).adapter.kind || null) : null,
     });

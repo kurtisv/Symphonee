@@ -1377,6 +1377,18 @@ function handleGetSpaces(res) {
   const cfg = getConfig();
   json(res, cfg.Spaces || {});
 }
+const CORE_SPACE_PLUGIN_IDS = new Set(['browser-use', 'video-use', 'stagehand']);
+function normalizeSpacePluginList(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const item of list) {
+    if (typeof item !== 'string') continue;
+    if (CORE_SPACE_PLUGIN_IDS.has(item)) continue;
+    if (out.includes(item)) continue;
+    out.push(item);
+  }
+  return out;
+}
 async function handleSaveSpace(req, res) {
   const body = await readBody(req);
   const { name, icon, description, repos, plugins } = body || {};
@@ -1389,7 +1401,7 @@ async function handleSaveSpace(req, res) {
     icon: icon || prev.icon || 'layers',
     description: description !== undefined ? description : (prev.description || ''),
     repos: Array.isArray(repos) ? repos.filter(r => typeof r === 'string') : (prev.repos || []),
-    plugins: Array.isArray(plugins) ? plugins.filter(p => typeof p === 'string') : (prev.plugins || []),
+    plugins: Array.isArray(plugins) ? normalizeSpacePluginList(plugins) : normalizeSpacePluginList(prev.plugins || []),
     createdAt: prev.createdAt || Date.now(),
   };
   atomicWriteSync(configPath, JSON.stringify(normalizeRootConfig(cfg), null, 2));
@@ -1425,6 +1437,7 @@ async function handleSpaceAttachRepo(req, res) {
 async function handleSpaceTogglePlugin(req, res) {
   const { space, plugin, enabled } = await readBody(req);
   if (!space || !plugin) return json(res, { error: 'space and plugin are required' }, 400);
+  if (CORE_SPACE_PLUGIN_IDS.has(plugin)) return json(res, { ok: true, plugins: normalizeSpacePluginList(((getConfig().Spaces || {})[space] || {}).plugins || []) });
   let cfg = {};
   try { cfg = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf8')) : {}; } catch (_) { cfg = {}; }
   cfg.Spaces = cfg.Spaces || {};
@@ -1437,10 +1450,10 @@ async function handleSpaceTogglePlugin(req, res) {
   } else if (idx < 0) {
     list.push(plugin);
   }
-  cfg.Spaces[space] = { ...s, plugins: list };
+  cfg.Spaces[space] = { ...s, plugins: normalizeSpacePluginList(list) };
   atomicWriteSync(configPath, JSON.stringify(normalizeRootConfig(cfg), null, 2));
   broadcast({ type: 'config-changed' });
-  json(res, { ok: true, plugins: list });
+  json(res, { ok: true, plugins: cfg.Spaces[space].plugins });
 }
 const _skillsDir = path.join(__dirname, 'skills');
 function _parseSkillFrontmatter(content) {
@@ -2665,6 +2678,7 @@ function handleHealthCheck(res) {
 
 // ── Multi-PTY management ────────────────────────────────────────────────────
 const terminals = new Map(); // termId -> { pty, cols, rows }
+const termAiMeta = new Map(); // termId -> { cli, launched, updatedAt }
 let defaultCols = 120, defaultRows = 30;
 
 function findShell() {
@@ -2685,12 +2699,54 @@ function broadcast(msg) {
   }
 }
 
-function createTerminal(termId, cols = 120, rows = 30, cwd = repoRoot) {
+function _normFsPath(p) {
+  return String(p || '').replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase();
+}
+
+function _repoForPath(cwd) {
+  const cfg = getConfig();
+  const repos = cfg.Repos || {};
+  const nCwd = _normFsPath(cwd);
+  let best = null;
+  let bestLen = -1;
+  for (const [name, repoPath] of Object.entries(repos)) {
+    const nRepo = _normFsPath(repoPath);
+    if (!nRepo) continue;
+    if ((nCwd === nRepo || nCwd.startsWith(nRepo + '\\')) && nRepo.length > bestLen) {
+      best = name;
+      bestLen = nRepo.length;
+    }
+  }
+  return best;
+}
+
+function _handleTerminalCwd(termId, cwd) {
+  if (!cwd) return;
+  const t = terminals.get(termId);
+  if (t) t.cwd = cwd;
+  broadcast({ type: 'term-cwd', termId, cwd, repo: _repoForPath(cwd) });
+}
+
+function createTerminal(termId, cols = 120, rows = 30, cwd = null) {
+  // Default new terminals to the user's active repo path so opening a new
+  // shell tab does not yank the dashboard back to Symphonee's own repoRoot.
+  // Falling back to repoRoot would trigger _handleTerminalCwd to broadcast
+  // repo:"Symphonee", which the client interprets as a repo switch and can
+  // clear activeRepo when it does not belong to the current space.
+  if (!cwd) {
+    try {
+      const ctx = getUiContextWithPath();
+      cwd = ctx.activeRepoPath || repoRoot;
+    } catch (_) {
+      cwd = repoRoot;
+    }
+  }
   // Kill existing if same ID
   if (terminals.has(termId)) {
     try { terminals.get(termId).pty.kill(); } catch (_) {}
     terminals.delete(termId);
   }
+  termAiMeta.delete(termId);
 
   const ptyProcess = pty.spawn(shellPath, ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NoLogo', '-NoExit'], {
     name: 'xterm-256color',
@@ -2706,15 +2762,19 @@ function createTerminal(termId, cols = 120, rows = 30, cwd = repoRoot) {
     },
   });
 
-  terminals.set(termId, { pty: ptyProcess, cols, rows });
+  terminals.set(termId, { pty: ptyProcess, cols, rows, cwd });
 
-  ptyProcess.onData(data => broadcast({ type: 'output', termId, data }));
+  ptyProcess.onData(data => {
+    broadcast({ type: 'output', termId, data });
+  });
   ptyProcess.onExit(() => {
     terminals.delete(termId);
+    termAiMeta.delete(termId);
     broadcast({ type: 'term-exited', termId });
   });
 
   broadcast({ type: 'term-started', termId, cwd, isNew: true });
+  _handleTerminalCwd(termId, cwd);
   return ptyProcess;
 }
 
@@ -2724,6 +2784,7 @@ function killTerminal(termId) {
     try { t.pty.kill(); } catch (_) {}
     terminals.delete(termId);
   }
+  termAiMeta.delete(termId);
 }
 
 // ── AI CLI detection (process tree) ─────────────────────────────────────────
@@ -2738,15 +2799,26 @@ const AI_CLI_PROCESS_NAMES = {
   grok:    ['grok.exe',   'grok'],
   qwen:    ['qwen.exe',   'qwen'],
 };
+// Some CLIs (e.g. gemini, qwen, codex) are Node.js scripts wrapped in a .cmd
+// shim, so their OS process name is node.exe rather than the CLI name.
+// These substrings are matched against the full CommandLine of node.exe
+// processes to identify which CLI is actually running.
+const AI_CLI_NODE_MARKERS = {
+  gemini:  ['@google/gemini-cli', 'gemini-cli', 'gemini.js'],
+  copilot: ['@github/copilot-cli', 'copilot-cli'],
+  codex:   ['@openai/codex', 'codex.js'],
+  qwen:    ['qwen-code', 'qwen.js'],
+};
 let _aiDetectCache = { ts: 0, tree: null };
 async function _readProcessTree() {
   // Cache for ~1s so multiple terminals polling back-to-back share one snapshot.
   if (Date.now() - _aiDetectCache.ts < 1000 && _aiDetectCache.tree) return _aiDetectCache.tree;
   // wmic was removed in Windows 11 24H2, so we use Get-CimInstance via PowerShell
   // which is present on every supported Windows SKU.
+  // CommandLine is included so node.exe processes can be matched by script path.
   return await new Promise((resolve) => {
     try {
-      const psCmd = '@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name) | ConvertTo-Json -Compress';
+      const psCmd = '@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine) | ConvertTo-Json -Compress';
       const ps = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCmd], { windowsHide: true });
       let out = '';
       ps.stdout.on('data', (b) => { out += b.toString('utf8'); });
@@ -2760,9 +2832,10 @@ async function _readProcessTree() {
             const pid = Number(p && p.ProcessId);
             const ppid = Number(p && p.ParentProcessId);
             const name = String((p && p.Name) || '').trim().toLowerCase();
+            const cmdline = String((p && p.CommandLine) || '').toLowerCase();
             if (!pid || !name) continue;
             if (!byParent.has(ppid)) byParent.set(ppid, []);
-            byParent.get(ppid).push({ pid, name });
+            byParent.get(ppid).push({ pid, name, cmdline });
           }
           _aiDetectCache = { ts: Date.now(), tree: byParent };
           resolve(byParent);
@@ -2781,8 +2854,15 @@ function _detectAiUnder(tree, rootPid) {
     visited.add(pid);
     const kids = tree.get(pid) || [];
     for (const k of kids) {
+      // Direct name match (compiled binaries like claude.exe).
       for (const cli of Object.keys(AI_CLI_PROCESS_NAMES)) {
         if (AI_CLI_PROCESS_NAMES[cli].includes(k.name)) return cli;
+      }
+      // Node.js-based CLIs: match via CommandLine when process is node.exe.
+      if ((k.name === 'node.exe' || k.name === 'node') && k.cmdline) {
+        for (const cli of Object.keys(AI_CLI_NODE_MARKERS)) {
+          if (AI_CLI_NODE_MARKERS[cli].some(m => k.cmdline.includes(m))) return cli;
+        }
       }
       stack.push(k.pid);
     }
@@ -2805,7 +2885,14 @@ addRoute('POST', '/api/term/detect-ai', async (req, res) => {
     for (const id of termIds) {
       const t = terminals.get(id);
       if (!t || !t.pty || !t.pty.pid) continue;
-      byTerm[id] = _detectAiUnder(tree, t.pty.pid) || null;
+      const detected = _detectAiUnder(tree, t.pty.pid) || null;
+      byTerm[id] = detected;
+      if (detected) {
+        termAiMeta.set(id, { cli: detected, launched: true, updatedAt: Date.now(), source: 'process-detect' });
+      } else {
+        const existing = termAiMeta.get(id);
+        if (existing && existing.source === 'process-detect') termAiMeta.delete(id);
+      }
     }
     return json(res, { ok: true, byTerm });
   } catch (e) {
@@ -2856,7 +2943,7 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'create-term': {
-          createTerminal(termId, msg.cols || defaultCols, msg.rows || defaultRows, msg.cwd || repoRoot);
+          createTerminal(termId, msg.cols || defaultCols, msg.rows || defaultRows, msg.cwd);
           break;
         }
         case 'kill-term': {
@@ -2865,6 +2952,13 @@ wss.on('connection', (ws) => {
         }
         case 'restart': {
           createTerminal(termId, msg.cols || defaultCols, msg.rows || defaultRows);
+          break;
+        }
+        case 'term-ai-state': {
+          const cli = typeof msg.cli === 'string' ? msg.cli.trim() : '';
+          const launched = msg.launched !== false;
+          if (!cli || !launched) termAiMeta.delete(termId);
+          else termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now() });
           break;
         }
       }
@@ -3029,7 +3123,7 @@ console.log('  Mind mounted (/api/mind/*) - shared knowledge graph');
 // with the brain's current state (node count, staleness, query URL), and
 // every completed task gets saved back as a shared conversation node.
 if (orchestrator) {
-  orchestrator.getMindHint = () => mind.orchestratorHint();
+  orchestrator.getMindHint = (opts) => mind.orchestratorHint(opts || {});
   orchestrator.saveTaskToMind = (task) => mind.saveTaskToMind(task);
 }
 
@@ -3075,7 +3169,15 @@ try {
 // ── Mount apps agent (desktop control) ──────────────────────────────────────
 try {
   const { mountAppsRoutes } = require('./apps-agent');
-  mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate });
+  mountAppsRoutes(addRoute, json, {
+    getConfig,
+    broadcast,
+    permGate,
+    resolveTermCli: (termId) => {
+      const meta = termAiMeta.get(String(termId || ''));
+      return meta && meta.cli ? meta.cli : null;
+    },
+  });
   console.log('  Apps agent mounted (/api/apps/*)');
 } catch (e) {
   console.log('  Apps agent skipped:', e.message);
@@ -3173,6 +3275,54 @@ writePluginHints();
     if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
     return null;
   }
+  // Lists AI providers Symphonee can talk to via SDK, marking which ones the
+  // user actually has keys for (saved in Settings -> AI Keys, or in env). Used
+  // by plugin settings dropdowns so users only see models they can actually run.
+  addRoute('GET', '/api/ai/providers', (req, res) => {
+    const cfg = getConfig() || {};
+    const saved = cfg.AiApiKeys || {};
+    const providers = [
+      {
+        key: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY',
+        models: [
+          { id: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7' },
+          { id: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
+          { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+          { id: 'anthropic/claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+        ],
+      },
+      {
+        key: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY',
+        models: [
+          { id: 'openai/gpt-4.1', label: 'GPT-4.1' },
+          { id: 'openai/gpt-4o', label: 'GPT-4o' },
+          { id: 'openai/o3', label: 'o3' },
+          { id: 'openai/o4-mini', label: 'o4-mini' },
+        ],
+      },
+      {
+        key: 'google', label: 'Google Gemini', envKey: 'GEMINI_API_KEY',
+        models: [
+          { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+          { id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+          { id: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro (preview)' },
+        ],
+      },
+      {
+        key: 'xai', label: 'xAI Grok', envKey: 'XAI_API_KEY',
+        models: [
+          { id: 'xai/grok-4', label: 'Grok 4' },
+          { id: 'xai/grok-3', label: 'Grok 3' },
+          { id: 'xai/grok-3-mini-fast', label: 'Grok 3 Mini Fast' },
+        ],
+      },
+    ].map(p => ({
+      ...p,
+      configured: !!saved[p.envKey] || !!process.env[p.envKey],
+    }));
+    json(res, { ok: true, providers });
+  });
+
   // Core instructions are plugin-agnostic. Plugin-specific rules live in each
   // plugin's own instructions.md (served by /api/plugins/instructions), so no
   // runtime stripping is needed here.

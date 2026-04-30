@@ -39,6 +39,7 @@
     graph: null,
     selectedNode: null,
     watchEnabled: false,
+    graphBuildSeq: 0,      // increments per graph rebuild so stale completions are ignored
     network: null,         // vis.Network instance
     visNodes: null,        // vis.DataSet for nodes
     visEdges: null,        // vis.DataSet for edges
@@ -194,20 +195,9 @@
   // then focus the current cursor. buildNetwork() reads state.search.
   function paintGraphSearch(focusId) {
     if (!state.graph) return;
-    const loader = $('mindGraphLoader');
-    if (loader) loader.style.display = 'flex';
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        try {
-          buildNetwork();
-          const target = focusId || state.matches[state.matchIndex];
-          if (target && state.network) {
-            try { state.network.focus(target, { scale: 1.2, animation: { duration: 350, easingFunction: 'easeInOutQuad' } }); } catch (_) {}
-          }
-        } finally {
-          if (loader) loader.style.display = 'none';
-        }
-      }, 0);
+    buildNetworkAsync({
+      focusId: focusId || state.matches[state.matchIndex],
+      loaderText: state.prefs.graphCap === 'all' ? 'Refreshing full graph...' : 'Refreshing graph...',
     });
   }
 
@@ -292,6 +282,26 @@
     const b = $('mindWatchBtn'); if (b) b.textContent = `Watch: ${on ? 'on' : 'off'}`;
   }
 
+  function showGraphLoader(text) {
+    const loader = $('mindGraphLoader');
+    if (!loader) return;
+    const textEl = loader.querySelector('.mind-loader-text');
+    if (textEl) textEl.textContent = text || 'Laying out graph...';
+    loader.style.display = 'flex';
+  }
+
+  function hideGraphLoader() {
+    const loader = $('mindGraphLoader');
+    if (loader) loader.style.display = 'none';
+  }
+
+  function focusGraphNode(focusId) {
+    if (!focusId || !state.network) return;
+    try {
+      state.network.focus(focusId, { scale: 1.2, animation: { duration: 350, easingFunction: 'easeInOutQuad' } });
+    } catch (_) {}
+  }
+
   // ── View routing ───────────────────────────────────────────────────────────
   function setView(view) {
     state.view = view;
@@ -321,10 +331,192 @@
       return;
     }
     if (state.view === 'dashboard') renderDashboard();
+    else if (state.view === 'wakeup') renderWakeup();
+    else if (state.view === 'query') renderQuery();
     else if (state.view === 'communities') renderCommunities();
     else if (state.view === 'hotspots') renderHotspots();
     else if (state.view === 'map') renderMap();
     else if (state.view === 'graph') renderGraph();
+  }
+
+  // ── Wake-up view ──────────────────────────────────────────────────────────
+  // Shows the context every dispatched worker starts with. The raw prompt text
+  // is still available for debugging, but the primary UI is a structured,
+  // user-facing summary instead of a plain text dump.
+  async function renderWakeup() {
+    const main = $('mindMain');
+    if (!main) return;
+    const cached = state.wakeup || {};
+    main.innerHTML = `
+      <div class="mind-card" style="max-width:980px;margin:0 auto;">
+        <div class="mind-card-title">Worker context</div>
+        <div style="font-size:12px;color:var(--subtext0);margin-bottom:12px;line-height:1.65;">
+          This previews the context every dispatched worker starts with. Add a sample task if you want to see how the brain narrows that context for a specific job.
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px;">
+          <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">What this shows</div>
+            <div style="font-size:11px;color:var(--text);line-height:1.5;">Repo identity, instruction preamble, and the most relevant memory the worker sees first.</div>
+          </div>
+          <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">Try a sample task</div>
+            <div style="font-size:11px;color:var(--text);line-height:1.5;">Use a real task like <span style="color:#89b4fa;">"trace browser router fallback"</span> to preview task-aware context.</div>
+          </div>
+          <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">Why it matters</div>
+            <div style="font-size:11px;color:var(--text);line-height:1.5;">If workers miss obvious context, this view helps explain whether the brain is thin, stale, or too generic.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+          <input id="mindWakeupQ" type="text" placeholder="Optional: preview a sample task..." style="flex:1;min-width:260px;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--text);font-size:12px;" value="${escapeHtml(cached.question || '')}">
+          <label style="font-size:11px;color:var(--subtext0);display:flex;align-items:center;gap:4px;" title="Token budget for the wake-up text">
+            budget
+            <input id="mindWakeupBudget" type="number" min="200" max="2000" step="100" value="${cached.budget || 600}" style="width:74px;padding:4px 6px;background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--text);font-size:11px;">
+          </label>
+          <button class="tab-bar-btn" onclick="MindUI._wakeupRefresh()" style="padding:6px 14px;font-size:11px;">Preview context</button>
+        </div>
+        <div id="mindWakeupMeta" style="font-size:10px;color:var(--subtext0);margin-top:8px;font-variant-numeric:tabular-nums;display:flex;flex-wrap:wrap;gap:14px;"></div>
+        <div id="mindWakeupOut" style="display:flex;flex-direction:column;gap:12px;margin-top:12px;"></div>
+      </div>`;
+    await refreshWakeupOutput();
+    const qEl = $('mindWakeupQ');
+    if (qEl) qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') refreshWakeupOutput(); });
+  }
+
+  async function refreshWakeupOutput() {
+    const q = ($('mindWakeupQ') && $('mindWakeupQ').value || '').trim();
+    const budget = parseInt(($('mindWakeupBudget') && $('mindWakeupBudget').value) || '600', 10);
+    state.wakeup = { question: q, budget };
+    const url = `/api/mind/wakeup?budget=${budget}${q ? `&question=${encodeURIComponent(q)}` : ''}`;
+    try {
+      const data = await API(url);
+      const out = $('mindWakeupOut'); const meta = $('mindWakeupMeta');
+      if (out) out.innerHTML = renderWakeupPreview(data);
+      if (meta) {
+        meta.innerHTML = `
+          <span>~<strong style="color:var(--text);">${data.estTokens || 0}</strong> tokens</span>
+          <span>L0: <strong style="color:var(--text);">${data.layers?.l0Chars || 0}</strong> chars</span>
+          <span>L1: <strong style="color:var(--text);">${data.layers?.l1Chars || 0}</strong> chars</span>
+          <span>${data.queryAware ? '<strong style="color:#a6e3a1;">task-aware</strong>' : '<strong style="color:var(--subtext0);">generic</strong>'}</span>`;
+      }
+    } catch (e) {
+      const out = $('mindWakeupOut');
+      if (out) out.innerHTML = `<div style="background:var(--mantle);border:1px solid var(--surface0);border-radius:6px;padding:14px;color:#f38ba8;">Error: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+  }
+
+  // ── Search view ─────────────────────────────────────────────────────────
+  // Run a /api/mind/query interactively. The endpoint returns the most
+  // relevant nodes in the brain — it does NOT synthesize an answer. Think
+  // of this as "find context", not "ask a chatbot". An AI would then
+  // consume these nodes to compose an answer.
+  async function renderQuery() {
+    const main = $('mindMain');
+    if (!main) return;
+    const c = state.queryUI || {};
+    main.innerHTML = `
+      <div class="mind-card" style="max-width:980px;margin:0 auto;">
+        <div class="mind-card-title">Search the brain</div>
+        <div style="font-size:12px;color:var(--subtext0);margin-bottom:12px;line-height:1.65;">
+          Search for a topic, feature, file, or past decision. This view finds the most relevant brain entries so an AI can answer with real context.
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px;">
+          <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">Best search style</div>
+            <div style="font-size:11px;color:var(--text);line-height:1.5;">Use short topics or keywords like <span style="color:#f9e2af;">"browser router fallback"</span> or <span style="color:#89b4fa;">"permission modes"</span>.</div>
+          </div>
+          <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">What you get back</div>
+            <div style="font-size:11px;color:var(--text);line-height:1.5;">Relevant notes, code, docs, and conversations. It is source material, not the final answer.</div>
+          </div>
+          <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">No results?</div>
+            <div style="font-size:11px;color:var(--text);line-height:1.5;">Try broader wording, different keywords, or run a build if this topic has not been indexed yet.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+          <input id="mindQueryQ" type="text" placeholder="Search by topic or keywords..." style="flex:1;min-width:280px;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--text);font-size:12px;" value="${escapeHtml(c.question || '')}">
+          <label style="font-size:11px;color:var(--subtext0);display:flex;align-items:center;gap:4px;" title="Filter to facts that were true on this date. Half-open [validFrom, validTo).">
+            as of
+            <input id="mindQueryAsOf" type="date" value="${escapeHtml(c.asOf || '')}" style="padding:4px 6px;background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--text);font-size:11px;color-scheme:dark;">
+          </label>
+          <label style="font-size:11px;color:var(--subtext0);display:flex;align-items:center;gap:4px;" title="Approximate token budget for the returned sub-graph">
+            budget
+            <input id="mindQueryBudget" type="number" min="200" max="8000" step="100" value="${c.budget || 2000}" style="width:74px;padding:4px 6px;background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--text);font-size:11px;">
+          </label>
+          <button class="tab-bar-btn" onclick="MindUI._queryRun()" style="padding:6px 14px;font-size:11px;">Search brain</button>
+        </div>
+        <div id="mindQueryOut" style="display:flex;flex-direction:column;gap:10px;"></div>
+      </div>`;
+    const qEl = $('mindQueryQ');
+    if (qEl) qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') runQueryFromUi(); });
+    if (c.lastResult) renderQueryResult(c.lastResult);
+  }
+
+  async function runQueryFromUi() {
+    const question = ($('mindQueryQ') && $('mindQueryQ').value || '').trim();
+    if (!question) return;
+    const asOf = ($('mindQueryAsOf') && $('mindQueryAsOf').value) || null;
+    const budget = parseInt(($('mindQueryBudget') && $('mindQueryBudget').value) || '2000', 10);
+    state.queryUI = { question, asOf, budget };
+    try {
+      const data = await fetch('/api/mind/query', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, asOf: asOf || null, budget }),
+      }).then(r => r.json());
+      state.queryUI.lastResult = data;
+      renderQueryResult(data);
+    } catch (e) {
+      const out = $('mindQueryOut');
+      if (out) out.innerHTML = `<div style="color:#f38ba8;">Error: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+  }
+
+  function renderQueryResult(data) {
+    const out = $('mindQueryOut');
+    if (!out) return;
+    if (!data || data.empty || !data.nodes || !data.nodes.length) {
+      const note = data && data.empty
+        ? 'The brain has nothing on that topic.'
+        : 'No matches found.';
+      out.innerHTML = `
+        <div style="background:var(--mantle);border:1px dashed var(--surface1);border-radius:6px;padding:18px;color:var(--subtext0);font-size:12px;line-height:1.6;">
+          <div style="color:var(--text);font-weight:600;margin-bottom:6px;">${escapeHtml(note)}</div>
+          <div>Try different keywords, or run a build to ingest more sources. The brain only knows what's been mined.</div>
+        </div>`;
+      return;
+    }
+    const seeds = (data.seedIds || []).slice(0, 8);
+    const nodes = (data.nodes || []).slice(0, 30);
+
+    const seedsHtml = seeds.length
+      ? seeds.map(s => `<span style="background:var(--surface0);padding:2px 8px;border-radius:10px;font-family:monospace;font-size:10px;display:inline-block;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;" title="${escapeHtml(s)}">${escapeHtml(s)}</span>`).join(' ')
+      : '<span style="font-style:italic;color:var(--subtext0);">none</span>';
+
+    out.innerHTML = `
+      <div style="background:var(--mantle);border:1px solid var(--surface0);border-radius:6px;padding:10px 14px;font-size:11px;color:var(--subtext0);">
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;margin-bottom:6px;">
+          <span style="text-transform:uppercase;letter-spacing:0.5px;font-size:10px;">Seeds (BM25)</span>
+          <span style="flex:1;min-width:0;line-height:1.9;word-break:break-all;">${seedsHtml}</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:14px;font-variant-numeric:tabular-nums;">
+          <span><strong style="color:var(--text);">${nodes.length}</strong> nodes</span>
+          <span><strong style="color:var(--text);">${(data.edges || []).length}</strong> edges</span>
+          <span>~<strong style="color:var(--text);">${data.estTokens || 0}</strong> tokens</span>
+          <span>as of <strong style="color:var(--text);">${escapeHtml(data.asOf || 'now (timeless)')}</strong></span>
+        </div>
+      </div>
+      <div style="margin-top:8px;display:grid;grid-template-columns:1fr;gap:3px;">
+        ${nodes.map(n => `
+          <a href="#" class="mind-godlink" data-id="${escapeHtml(n.id)}" style="display:grid;grid-template-columns:120px 1fr;align-items:center;gap:10px;padding:7px 12px;background:var(--mantle);border-radius:4px;text-decoration:none;color:var(--text);font-size:12px;border:1px solid transparent;">
+            <span style="font-size:9px;color:var(--subtext0);text-transform:uppercase;letter-spacing:0.5px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">[${escapeHtml(n.kind)}]</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;" title="${escapeHtml(n.label || n.id)}">${escapeHtml(n.label || n.id)}</span>
+          </a>`).join('')}
+      </div>`;
+    out.querySelectorAll('.mind-godlink').forEach(a => a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      showNodeDetail(a.dataset.id);
+    }));
   }
 
   // ── Dashboard view (the "dashboard into the brain") ────────────────────────
@@ -348,6 +540,10 @@
     const totalEdges = g.edges.length || 1;
     const lastBuildAt = stats.buildMs ? `${(stats.buildMs / 1000).toFixed(1)}s build` : '';
     const ageMin = g.generatedAt ? Math.round((Date.now() - new Date(g.generatedAt).getTime()) / 60000) : 0;
+    const maxCommunitySize = Math.max(1, ...Object.values(g.communities || {}).map(c => c.size || 0));
+    const maxGodDegree = g.gods[0]?.degree || 1;
+    const topContributors = Object.entries(cliCounts).sort((a, b) => b[1] - a[1]).slice(0, 12);
+    const maxContributorCount = Math.max(1, ...topContributors.map(([, v]) => v));
 
     const html = `
       <div class="mind-dash">
@@ -392,20 +588,22 @@
 
           <div class="mind-card">
             <div class="mind-card-title">Contributors (createdBy)</div>
-            ${barChart(Object.entries(cliCounts).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, v]) => ({ label: k, value: v, color: cliColor(k) })), 8)}
+            <div class="mind-list mind-rank-list">
+              ${topContributors.map(([k, v]) => contributorRow(k, v, maxContributorCount)).join('')}
+            </div>
           </div>
 
           <div class="mind-card">
             <div class="mind-card-title">Top god nodes</div>
-            <div class="mind-list">
-              ${(g.gods || []).slice(0, 10).map(x => godRow(x, (g.gods[0]?.degree || 1))).join('')}
+            <div class="mind-list mind-rank-list">
+              ${(g.gods || []).slice(0, 10).map(x => godRow(x, maxGodDegree)).join('')}
             </div>
           </div>
 
           <div class="mind-card">
             <div class="mind-card-title">Largest communities</div>
-            <div class="mind-list">
-              ${Object.entries(g.communities || {}).sort((a, b) => b[1].size - a[1].size).slice(0, 10).map(([cid, c]) => communityRow(cid, c)).join('')}
+            <div class="mind-list mind-rank-list">
+              ${Object.entries(g.communities || {}).sort((a, b) => b[1].size - a[1].size).slice(0, 10).map(([cid, c]) => communityRow(cid, c, maxCommunitySize)).join('')}
             </div>
           </div>
 
@@ -432,8 +630,8 @@
         .mind-stat-card .mind-stat-label { font-size:10px; color:var(--subtext0); text-transform:uppercase; letter-spacing:0.5px; }
         .mind-stat-card .mind-stat-value { font-size:20px; font-weight:600; color:var(--text); font-variant-numeric:tabular-nums; }
         .mind-stat-card .mind-stat-hint  { font-size:10px; color:var(--subtext0); }
-        .mind-dash-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:12px; }
-        .mind-card { background:var(--mantle); border:1px solid var(--surface1); border-radius:6px; padding:12px; }
+        .mind-dash-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:12px; align-items:stretch; }
+        .mind-card { background:var(--mantle); border:1px solid var(--surface1); border-radius:6px; padding:12px; display:flex; flex-direction:column; min-height:0; }
         .mind-card-wide { grid-column: 1 / -1; }
         .mind-card-title { font-size:11px; font-weight:600; color:var(--subtext0); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; }
         .mind-bar { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--text); }
@@ -442,6 +640,48 @@
         .mind-bar-fill  { height:100%; border-radius:3px; }
         .mind-bar-num   { min-width:40px; text-align:right; color:var(--subtext1); font-variant-numeric:tabular-nums; font-size:10px; }
         .mind-list { display:flex; flex-direction:column; gap:5px; }
+        .mind-rank-list { gap:2px; }
+        .mind-rank-row {
+          display:grid;
+          grid-template-columns:minmax(0, 1fr) minmax(120px, 1fr) 84px;
+          align-items:center;
+          gap:10px;
+          padding:7px 0;
+          color:var(--text);
+          text-decoration:none;
+          border-bottom:1px solid var(--surface0);
+        }
+        .mind-rank-row:last-child { border-bottom:none; }
+        .mind-rank-row:hover .mind-rank-label { color:var(--accent); }
+        .mind-rank-label {
+          min-width:0;
+          overflow:hidden;
+          text-overflow:ellipsis;
+          white-space:nowrap;
+        }
+        .mind-rank-track {
+          min-width:0;
+          height:8px;
+          background:var(--surface0);
+          border-radius:999px;
+          overflow:hidden;
+        }
+        .mind-rank-fill {
+          display:block;
+          height:100%;
+          border-radius:999px;
+        }
+        .mind-rank-meta {
+          display:flex;
+          flex-direction:column;
+          align-items:flex-end;
+          gap:1px;
+          text-align:right;
+          font-variant-numeric:tabular-nums;
+          line-height:1.15;
+        }
+        .mind-rank-meta strong { color:var(--text); font-size:11px; font-weight:600; }
+        .mind-rank-meta span { color:var(--subtext0); font-size:10px; }
         .mind-feed { display:flex; flex-direction:column; gap:6px; max-height:400px; overflow:auto; }
         .mind-feed-row { padding:7px 9px; background:var(--base); border-radius:4px; cursor:pointer; transition: background 0.1s; }
         .mind-feed-row:hover { background:var(--surface0); }
@@ -519,12 +759,18 @@
 
   function godRow(x, max) {
     const pct = (x.degree / max) * 100;
-    return `<div class="mind-bar" data-id="${escapeHtml(x.id)}" style="cursor:pointer;"><div class="mind-bar-label" style="color:var(--text);" title="${escapeHtml(x.label)}">${escapeHtml(x.label)}</div><div class="mind-bar-track"><div class="mind-bar-fill" style="width:${pct.toFixed(1)}%;background:#fab387"></div></div><div class="mind-bar-num">${x.degree}</div></div>`;
+    return `<a href="#" class="mind-rank-row mind-godlink" data-id="${escapeHtml(x.id)}"><span class="mind-rank-label" title="${escapeHtml(x.label)}">${escapeHtml(x.label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct.toFixed(1)}%;background:#fab387"></span></span><span class="mind-rank-meta"><strong>${x.degree}</strong><span>connections</span></span></a>`;
   }
 
-  function communityRow(cid, c) {
+  function contributorRow(label, value, max) {
+    const pct = (value / max) * 100;
+    return `<div class="mind-rank-row"><span class="mind-rank-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct.toFixed(1)}%;background:${cliColor(label)}"></span></span><span class="mind-rank-meta"><strong>${value}</strong><span>entries</span></span></div>`;
+  }
+
+  function communityRow(cid, c, maxSize) {
     const cohesionPct = Math.round((c.cohesion || 0) * 100);
-    return `<div class="mind-bar" data-cid="${escapeHtml(cid)}" style="cursor:pointer;"><div class="mind-bar-label" style="color:var(--text);" title="${escapeHtml(c.label)}">#${cid} ${escapeHtml(c.label)}</div><div class="mind-bar-track"><div class="mind-bar-fill" style="width:${Math.min(100, c.size / 2)}%;background:${communityColor(parseInt(cid, 10))}"></div></div><div class="mind-bar-num">${c.size} - ${cohesionPct}%</div></div>`;
+    const pct = ((c.size || 0) / Math.max(1, maxSize)) * 100;
+    return `<a href="#" class="mind-rank-row" data-cid="${escapeHtml(cid)}"><span class="mind-rank-label" title="${escapeHtml(c.label)}">#${cid} ${escapeHtml(c.label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct.toFixed(1)}%;background:${communityColor(parseInt(cid, 10))}"></span></span><span class="mind-rank-meta"><strong>${c.size} nodes</strong><span>${cohesionPct}% cohesion</span></span></a>`;
   }
 
   function convRow(n) {
@@ -602,7 +848,13 @@
       <div style="font-size:11px;color:var(--subtext0);flex-shrink:0;padding:8px 12px;border-bottom:1px solid var(--surface0);background:var(--mantle);">
         Each circle is a community. Edges show cross-community bridges (sized by traffic). Click a circle to drill in.
       </div>
-      <div id="mindCanvasHost" style="flex:1;min-height:0;width:100%;background:var(--mantle);"></div>`;
+      <div style="flex:1;min-height:0;width:100%;background:var(--mantle);position:relative;">
+        <div id="mindCanvasHost" style="position:absolute;inset:0;"></div>
+        <div id="mindGraphLoader" class="mind-loader-overlay" style="display:none;">
+          <div class="mind-spinner"></div>
+          <div class="mind-loader-text">Laying out map...</div>
+        </div>
+      </div>`;
 
     // Aggregate cross-community edge counts.
     const idCommunity = new Map();
@@ -813,10 +1065,11 @@
         <button class="tab-bar-btn" onclick="MindUI.fitGraph()" style="font-size:11px;" title="Fit graph to view">Fit</button>
         <button class="tab-bar-btn" onclick="MindUI.togglePhysics()" id="mindPhysicsBtn" style="font-size:11px;" title="Pause/resume layout physics">Freeze</button>
       </div>
-      <div id="mindCanvasHost" style="flex:1;min-height:0;width:100%;background:var(--mantle);position:relative;">
-        <div id="mindGraphLoader" class="mind-loader-overlay" style="display:none;">
+      <div style="flex:1;min-height:0;width:100%;background:var(--mantle);position:relative;">
+        <div id="mindCanvasHost" style="position:absolute;inset:0;"></div>
+        <div id="mindGraphLoader" class="mind-loader-overlay" style="display:flex;">
           <div class="mind-spinner"></div>
-          <div class="mind-loader-text">Laying out graph...</div>
+          <div class="mind-loader-text">Preparing graph...</div>
         </div>
       </div>`;
 
@@ -828,30 +1081,40 @@
     if (capEl) capEl.value = state.prefs.graphCap;
     updatePhysicsBtnLabel();
 
-    buildNetworkAsync();
+    buildNetworkAsync({ loaderText: state.prefs.graphCap === 'all' ? 'Loading full graph...' : 'Laying out graph...' });
     filterEl.addEventListener('change', () => {
       state.prefs.graphFilter = filterEl.value;
       savePrefs();
-      buildNetworkAsync();
+      buildNetworkAsync({ loaderText: state.prefs.graphCap === 'all' ? 'Refreshing full graph...' : 'Refreshing graph...' });
     });
     capEl.addEventListener('change', () => {
       state.prefs.graphCap = capEl.value;
       savePrefs();
-      buildNetworkAsync();
+      buildNetworkAsync({ loaderText: capEl.value === 'all' ? 'Loading full graph...' : 'Laying out graph...' });
     });
   }
 
-  // Wraps buildNetwork() so the loader overlay actually paints before the
-  // synchronous DataSet construction + vis.Network init blocks the main thread.
-  // Without the rAF + setTimeout chain the browser batches the style change
-  // with the heavy work and the user sees a frozen screen for top 2000/5000.
-  function buildNetworkAsync() {
-    const loader = $('mindGraphLoader');
-    if (loader) loader.style.display = 'flex';
+  // Wraps buildNetwork() so the loader overlay paints before the synchronous
+  // DataSet construction + vis.Network init blocks the main thread, then stays
+  // visible until the first stabilization pass is done.
+  function buildNetworkAsync({ focusId = null, loaderText = 'Laying out graph...' } = {}) {
+    const seq = ++state.graphBuildSeq;
+    showGraphLoader(loaderText);
     requestAnimationFrame(() => {
       setTimeout(() => {
-        try { buildNetwork(); } finally {
-          if (loader) loader.style.display = 'none';
+        if (seq !== state.graphBuildSeq) return;
+        try {
+          buildNetwork({
+            seq,
+            onReady: () => {
+              if (seq !== state.graphBuildSeq) return;
+              focusGraphNode(focusId);
+              hideGraphLoader();
+            },
+          });
+        } catch (err) {
+          hideGraphLoader();
+          throw err;
         }
       }, 0);
     });
@@ -868,16 +1131,22 @@
     code: 'dot', doc: 'square', note: 'star', plugin: 'diamond',
     recipe: 'triangle', tag: 'dot', concept: 'dot', conversation: 'hexagon',
     workitem: 'box', image: 'image', paper: 'square',
+    // Drawers (verbatim user/assistant turns) get a distinctive triangleDown
+    // so they're separable from concept dots and conversation hexagons.
+    drawer: 'triangleDown',
   };
 
   function nodeSize(degree) {
     return Math.min(40, Math.max(8, 8 + Math.sqrt(degree) * 3));
   }
 
-  function buildNetwork() {
+  function buildNetwork({ seq = state.graphBuildSeq, onReady = null } = {}) {
     const g = state.graph;
     const host = $('mindCanvasHost');
-    if (!host || !g) return;
+    if (!host || !g) {
+      if (typeof onReady === 'function') onReady();
+      return;
+    }
 
     const filter = $('mindGraphFilter')?.value || 'all';
     const capRaw = $('mindGraphCap')?.value || '1000';
@@ -976,21 +1245,31 @@
       edges: { selectionWidth: 1.5 },
     });
 
+    const finishBuild = () => {
+      if (seq !== state.graphBuildSeq) return;
+      try {
+        state.network.setOptions({ physics: { stabilization: { enabled: false }, enabled: state.prefs.physicsEnabled !== false } });
+      } catch (_) {}
+      updatePhysicsBtnLabel();
+      if (typeof onReady === 'function') requestAnimationFrame(onReady);
+    };
+    let buildFinished = false;
+    const fallbackMs = capRaw === 'all' ? 15000 : 5000;
+    const fallbackTimer = setTimeout(finalizeOnce, fallbackMs);
+    function finalizeOnce() {
+      if (buildFinished) return;
+      buildFinished = true;
+      clearTimeout(fallbackTimer);
+      finishBuild();
+    }
+
     state.network.on('click', (params) => {
       if (params.nodes && params.nodes.length) {
         state.selectedNode = params.nodes[0];
         showNodeDetail(params.nodes[0]);
       }
     });
-    state.network.on('stabilizationIterationsDone', () => {
-      // Pin the first stabilization end so the user can interact without
-      // the whole graph re-flowing on every click. If the user previously
-      // froze physics, honour that on the rebuilt network too.
-      try {
-        state.network.setOptions({ physics: { stabilization: { enabled: false }, enabled: state.prefs.physicsEnabled !== false } });
-      } catch (_) {}
-      updatePhysicsBtnLabel();
-    });
+    state.network.once('stabilizationIterationsDone', finalizeOnce);
   }
 
   function updatePhysicsBtnLabel() {
@@ -1194,7 +1473,118 @@
     return n ? n.label : id;
   }
   function confColor(c) { return c === 'EXTRACTED' ? 'var(--green)' : c === 'INFERRED' ? 'var(--yellow)' : 'var(--red)'; }
-  function escapeHtml(s) { if (typeof s !== 'string') s = String(s ?? ''); return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function parseWakeupText(text) {
+    const decoded = decodeHtmlEntities(text || '');
+    const lines = decoded.split(/\r?\n/);
+    const sections = new Map();
+    let current = null;
+    for (const raw of lines) {
+      if (/^##\s+/.test(raw)) {
+        current = raw.replace(/^##\s+/, '').trim();
+        sections.set(current, []);
+        continue;
+      }
+      if (!current) continue;
+      sections.get(current).push(raw);
+    }
+
+    const identity = {};
+    const l0Lines = sections.get('L0 - IDENTITY') || [];
+    const l1Title = Array.from(sections.keys()).find(k => k.startsWith('L1 -')) || 'L1';
+    const storyLines = (sections.get(l1Title) || []).map(line => line.trim()).filter(Boolean);
+    let preamble = [];
+    let inPreamble = false;
+
+    for (const raw of l0Lines) {
+      const line = raw || '';
+      if (!line.trim()) continue;
+      if (line.trim() === 'repo_preamble:') {
+        inPreamble = true;
+        continue;
+      }
+      if (inPreamble) {
+        preamble.push(line.trim());
+        continue;
+      }
+      const idx = line.indexOf(':');
+      if (idx === -1) continue;
+      const key = line.slice(0, idx).trim();
+      const value = line.slice(idx + 1).trim();
+      if (key) identity[key] = value;
+    }
+
+    return {
+      raw: decoded,
+      identity,
+      preamble: preamble.join('\n').trim(),
+      l1Title,
+      storyLines,
+    };
+  }
+  function renderWakeupStoryLine(line) {
+    const clean = (line || '').trim();
+    if (!clean) return '';
+    if (/:$/.test(clean) && !clean.startsWith('- ') && !clean.startsWith('[') && !clean.startsWith('->') && !clean.startsWith('~>') && !clean.startsWith('?>')) {
+      return `<div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-top:4px;">${escapeHtml(clean.slice(0, -1))}</div>`;
+    }
+    const text = clean.startsWith('- ') ? clean.slice(2) : clean;
+    const bg = clean.startsWith('->') || clean.startsWith('~>') || clean.startsWith('?>') ? 'var(--surface0)' : 'var(--base)';
+    return `<div style="padding:8px 10px;background:${bg};border:1px solid var(--surface0);border-radius:6px;font-size:11px;color:var(--text);line-height:1.5;overflow-wrap:anywhere;">${escapeHtml(text)}</div>`;
+  }
+  function renderWakeupPreview(data) {
+    const parsed = parseWakeupText(data.text || '');
+    const identityRows = [
+      ['Repo', parsed.identity.active_repo || '(none selected)'],
+      ['Path', parsed.identity.active_repo_path || '(not available)'],
+      ['Space', parsed.identity.mind_space || '(not available)'],
+    ];
+    return `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;">
+        <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;"><div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">Mode</div><div style="font-size:12px;color:var(--text);">${data.queryAware ? 'Task-aware' : 'General context'}</div></div>
+        <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;"><div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">Size</div><div style="font-size:12px;color:var(--text);">~${data.estTokens || 0} tokens</div></div>
+        <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;"><div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">Identity layer</div><div style="font-size:12px;color:var(--text);">${data.layers?.l0Chars || 0} chars</div></div>
+        <div style="padding:10px 12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;"><div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:4px;">Memory layer</div><div style="font-size:12px;color:var(--text);">${data.layers?.l1Chars || 0} chars</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">
+        <div style="padding:12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:8px;">Workspace identity</div>
+          <div style="display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;font-size:11px;line-height:1.5;">
+            ${identityRows.map(([label, value]) => `<div style="color:var(--subtext0);">${escapeHtml(label)}</div><div style="color:var(--text);overflow-wrap:anywhere;">${escapeHtml(value)}</div>`).join('')}
+          </div>
+        </div>
+        <div style="padding:12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:8px;">Repo instructions excerpt</div>
+          <div style="font-size:11px;color:var(--text);line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;">${escapeHtml(parsed.preamble || 'No repo preamble found.')}</div>
+        </div>
+      </div>
+      <div style="padding:12px;background:var(--base);border:1px solid var(--surface0);border-radius:6px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtext0);margin-bottom:8px;">${escapeHtml(parsed.l1Title.replace(/^L1 -\s*/, ''))}</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${parsed.storyLines.length ? parsed.storyLines.map(renderWakeupStoryLine).join('') : '<div style="font-size:11px;color:var(--subtext0);font-style:italic;">No memory summary available yet.</div>'}
+        </div>
+      </div>
+      <details style="background:var(--base);border:1px solid var(--surface0);border-radius:6px;padding:10px 12px;">
+        <summary style="cursor:pointer;font-size:11px;color:var(--subtext0);">Raw prompt text</summary>
+        <pre style="margin:10px 0 0;background:var(--mantle);padding:12px;border-radius:6px;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;color:var(--text);border:1px solid var(--surface0);">${escapeHtml(parsed.raw || '(empty)')}</pre>
+      </details>`;
+  }
+  // Decode HTML entities that may have been written into labels by older
+  // builds (sanitizeLabel used to HTML-escape at write time, which double-
+  // escaped at render). Decode iteratively so `&amp;quot;` becomes `"`.
+  function decodeHtmlEntities(s) {
+    if (typeof s !== 'string') return '';
+    let prev = null; let out = s;
+    for (let i = 0; i < 3 && out !== prev; i++) {
+      prev = out;
+      out = out.replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e]));
+    }
+    return out;
+  }
+  function escapeHtml(s) {
+    if (typeof s !== 'string') s = String(s ?? '');
+    s = decodeHtmlEntities(s);
+    return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
 
   function metaRow(key, valueHtml, mono) {
     return `<div class="mind-meta-key">${escapeHtml(key)}</div><div class="mind-meta-val${mono ? ' mind-meta-val-mono' : ''}">${valueHtml}</div>`;
@@ -1261,5 +1651,8 @@
     } catch (_) { return iso; }
   }
 
-  window.MindUI = { onActivate, setView, build, update, toggleWatch, askAbout, purgeNode, closeDetail, fitGraph, togglePhysics, clearSearch, toggleSearchOnly };
+  window.MindUI = { onActivate, setView, build, update, toggleWatch, askAbout, purgeNode, closeDetail, fitGraph, togglePhysics, clearSearch, toggleSearchOnly,
+    _wakeupRefresh: refreshWakeupOutput,
+    _queryRun: runQueryFromUi,
+  };
 })();
