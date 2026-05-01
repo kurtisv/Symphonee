@@ -332,19 +332,38 @@ class CircuitBreaker {
 function classifyError(error, cli) {
   const msg = typeof error === 'string' ? error : (error.message || String(error));
   const isTransient = /timeout|timed out|ECONNRESET|ECONNREFUSED|EPIPE|rate.?limit|429|500|502|503/i.test(msg);
-  const isPermanent = /not installed|not found|not recognized|API key|not logged in|auth.*failed|invalid.*key|billing|unexpected argument|bad flag/i.test(msg);
+  // Credit / quota / auth: this CLI specifically cannot serve THIS request,
+  // but a sibling provider with its own key may still work. Mark it as a
+  // failover trigger so the orchestrator hops to the next CLI in the
+  // escalation chain instead of giving up.
+  const isProviderOut = /credit|out of (?:credits|quota|tokens)|insufficient.*(?:fund|quota|credit)|payment required|402|quota exceeded|RESOURCE_EXHAUSTED|usage limit|monthly.*limit/i.test(msg);
+  const isAuthError = /401|403|invalid.?api.?key|authentication.*failed|unauthorized|not logged in|auth.*failed/i.test(msg);
+  // Flag/install/model errors stay "permanent" for THIS cli but should
+  // also failover to a sibling with a different interface.
   const isFlagError = /unexpected argument|unrecognized option|unknown (flag|option)|bad flag/i.test(msg);
   const isModelError = /model.*not supported|not.*supported.*model|invalid.*model|unknown model|model.*not available|not supported when using.*account|requires.*api.?key/i.test(msg);
+  const isPermanent = isProviderOut || isAuthError || isFlagError || isModelError ||
+    /not installed|not found|not recognized|billing/i.test(msg);
 
   return {
     message: msg,
     cli,
     transient: isTransient,
-    permanent: isPermanent || isModelError, // model errors are permanent for that CLI/model combo
+    permanent: isPermanent,
+    providerOut: isProviderOut,
+    authError: isAuthError,
     flagError: isFlagError,
     modelError: isModelError,
-    recoverable: !isPermanent && !isModelError,
-    retryable: isTransient && !isPermanent && !isModelError,
+    // recoverable: this kind of error can be solved by trying a sibling CLI.
+    // Credit/auth/flag/model errors are recoverable via failover even though
+    // they are "permanent" for the current CLI.
+    recoverable: !/not installed|not found|not recognized|billing/i.test(msg),
+    retryable: isTransient && !isPermanent,
+    failover: isProviderOut || isAuthError || isFlagError || isModelError,
+    failoverReason: isProviderOut ? 'out of credits / quota'
+                  : isAuthError ? 'authentication failed'
+                  : isModelError ? 'model not supported'
+                  : isFlagError ? 'flag mismatch' : null,
     timestamp: Date.now(),
   };
 }
@@ -564,6 +583,7 @@ class Orchestrator extends EventEmitter {
   spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, _retryAttempt = 0 }) {
     const cfg = HEADLESS_FLAGS[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(HEADLESS_FLAGS).join(', ')}`);
+    const originalPrompt = prompt;
 
     // Mind hint: prepend the metadata stamp + L0+L1 wake-up. Pass the
     // worker's own prompt to the hint so L1 becomes the BFS sub-graph
@@ -606,6 +626,7 @@ class Orchestrator extends EventEmitter {
       space: space || null,
       timeout: 0,  // Never timeout — AI runs as long as it needs
     });
+    task._originalPrompt = originalPrompt;
 
     // Build final args based on how this CLI expects the prompt
     const finalArgs = [...cfg.args];
@@ -789,9 +810,36 @@ class Orchestrator extends EventEmitter {
         task.result = stdout.trim();
         this.heartbeats.delete(task.id);
 
+        // Auto-failover: if this is a credit / quota / auth / model failure,
+        // attach a default escalation chain (cheapest -> most capable) on the
+        // fly so the user does not have to opt in to spawnWithEscalation.
+        // The actual failover event is broadcast by _tryEscalate after it
+        // successfully spawns the next CLI. That keeps the UI from saying
+        // "sent to Copilot" when Copilot is skipped and Gemini actually runs.
+        if (classified.failover) {
+          if (!task._escalationChain || !task._escalationChain.length) {
+            task._escalationChain = ESCALATION_ORDER
+              .filter(c => c !== cli && this.circuitBreaker.isAvailable(c));
+          }
+          task._escalationPrompt = task._escalationPrompt || originalPrompt;
+          task._escalationCwd = task._escalationCwd || cwd;
+        }
+
         // Try cross-model escalation before giving up
         if (task._escalationChain && task._escalationChain.length && classified.recoverable) {
           if (this._tryEscalate(task)) return; // escalated to next CLI
+        }
+
+        // All providers exhausted: notify the UI so it can toast the user.
+        if (classified.failover) {
+          this.broadcast({
+            type: 'orchestrator-event',
+            event: 'provider-exhausted',
+            taskId: task.id,
+            lastCli: cli,
+            reason: classified.failoverReason || 'provider error',
+            timestamp: Date.now(),
+          });
         }
 
         // Auto-record failure in learnings
@@ -1746,8 +1794,11 @@ class Orchestrator extends EventEmitter {
     this.broadcast({ type: 'orchestrator-event', event: 'task-escalate', taskId: task.id, from: task.cli, to: nextCli, timestamp: Date.now() });
 
     try {
+      const classified = task.errorClassification || {};
       const checkpoint = this.checkpoints.get(task.id);
-      const enhancedPrompt = checkpoint
+      const enhancedPrompt = classified.failover
+        ? task._escalationPrompt
+        : checkpoint
         ? `[Previous attempt by ${task.cli} produced partial results]:\n${checkpoint.partial.substring(0, 1000)}\n\n[Retry with ${nextCli}]:\n${task._escalationPrompt}`
         : task._escalationPrompt;
 
@@ -1756,6 +1807,18 @@ class Orchestrator extends EventEmitter {
       newTask._escalationChain = task._escalationChain;
       newTask._escalationPrompt = task._escalationPrompt;
       newTask._escalationCwd = task._escalationCwd;
+      this.broadcast({
+        type: 'orchestrator-event',
+        event: 'provider-failover',
+        taskId: task.id,
+        from: task.cli,
+        to: nextCli,
+        reason: classified.failoverReason || 'provider error',
+        errorSnippet: (classified.message || task.error || '').slice(0, 160),
+        chainRemaining: (newTask._escalationChain || []).length,
+        chain: (newTask._escalationChain || []).slice(),
+        timestamp: Date.now(),
+      });
       return true;
     } catch (_) {
       return this._tryEscalate(task); // try next in chain
