@@ -849,6 +849,179 @@
     .tab-panel#panel-apps { flex-direction: column; }
     .tab-panel#panel-apps.active { display: flex; }
     .apps-tab-root { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+
+    /* Multi-session strip: chips for each running / recent apps-agent session.
+       Click swaps the active session shown in the viewport + log below. */
+    .apps-sessions-strip {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      padding: 6px 14px; border-bottom: 1px solid var(--surface1);
+      background: var(--mantle, var(--surface0));
+    }
+    .apps-sessions-strip[hidden] { display: none; }
+    .apps-session-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 14px;
+      background: var(--surface0); border: 1px solid var(--surface2);
+      cursor: pointer; font: 500 11px var(--font-ui); color: var(--text);
+      max-width: 240px;
+    }
+    .apps-session-chip:hover { border-color: var(--accent, var(--blue)); }
+    .apps-session-chip.active {
+      background: color-mix(in srgb, var(--accent, var(--blue)) 18%, var(--surface0));
+      border-color: var(--accent, var(--blue));
+    }
+    .apps-session-chip .chip-app {
+      max-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .apps-session-chip .chip-status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green, #98c379);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--green, #98c379) 70%, transparent);
+      animation: appsPulse 1.4s ease-out infinite;
+    }
+    .apps-session-chip.done .chip-status-dot {
+      background: var(--subtext0); animation: none;
+    }
+    .apps-session-chip.error .chip-status-dot {
+      background: var(--red, #e06c75); animation: none;
+    }
+    .apps-session-chip .chip-close {
+      background: transparent; border: none; color: var(--subtext0);
+      cursor: pointer; padding: 0 2px; font-size: 13px; line-height: 1;
+    }
+    .apps-session-chip .chip-close:hover { color: var(--red, #e06c75); }
+
+    /* Hero / empty state for the apps viewport. Three cards introducing
+       the automation primitives. Hidden as soon as any session lands. */
+    .apps-viewport-hero {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 32px 28px; gap: 18px;
+      width: 100%; height: 100%; box-sizing: border-box;
+      color: var(--text); font-family: var(--font-ui);
+      background: radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent, var(--blue)) 8%, transparent), transparent 60%);
+    }
+    .apps-viewport-hero .hero-title {
+      font: 700 22px var(--font-ui); letter-spacing: 0.2px;
+    }
+    .apps-viewport-hero .hero-sub {
+      font: 500 13px var(--font-ui); color: var(--subtext0);
+      margin-bottom: 12px;
+    }
+    .apps-viewport-hero .hero-modes {
+      display: grid; grid-template-columns: repeat(3, minmax(220px, 320px));
+      gap: 14px; width: 100%; max-width: 1080px;
+    }
+    @media (max-width: 1100px) {
+      .apps-viewport-hero .hero-modes { grid-template-columns: 1fr; max-width: 460px; }
+    }
+    .apps-viewport-hero .hero-mode {
+      background: var(--surface0); border: 1px solid var(--surface2); border-radius: 10px;
+      padding: 16px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 8px;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+    }
+    .apps-viewport-hero .hero-mode:hover {
+      border-color: var(--accent, var(--blue));
+      transform: translateY(-2px);
+    }
+    .apps-viewport-hero .hero-mode-icon {
+      width: 32px; height: 32px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, var(--accent, var(--blue)) 18%, var(--surface0));
+      color: var(--accent, var(--blue));
+    }
+    .apps-viewport-hero .hero-mode-title {
+      font: 600 14px var(--font-ui);
+    }
+    .apps-viewport-hero .hero-mode-desc {
+      font: 400 12px var(--font-ui); color: var(--subtext1);
+      line-height: 1.45;
+    }
+    .apps-viewport-hero .hero-mode-desc code {
+      background: var(--surface1); padding: 1px 5px; border-radius: 3px;
+      font-size: 11px;
+    }
+    .apps-viewport-hero .hero-mode-cta {
+      margin-top: auto; font: 600 11px var(--font-ui);
+      color: var(--accent, var(--blue)); letter-spacing: 0.3px;
+    }
+    .apps-viewport-hero .hero-foot {
+      font: 500 11px var(--font-ui); color: var(--subtext0);
+      margin-top: 6px;
+    }
+    .apps-viewport-hero .hero-foot code {
+      background: var(--surface1); padding: 1px 5px; border-radius: 3px;
+      font-family: var(--font-mono); color: var(--text);
+    }
+
+    /* Multi-session viewport grid: tiles of live screenshots, one per
+       registered session. Auto-laid-out 1/2/3 columns based on count. */
+    .apps-viewport-grid {
+      display: grid; gap: 8px; padding: 8px;
+      width: 100%; height: 100%; box-sizing: border-box;
+      background: var(--mantle, var(--surface0));
+      overflow: auto;
+    }
+    /* The HTML `hidden` attribute applies display:none via the user-agent
+       stylesheet, but our display:grid rule above overrides it. Force the
+       hide explicitly so the grid container collapses when there's no
+       multi-session view active (otherwise it shows as an empty black
+       rectangle next to the hero). */
+    .apps-viewport-grid[hidden] { display: none; }
+    .apps-viewport-grid[data-count="1"] { grid-template-columns: 1fr; }
+    .apps-viewport-grid[data-count="2"] { grid-template-columns: 1fr 1fr; }
+    .apps-viewport-grid[data-count="3"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+    .apps-viewport-grid[data-count="3"] > .apps-viewport-tile:first-child { grid-column: 1 / 3; }
+    .apps-viewport-grid[data-count="4"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+    .apps-viewport-grid[data-count="5"], .apps-viewport-grid[data-count="6"] { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
+    .apps-viewport-tile {
+      position: relative;
+      background: var(--surface0); border: 1px solid var(--surface2); border-radius: 6px;
+      cursor: pointer; overflow: hidden;
+      display: flex; flex-direction: column; min-height: 0;
+    }
+    .apps-viewport-tile:hover { border-color: var(--accent, var(--blue)); }
+    .apps-viewport-tile.active {
+      border-color: var(--accent, var(--blue));
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, var(--blue)) 35%, transparent);
+    }
+    .apps-viewport-tile-head {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 8px; font: 600 11px var(--font-ui); color: var(--subtext1);
+      border-bottom: 1px solid var(--surface2); background: var(--mantle, var(--surface0));
+      flex: 0 0 auto;
+    }
+    .apps-viewport-tile-head .tile-status {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green, #98c379);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--green, #98c379) 70%, transparent);
+      animation: appsPulse 1.4s ease-out infinite;
+      flex: 0 0 auto;
+    }
+    .apps-viewport-tile.done .tile-status { background: var(--subtext0); animation: none; }
+    .apps-viewport-tile.error .tile-status { background: var(--red, #e06c75); animation: none; }
+    .apps-viewport-tile-head .tile-label {
+      flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .apps-viewport-tile-img-wrap {
+      flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+      background: #000; overflow: hidden;
+    }
+    .apps-viewport-tile-img-wrap img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .apps-viewport-tile-img-wrap .tile-empty {
+      color: var(--subtext0); font: 500 11px var(--font-ui);
+    }
+
+    /* Tab-button dot: lit when at least one apps-agent session is running. */
+    .tab-btn .tab-running-dot {
+      display: none;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green, #98c379);
+      margin-left: 6px; vertical-align: middle;
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--green, #98c379) 70%, transparent);
+      animation: appsPulse 1.4s ease-out infinite;
+    }
+    .tab-btn.has-running .tab-running-dot { display: inline-block; }
     .apps-banner {
       background: color-mix(in srgb, var(--red, #e06c75) 22%, var(--surface0));
       color: var(--red, #e06c75); border-bottom: 1px solid var(--red, #e06c75);
@@ -1819,24 +1992,63 @@
     /* Toolbar wraps so it survives narrow windows; status truncates with
        ellipsis instead of pushing other controls off-screen. */
     .mind-toolbar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 8px 12px; border-bottom: 1px solid var(--surface0);
-      background: var(--mantle); flex-shrink: 0; flex-wrap: wrap;
+      display: flex; align-items: stretch; gap: 0;
+      padding: 0 12px; border-bottom: 1px solid var(--surface0);
+      background: var(--mantle); flex-shrink: 0; flex-wrap: nowrap;
+      height: 38px;
     }
-    .mind-toolbar-title { font-size: 12px; font-weight: 600; color: var(--text); flex-shrink: 0; }
+    .mind-toolbar > * { align-self: center; }
+    .mind-toolbar-title { font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; padding-right: 10px; }
     .mind-toolbar-status {
       font-size: 11px; color: var(--subtext0);
       min-width: 0; max-width: 320px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      padding-right: 8px;
     }
-    .mind-toolbar-spacer { flex: 1 1 auto; min-width: 0; }
+    .mind-toolbar-spacer { flex: 1 1 auto; min-width: 0; align-self: stretch; }
+    /* Right cluster: search wrap + Search-only + Build + Watch all
+       share full toolbar height, no rounded corners, vertical dividers
+       so the row reads as one segmented bar - same feel as the top
+       primary tabs (Terminal / Mind / Orchestrator). */
     .mind-search-wrap {
-      display: flex; align-items: center; gap: 4px;
-      background: var(--surface0); border: 1px solid var(--surface1);
-      border-radius: 4px; padding: 1px 6px;
-      flex: 0 1 220px; min-width: 120px;
+      display: flex; align-items: center; gap: 6px;
+      background: transparent; border: none; border-left: 1px solid var(--surface0);
+      border-radius: 0; padding: 0 12px;
+      flex: 0 1 280px; min-width: 180px;
+      align-self: stretch;
     }
-    .mind-search-wrap input { flex: 1 1 0; min-width: 0; }
+    .mind-search-wrap input { flex: 1 1 0; min-width: 0; font-size: 12px !important; }
+    .mind-toolbar .tab-bar-btn,
+    .mind-toolbar > button {
+      align-self: stretch !important;
+      height: 100% !important;
+      border-radius: 0 !important;
+      border: none !important;
+      border-left: 1px solid var(--surface0) !important;
+      padding: 0 16px !important;
+      font-size: 12px !important;
+      font-weight: 500;
+      color: var(--subtext1);
+      background: transparent !important;
+    }
+    .mind-toolbar .tab-bar-btn:hover,
+    .mind-toolbar > button:hover { background: var(--surface0) !important; color: var(--text); }
+    /* The Go / × micro-buttons inside the search wrap stay compact. */
+    .mind-search-wrap > button {
+      align-self: center !important;
+      height: auto !important;
+      border-left: none !important;
+      border: 1px solid var(--surface1) !important;
+      border-radius: 4px !important;
+      padding: 4px 10px !important;
+      font-size: 11px !important;
+      background: var(--surface0) !important;
+    }
+    .mind-search-wrap > button:hover { background: var(--surface1) !important; }
+    .mind-search-wrap #mindSearchClear {
+      border: none !important; background: transparent !important; padding: 0 4px !important;
+      font-size: 16px !important;
+    }
     /* Square sub-tab strip on its own row, styled like .intel-tab.
        No pill container, no individual button borders - just text with
        an underline on the active tab. */
@@ -4845,7 +5057,7 @@
           <button class="tab-btn" data-tab="orchestrator" id="orchestratorTabBtn" onclick="switchTab('orchestrator')">Orchestrator</button>
           <button class="tab-btn" data-tab="automation" id="automationTabBtn" onclick="switchTab('automation')">Automation</button>
           <button class="tab-btn" data-tab="browser" id="browserTabBtn" onclick="switchTab('browser')" style="display:none;">Browser</button>
-          <button class="tab-btn" data-tab="apps" id="appsTabBtn" onclick="switchTab('apps')" style="display:none;">Apps</button>
+          <button class="tab-btn" data-tab="apps" id="appsTabBtn" onclick="switchTab('apps')" style="display:none;">Apps<span class="tab-running-dot" title="An apps-agent session is running"></span></button>
           <button class="tab-btn" data-tab="backlog" data-plugin-id="azure-devops" id="backlogTabBtn" onclick="switchTab('backlog')" style="display:none;">Backlog</button>
           <button class="tab-btn" data-tab="workitem" id="workitemTabBtn" onclick="switchTab('workitem')" style="display:none;">Work Item</button>
           <button class="tab-btn closable" data-tab="recipe-editor" id="recipeEditorTabBtn" onclick="switchTab('recipe-editor')" style="display:none;"><span>Recipe Editor</span><span class="tab-close" onclick="event.stopPropagation();closeRecipeEditor();" title="Close">&times;</span></button>
@@ -5291,18 +5503,17 @@
           </span>
           <span class="mind-toolbar-spacer"></span>
           <div class="mind-search-wrap">
-            <span style="font-size:10px;color:var(--subtext0);">Search</span>
-            <input id="mindSearchInput" type="text" placeholder="search the mind" autocomplete="off" spellcheck="false"
+            <input id="mindSearchInput" type="text" placeholder="Search..." autocomplete="off" spellcheck="false"
               style="background:transparent;border:none;outline:none;color:var(--text);font-size:11px;padding:3px 0;" />
             <span id="mindSearchCount" style="font-size:10px;color:var(--subtext0);font-variant-numeric:tabular-nums;min-width:32px;text-align:right;"></span>
+            <button id="mindSearchGo" type="button" title="Search (Enter)" onclick="MindUI.runSearch()"
+              style="background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--subtext0);cursor:pointer;font-size:11px;line-height:1;padding:3px 8px;flex-shrink:0;">Go</button>
             <button id="mindSearchClear" type="button" title="Clear (Esc)" onclick="MindUI.clearSearch()"
               style="background:transparent;border:none;color:var(--subtext0);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;display:none;">×</button>
           </div>
-          <button id="mindSearchOnlyBtn" type="button" onclick="MindUI.toggleSearchOnly()"
-            title="When on, hide non-matching nodes instead of dimming them"
-            style="background:var(--surface0);border:1px solid var(--surface1);border-radius:4px;color:var(--subtext0);cursor:pointer;font-size:11px;padding:3px 8px;flex-shrink:0;">Search only: off</button>
           <button class="tab-bar-btn" onclick="MindUI.build()" title="Build or rebuild the brain from all sources">Build</button>
           <button class="tab-bar-btn" id="mindWatchBtn" onclick="MindUI.toggleWatch()" title="Watch the active repo and auto-update">Watch: off</button>
+          <button class="tab-bar-btn" id="mindGpuBtn" onclick="MindUI.showGpuInfo()" title="Show GPU / WebGL info — verify hardware acceleration is on" aria-label="GPU info" style="display:inline-flex;align-items:center;justify-content:center;padding:0 8px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" opacity="0.85"/><polyline points="12 6 12 12 16 14"/></svg></button>
         </div>
         <div class="mind-tabs" role="tablist">
           <button class="mind-tab mind-view-btn active" data-view="dashboard" onclick="MindUI.setView('dashboard')">Dashboard</button>
@@ -5340,6 +5551,13 @@
           <button class="sy-btn sy-btn-ghost" type="button" onclick="appsReset()" title="Clear session, plan, and activity">Reset</button>
         </div>
 
+        <!-- Session strip: shows all running/recent apps-agent sessions so the
+             user can monitor parallel runs (stealth makes this useful). Click
+             a chip to make that session the active one displayed in the
+             viewport + log below. Hidden by default until at least one
+             session exists. -->
+        <div class="apps-sessions-strip" id="appsSessionsStrip" hidden></div>
+
         <div class="apps-launcher" id="appsLauncher" hidden>
           <div class="apps-launcher-head">
             <input type="search" class="apps-launcher-search" id="appsLauncherSearch" placeholder="Search apps..." oninput="appsRenderLauncher()">
@@ -5362,10 +5580,61 @@
         <div class="apps-main">
           <div class="apps-viewport-wrap">
             <div class="apps-viewport" id="appsViewport">
-              <div class="apps-viewport-empty" id="appsViewportEmpty">
-                Pick a window to start.
+              <!-- Hero / empty state: surfaces the three automation primitives
+                   so the user knows what this tab can do. Hidden as soon as
+                   any session is registered or a screenshot lands. -->
+              <div class="apps-viewport-hero" id="appsViewportEmpty">
+                <div class="hero-title">App Automation</div>
+                <div class="hero-sub">Drive desktop apps without taking over your screen.</div>
+                <div class="hero-modes">
+                  <div class="hero-mode" onclick="appsOpenLauncher()">
+                    <div class="hero-mode-icon">
+                      <i data-lucide="eye-off" style="width:20px;height:20px;"></i>
+                    </div>
+                    <div class="hero-mode-title">Stealth UI</div>
+                    <div class="hero-mode-desc">
+                      Launch any app off-screen and let an agent drive it via
+                      UIA. Your visible desktop stays untouched. Multiple
+                      sessions can run in parallel.
+                    </div>
+                    <div class="hero-mode-cta">Pick an app to launch &rarr;</div>
+                  </div>
+                  <div class="hero-mode" onclick="_appsHeroOpenComModal()">
+                    <div class="hero-mode-icon">
+                      <i data-lucide="file-text" style="width:20px;height:20px;"></i>
+                    </div>
+                    <div class="hero-mode-title">Headless Office</div>
+                    <div class="hero-mode-desc">
+                      Generate Word .docx and Excel .xlsx files directly via
+                      COM. No window paints. Best for documents, reports,
+                      spreadsheets, formulas.
+                    </div>
+                    <div class="hero-mode-cta">Open the COM helper &rarr;</div>
+                  </div>
+                  <div class="hero-mode" onclick="switchTab('orchestrator')">
+                    <div class="hero-mode-icon">
+                      <i data-lucide="calendar-clock" style="width:20px;height:20px;"></i>
+                    </div>
+                    <div class="hero-mode-title">Schedule</div>
+                    <div class="hero-mode-desc">
+                      Wrap any of the above in a recurring job. <code>daily 08:00</code>,
+                      <code>weekly 1 09:00</code>, <code>every 30m</code>.
+                      Runs while you're away or asleep.
+                    </div>
+                    <div class="hero-mode-cta">View jobs in Orchestrator &rarr;</div>
+                  </div>
+                </div>
+                <div class="hero-foot">
+                  Curl reference: <code>GET /api/instructions/apps-automation</code>
+                </div>
               </div>
+              <!-- Single-session view: one big screenshot. Used when only one
+                   session is registered. Hidden when grid is active. -->
               <img id="appsViewportImg" alt="target window" style="display:none;">
+              <!-- Multi-session grid: one tile per registered session, each
+                   showing that session's most recent screenshot. Click a
+                   tile to promote it to the active (single) view. -->
+              <div id="appsViewportGrid" class="apps-viewport-grid" hidden></div>
             </div>
           </div>
           <div class="apps-bottom">
@@ -5795,7 +6064,7 @@
           <div id="appsAutomationsVisual" ondragover="event.preventDefault();" ondrop="_appsPaletteAreaDrop(event)" style="flex:1; min-height:160px; max-height:360px; overflow-y:auto; border:1px solid var(--surface2); border-radius:6px; padding:6px; background:var(--bg); display:flex; flex-direction:column; gap:4px;"></div>
           <textarea id="appsAutomationsSteps" spellcheck="false" placeholder="CLICK {{regression}}&#10;CLICK File menu&#10;TYPE filename -> my-design&#10;PRESS Enter" style="display:none;flex:1;min-height:160px;background:var(--bg);color:var(--text);border:1px solid var(--surface2);border-radius:6px;padding:10px 12px;font:12px/1.5 var(--font-mono);resize:vertical;outline:none;"></textarea>
           <div style="font:11px var(--font-ui); color:var(--subtext0);">
-            Verbs: CLICK, TYPE, PRESS, WAIT, FIND, VERIFY, IF/ELSE/ENDIF, REPEAT/ENDREPEAT. Arrow <code>-&gt;</code> separates a target from typed text (e.g. <code>TYPE input -&gt; hello</code>). Coordinates <code>x,y</code> skip the vision locator.
+            Verbs: CLICK, DOUBLE_CLICK, RIGHT_CLICK, MIDDLE_CLICK, DRAG, SCROLL, TYPE, PRESS, WAIT, WAIT_UNTIL, FIND, VERIFY, EXTRACT, IF/ELSE/ENDIF, REPEAT/ENDREPEAT. Arrow <code>-&gt;</code> separates a target from typed text (e.g. <code>TYPE input -&gt; hello</code>). Coordinates <code>x,y</code> skip the vision locator. EXTRACT reads a UIA value into a variable: <code>EXTRACT uia:type=DataItem -&gt; song_name</code>.
           </div>
           <details style="border:1px solid var(--surface2); border-radius:6px; padding:4px 10px; background:var(--surface0);">
             <summary style="cursor:pointer; font:600 10px var(--font-ui); color:var(--subtext0); text-transform:uppercase; letter-spacing:0.6px; padding:4px 0;">
@@ -7051,6 +7320,20 @@ requestAnimationFrame(fitTerminalNow);
           try { applyPluginSpaceFilter(); } catch (_) {}
           notifyPluginIframes('configChanged', {});
           break;
+        case 'mind-startup-refresh': {
+          // Auto-refresh fired on server boot. We surface only the terminal
+          // 'done' state as a bottom-right toast so the user gets one
+          // notification per startup, not three.
+          const p = msg.payload || {};
+          if (p.phase === 'done' && typeof toast === 'function') {
+            const sec = p.durationMs ? Math.max(1, Math.round(p.durationMs / 1000)) : 0;
+            const stat = p.stats ? ` ${p.stats.nodes} nodes` : '';
+            toast(`Mind refreshed.${stat}${sec ? ' (' + sec + 's)' : ''}`, 'success', { duration: 3500, silent: true });
+          } else if (p.phase === 'error' && typeof toast === 'function') {
+            toast('Mind refresh failed: ' + (p.error || 'unknown'), 'error', { duration: 4500 });
+          }
+          break;
+        }
         case 'ui-action':
           handleUiAction(msg);
           break;
@@ -11763,6 +12046,23 @@ function handleOrchestratorEvent(msg) {
       }
     }
 
+    // Generic completion toast + success chime for ANY orchestrator task
+    // (so the user gets feedback even when a worker finishes off-screen).
+    // Skipped if the task surfaces through the richer palette/quick-ask
+    // notification path below (which already plays the success sound via
+    // notify()) so we don't double-notify.
+    if (task && task.state === 'completed' && !_paletteNotifyTasks.has(task.id)
+        && task.from !== 'palette' && task.from !== 'quick-ask') {
+      if (typeof toast === 'function') {
+        const cli = task.cli || 'AI';
+        const cliLabel = (CLI_CONFIG[cli] && CLI_CONFIG[cli].label) || cli;
+        const promptSnippet = String(task.prompt || '')
+          .replace(/\[ORCHESTRATOR TASK [^\]]*\]/g, '').trim()
+          .split(/[.\n]/)[0].slice(0, 80);
+        toast(`${cliLabel} task done${promptSnippet ? ': ' + promptSnippet : ''}`, 'success', { duration: 5000 });
+      }
+    }
+
     // Palette / quick-ask tasks: push the final answer to the notification
     // center when they complete. Matches by taskId captured at spawn time,
     // or falls back to the task's `from` tag for cases where the spawn
@@ -12176,7 +12476,7 @@ let _shellReadyResolve = null;
 const YOLO_FLAGS = {
   claude:  '--dangerously-skip-permissions',
   gemini:  '--yolo',
-  codex:   '--full-auto',
+  codex:   '--dangerously-bypass-approvals-and-sandbox',
   copilot: '--yolo',
   grok:    '--permission-mode full',
   qwen:    '--yolo',
@@ -12443,6 +12743,15 @@ function switchTab(tab, preserveSearch) {
       }
     }
   });
+  // Notify Mind when it's leaving so it can freeze physics. Without this the
+  // vis-network animation keeps drawing onto its (now-hidden) canvas and the
+  // app stays laggy after you've moved on to Terminal/Orchestrator/etc.
+  try {
+    if (tab !== 'mind' && window.__lastTab === 'mind' && window.MindUI && window.MindUI.onDeactivate) {
+      window.MindUI.onDeactivate();
+    }
+  } catch (_) {}
+  window.__lastTab = tab;
   document.querySelectorAll('.tab-panel').forEach(el => el.classList.toggle('active', el.id === `panel-${panelTab}`));
   // Scroll active tab into view if overflowed
   var activeBtn = document.querySelector('.tab-btn[data-tab="' + tab + '"]');
@@ -16114,8 +16423,19 @@ async function appsAutomationsExportAll() {
 }
 
 // ───── Visual step builder ──────────────────────────────────────────────
-const _APPS_VERBS = ['CLICK', 'TYPE', 'PRESS', 'WAIT', 'WAIT_UNTIL', 'FIND', 'VERIFY', 'SCROLL', 'DRAG', 'IF', 'ELSE', 'ENDIF', 'REPEAT', 'ENDREPEAT'];
-const _APPS_VERBS_WITH_TEXT = new Set(['TYPE', 'WAIT_UNTIL', 'DRAG']);
+// Authoritative verb list — keep in sync with ALLOWED_VERBS in
+// dashboard/apps-recipes.js. Mouse verbs grouped first, then keyboard,
+// timing, locator, control flow.
+const _APPS_VERBS = [
+  'CLICK', 'DOUBLE_CLICK', 'RIGHT_CLICK', 'MIDDLE_CLICK', 'DRAG', 'SCROLL',
+  'TYPE', 'PRESS',
+  'WAIT', 'WAIT_UNTIL',
+  'FIND', 'VERIFY', 'EXTRACT',
+  'IF', 'ELSE', 'ENDIF', 'REPEAT', 'ENDREPEAT',
+];
+// Verbs that take text in addition to a target (TYPE field). EXTRACT uses
+// the text field for the variable name to bind, DRAG for the destination.
+const _APPS_VERBS_WITH_TEXT = new Set(['TYPE', 'WAIT_UNTIL', 'DRAG', 'EXTRACT']);
 const _APPS_VERBS_BARE = new Set(['ELSE', 'ENDIF', 'ENDREPEAT']);
 let _appsBuilderView = 'visual';
 let _appsBuilderSteps = [];
@@ -16207,6 +16527,83 @@ function _appsBuilderVerbChanged(i, newVerb) {
   _appsSyncBuilderToText();
 }
 
+// Custom verb-picker popup. Replaces the native <select> because Chromium's
+// popup ignores --bg/--text on Windows and renders unreadable on dark UIs.
+let _appsVerbPickEl = null;
+function _appsVerbPickClose() {
+  if (_appsVerbPickEl && _appsVerbPickEl.parentNode) _appsVerbPickEl.parentNode.removeChild(_appsVerbPickEl);
+  _appsVerbPickEl = null;
+  document.removeEventListener('mousedown', _appsVerbPickOutside, true);
+}
+function _appsVerbPickOutside(e) {
+  if (!_appsVerbPickEl) return;
+  if (_appsVerbPickEl.contains(e.target)) return;
+  if (e.target && e.target.classList && e.target.classList.contains('apps-verb-pick')) return;
+  _appsVerbPickClose();
+}
+function _appsVerbPickToggle(event, i) {
+  event.stopPropagation();
+  if (_appsVerbPickEl) { _appsVerbPickClose(); return; }
+  const btn = event.currentTarget;
+  const rect = btn.getBoundingClientRect();
+  const current = btn.getAttribute('data-verb') || '';
+  const groups = [
+    ['Mouse',     ['CLICK', 'DOUBLE_CLICK', 'RIGHT_CLICK', 'MIDDLE_CLICK', 'DRAG', 'SCROLL']],
+    ['Keyboard',  ['TYPE', 'PRESS']],
+    ['Timing',    ['WAIT', 'WAIT_UNTIL']],
+    ['Locate',    ['FIND', 'VERIFY', 'EXTRACT']],
+    ['Control',   ['IF', 'ELSE', 'ENDIF', 'REPEAT', 'ENDREPEAT']],
+  ];
+  const pop = document.createElement('div');
+  pop.style.cssText = [
+    'position:fixed',
+    `top:${rect.bottom + 4}px`,
+    `left:${rect.left}px`,
+    'min-width:170px',
+    'max-height:340px',
+    'overflow:auto',
+    'background:var(--surface0)',
+    'color:var(--text)',
+    'border:1px solid var(--surface2)',
+    'border-radius:6px',
+    'box-shadow:0 6px 24px rgba(0,0,0,0.45)',
+    'padding:4px',
+    'z-index:9999',
+    'font:11px var(--font-ui)',
+  ].join(';');
+  for (const [label, verbs] of groups) {
+    const head = document.createElement('div');
+    head.textContent = label;
+    head.style.cssText = 'padding:5px 9px 3px 9px;color:var(--overlay1);font-size:9.5px;text-transform:uppercase;letter-spacing:0.06em;';
+    pop.appendChild(head);
+    for (const v of verbs) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.textContent = v;
+      const isActive = v === current;
+      item.style.cssText = [
+        'display:block',
+        'width:100%',
+        'text-align:left',
+        'background:' + (isActive ? 'var(--blue)' : 'transparent'),
+        'color:' + (isActive ? 'var(--bg)' : 'var(--text)'),
+        'border:none',
+        'border-radius:4px',
+        'padding:5px 10px',
+        'font:11px var(--font-mono)',
+        'cursor:pointer',
+      ].join(';');
+      item.onmouseenter = () => { if (!isActive) item.style.background = 'var(--surface1)'; };
+      item.onmouseleave = () => { if (!isActive) item.style.background = 'transparent'; };
+      item.onclick = (e) => { e.stopPropagation(); _appsVerbPickClose(); _appsBuilderVerbChanged(i, v); };
+      pop.appendChild(item);
+    }
+  }
+  document.body.appendChild(pop);
+  _appsVerbPickEl = pop;
+  setTimeout(() => document.addEventListener('mousedown', _appsVerbPickOutside, true), 0);
+}
+
 function _appsSyncBuilderToText() {
   const stepsEl = document.getElementById('appsAutomationsSteps');
   if (stepsEl) stepsEl.value = _appsStepsToText(_appsBuilderSteps);
@@ -16224,11 +16621,10 @@ function _appsRenderBuilderRows() {
     const showTarget = !_APPS_VERBS_BARE.has(verb);
     const showText = _APPS_VERBS_WITH_TEXT.has(verb);
     const indent = (verb === 'ELSE' || verb === 'ENDIF' || verb === 'ENDREPEAT') ? '' : '';
-    const options = _APPS_VERBS.map(v => `<option value="${v}"${v === verb ? ' selected' : ''}>${v}</option>`).join('');
     return `<div class="apps-builder-row" draggable="true" data-idx="${i}" ondragstart="_appsBuilderDragStart(event,${i})" ondragover="_appsBuilderDragOver(event,${i})" ondragleave="_appsBuilderDragLeave(event)" ondrop="_appsBuilderDrop(event,${i})" ondragend="_appsBuilderDragEnd(event)" style="display:flex;align-items:center;gap:6px;padding:5px 6px;background:var(--surface0);border:1px solid var(--surface1);border-radius:5px;">
       <span style="cursor:grab;color:var(--overlay1);padding:0 3px;" title="Drag to reorder">::</span>
       <span style="color:var(--overlay1);font:10px var(--font-mono);min-width:22px;text-align:right;">${i + 1}</span>
-      <select onchange="_appsBuilderVerbChanged(${i}, this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--surface2);border-radius:4px;padding:3px 6px;font:11px var(--font-ui);min-width:96px;">${options}</select>
+      <button type="button" class="apps-verb-pick" data-idx="${i}" data-verb="${verb}" onclick="_appsVerbPickToggle(event,${i})" style="background:var(--bg);color:var(--text);border:1px solid var(--surface2);border-radius:4px;padding:4px 22px 4px 8px;font:11px var(--font-ui);min-width:118px;text-align:left;cursor:pointer;position:relative;">${verb}<span style="position:absolute;right:7px;top:50%;transform:translateY(-50%);color:var(--overlay1);font-size:9px;">&#9660;</span></button>
       ${showTarget ? _appsBuilderTargetControl(i, s, verb) : '<span style="flex:1;color:var(--overlay1);font:11px var(--font-ui);font-style:italic;">(block marker)</span>'}
       ${showText ? `<span style="color:var(--overlay1);">→</span><input type="text" placeholder="text to type" value="${_appsEscape(s.text || '')}" oninput="_appsBuilderUpdate(${i},'text',this.value)" style="flex:1;min-width:100px;background:var(--bg);color:var(--text);border:1px solid var(--surface2);border-radius:4px;padding:4px 8px;font:12px var(--font-mono);outline:none;">` : ''}
       <button type="button" onclick="appsAutomationsTestStep(${i})" title="Test just this step against the target window" style="background:transparent;border:1px solid var(--surface2);color:var(--subtext1);cursor:pointer;padding:2px 7px;font:10px var(--font-ui);border-radius:3px;">Test</button>
@@ -16501,14 +16897,15 @@ function _appsTextToVars(text) {
 
 function _appsTextToSteps(text) {
   const out = [];
-  const verbs = new Set(['CLICK', 'RIGHT_CLICK', 'TYPE', 'PRESS', 'WAIT', 'WAIT_UNTIL', 'FIND', 'VERIFY', 'SCROLL', 'DRAG', 'IF', 'ELSE', 'ENDIF', 'REPEAT', 'ENDREPEAT']);
+  // Mirror of _APPS_VERBS — kept as a Set so the parser is fast.
+  const verbs = new Set(_APPS_VERBS);
   for (const raw of String(text || '').split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const m = line.match(/^(\w+)\s*(.*)$/);
     if (!m) continue;
     const verb = m[1].toUpperCase();
-    if (!verbs.has(verb)) throw new Error('Unknown verb "' + m[1] + '". Use CLICK, TYPE, PRESS, WAIT, FIND, or VERIFY.');
+    if (!verbs.has(verb)) throw new Error('Unknown verb "' + m[1] + '". Allowed: ' + _APPS_VERBS.join(', ') + '.');
     let rest = m[2] || '';
     let notes;
     const noteIdx = rest.indexOf('//');
@@ -17380,8 +17777,327 @@ function _appsShowClickDot(at, rect) {
 
 var _appsLastRect = null;
 
+// Headless Office (COM) modal — tiny dialog launched from the hero card on
+// the empty viewport. Lets the user generate a Word or Excel file via
+// /api/apps/com/* without writing curl. Output path defaults to the user's
+// Documents folder.
+function _appsHeroOpenComModal() {
+  let overlay = document.getElementById('appsComModal');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'appsComModal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3300;display:flex;align-items:center;justify-content:center;font-family:var(--font-ui);';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const docs = 'C:\\Users\\' + (navigator.userAgent.includes('Win') ? '<you>' : '<you>') + '\\Documents';
+  overlay.innerHTML =
+    '<div style="background:var(--surface0);border:1px solid var(--surface2);border-radius:10px;width:600px;max-width:94vw;box-shadow:0 12px 40px rgba(0,0,0,0.5);padding:18px 22px;">'
+    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">'
+      + '<i data-lucide="file-text" style="width:17px;height:17px;color:var(--accent);"></i>'
+      + '<strong style="font-size:14px;">Headless Office (COM)</strong>'
+      + '<div style="flex:1;"></div>'
+      + '<button onclick="document.getElementById(\'appsComModal\').remove()" style="background:transparent;border:none;color:var(--subtext0);cursor:pointer;font-size:16px;line-height:1;">&times;</button>'
+    + '</div>'
+    + '<div style="font-size:12px;color:var(--subtext1);margin-bottom:14px;">Generates the file directly via Word.Application / Excel.Application COM. No window paints. The file is written to disk.</div>'
+    + '<div style="display:flex;gap:6px;margin-bottom:12px;">'
+      + '<button class="sy-btn sy-btn-outline" type="button" id="appsComMode-word" onclick="_appsComSetMode(\'word\')">Word .docx</button>'
+      + '<button class="sy-btn sy-btn-outline" type="button" id="appsComMode-excel" onclick="_appsComSetMode(\'excel\')">Excel .xlsx</button>'
+    + '</div>'
+    + '<label style="display:block;font-size:11px;color:var(--subtext0);margin-bottom:4px;">File path</label>'
+    + '<input type="text" id="appsComPath" placeholder="C:\\Users\\you\\Documents\\report.docx" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--surface2);background:var(--surface1);color:var(--text);font:12px var(--font-mono);margin-bottom:12px;">'
+    + '<label style="display:block;font-size:11px;color:var(--subtext0);margin-bottom:4px;" id="appsComBodyLabel">Document content</label>'
+    + '<textarea id="appsComBody" placeholder="Title\n\nFirst paragraph..." style="width:100%;height:160px;padding:10px;border-radius:6px;border:1px solid var(--surface2);background:var(--surface1);color:var(--text);font:12px var(--font-mono);margin-bottom:8px;resize:vertical;"></textarea>'
+    + '<div style="font-size:11px;color:var(--subtext0);margin-bottom:14px;display:none;" id="appsComExcelHint">'
+      + 'For Excel: paste a 2D JSON array (rows of cells). Use <code style="background:var(--surface2);padding:1px 4px;border-radius:3px;">"=SUM(B2:B3)"</code> for formulas. Numbers as numbers.'
+    + '</div>'
+    + '<div style="display:flex;justify-content:flex-end;gap:8px;">'
+      + '<button class="sy-btn sy-btn-ghost" type="button" onclick="document.getElementById(\'appsComModal\').remove()">Cancel</button>'
+      + '<button class="sy-btn sy-btn-primary" type="button" onclick="_appsComSubmit()" id="appsComSubmitBtn">Generate</button>'
+    + '</div>'
+  + '</div>';
+  document.body.appendChild(overlay);
+  if (typeof lucide !== 'undefined') lucide.createIcons({ el: overlay });
+  _appsComSetMode('word');
+}
+let _appsComMode = 'word';
+function _appsComSetMode(mode) {
+  _appsComMode = mode;
+  const wordBtn = document.getElementById('appsComMode-word');
+  const xlBtn   = document.getElementById('appsComMode-excel');
+  if (wordBtn && xlBtn) {
+    wordBtn.classList.toggle('sy-btn-primary', mode === 'word');
+    wordBtn.classList.toggle('sy-btn-outline', mode !== 'word');
+    xlBtn.classList.toggle('sy-btn-primary', mode === 'excel');
+    xlBtn.classList.toggle('sy-btn-outline', mode !== 'excel');
+  }
+  const label = document.getElementById('appsComBodyLabel');
+  const body  = document.getElementById('appsComBody');
+  const hint  = document.getElementById('appsComExcelHint');
+  const path  = document.getElementById('appsComPath');
+  if (mode === 'word') {
+    if (label) label.textContent = 'Document content (paragraphs separated by newlines)';
+    if (hint)  hint.style.display = 'none';
+    if (body && !body.value) body.placeholder = 'Title\n\nFirst paragraph.\nSecond paragraph.';
+    if (path && !path.value) path.value = '';
+  } else {
+    if (label) label.textContent = 'Excel data (2D JSON array)';
+    if (hint)  hint.style.display = '';
+    if (body && !body.value) body.placeholder = '[\n  ["Customer", "Deal Value"],\n  ["ACME", 12500],\n  ["Globex", 8400],\n  ["TOTAL", "=SUM(B2:B3)"]\n]';
+    if (path && !path.value) path.value = '';
+  }
+}
+async function _appsComSubmit() {
+  const path = (document.getElementById('appsComPath') || {}).value || '';
+  const body = (document.getElementById('appsComBody') || {}).value || '';
+  if (!path) { if (typeof toast === 'function') toast('File path required.', 'warning'); return; }
+  const btn = document.getElementById('appsComSubmitBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+  try {
+    let route, payload;
+    if (_appsComMode === 'word') {
+      route = '/api/apps/com/word/write';
+      payload = { filePath: path, content: body };
+    } else {
+      let values;
+      try { values = JSON.parse(body); } catch (e) { throw new Error('Excel body must be valid JSON 2D array: ' + e.message); }
+      if (!Array.isArray(values) || !values.length || !Array.isArray(values[0])) throw new Error('Excel body must be an array of arrays');
+      route = '/api/apps/com/excel/write';
+      payload = { filePath: path, values };
+    }
+    const r = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error || 'COM call failed');
+    if (typeof notify === 'function') notify('Apps COM ' + _appsComMode + ' done', 'Wrote ' + path, { source: 'apps-com', icon: 'file-text' });
+    if (typeof toast === 'function') toast('Saved ' + path, 'success', { duration: 4000 });
+    document.getElementById('appsComModal').remove();
+  } catch (e) {
+    if (typeof toast === 'function') toast('COM: ' + e.message, 'error', { duration: 5000 });
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
+  }
+}
+
+// Multi-session tracker: stealth automation makes parallel runs viable, so
+// the Apps tab can no longer assume a single session. Each session id seen
+// on a WS frame gets its own bookkeeping entry; the user clicks chips in
+// the strip to switch which session is "active" (the one whose viewport +
+// log is shown below). The existing single-session UI plumbing is left
+// intact — it just renders whichever session is currently active.
+var _appsSessions = new Map(); // sessionId -> { id, app, title, hwnd, status, lastActionAt, lastSummary }
+var _appsActiveSessionId = null;
+
+function _appsRegisterSession(msg) {
+  if (!msg || !msg.sessionId) return null;
+  const id = msg.sessionId;
+  let s = _appsSessions.get(id);
+  if (!s) {
+    s = {
+      id,
+      app: msg.app || _appsState.app || null,
+      title: msg.title || _appsState.title || null,
+      hwnd: msg.hwnd || _appsState.hwnd || null,
+      status: 'running',
+      startedAt: Date.now(),
+      lastActionAt: Date.now(),
+      lastSummary: null,
+    };
+    _appsSessions.set(id, s);
+    if (!_appsActiveSessionId) _appsActiveSessionId = id;
+    _appsRenderSessionStrip();
+    _appsUpdateTabRunningDot();
+  }
+  // Some events carry a fresher app/title (esp. early in the session).
+  if (msg.app && !s.app) s.app = msg.app;
+  if (msg.title && !s.title) s.title = msg.title;
+  s.lastActionAt = Date.now();
+  return s;
+}
+
+function _appsMarkSessionStatus(sessionId, status, summary) {
+  const s = _appsSessions.get(sessionId);
+  if (!s) return;
+  s.status = status;
+  if (summary) s.lastSummary = summary;
+  s.endedAt = Date.now();
+  _appsRenderSessionStrip();
+  _appsUpdateTabRunningDot();
+}
+
+function _appsSwitchActiveSession(sessionId) {
+  if (!_appsSessions.has(sessionId)) return;
+  _appsActiveSessionId = sessionId;
+  const s = _appsSessions.get(sessionId);
+  // Repoint the singleton _appsState to this session so the existing log /
+  // viewport / running chrome track the newly-active session. We do NOT
+  // replay history; the user gets a fresh view from this point forward.
+  _appsState.sessionId = sessionId;
+  _appsState.hwnd = s.hwnd || null;
+  _appsState.title = s.title || null;
+  _appsState.app = s.app || null;
+  _appsState.running = (s.status === 'running');
+  // If we drop to a single-session view, switch the viewport back to the
+  // big single image and seed it with this session's last screenshot.
+  if (_appsSessions.size <= 1) {
+    const grid = document.getElementById('appsViewportGrid');
+    const singleImg = document.getElementById('appsViewportImg');
+    const empty = document.getElementById('appsViewportEmpty');
+    if (grid) { grid.hidden = true; grid.innerHTML = ''; }
+    if (singleImg && s.lastScreenshot) { singleImg.src = s.lastScreenshot; singleImg.style.display = ''; if (empty) empty.style.display = 'none'; }
+  }
+  _appsRenderSessionStrip();
+  if (typeof _appsUpdateRunningChrome === 'function') _appsUpdateRunningChrome(_appsState.running);
+  // Clear the log since it was full of the previous session's events.
+  const list = document.getElementById('appsLogList');
+  if (list) list.innerHTML = '';
+  _appsAppendLog({ kind: 'info', text: 'Switched to session ' + sessionId + ' (' + (s.app || s.title || '?') + ')', klass: 'memory' });
+}
+
+function _appsCloseSession(sessionId) {
+  _appsSessions.delete(sessionId);
+  if (_appsActiveSessionId === sessionId) {
+    // Pick another session if any exist, else clear.
+    const next = _appsSessions.keys().next();
+    _appsActiveSessionId = next.done ? null : next.value;
+    if (_appsActiveSessionId) _appsSwitchActiveSession(_appsActiveSessionId);
+    else {
+      _appsState.sessionId = null;
+      const list = document.getElementById('appsLogList');
+      if (list) list.innerHTML = '';
+    }
+  }
+  _appsRenderSessionStrip();
+  _appsUpdateTabRunningDot();
+}
+
+function _appsRenderSessionStrip() {
+  const strip = document.getElementById('appsSessionsStrip');
+  if (!strip) return;
+  if (_appsSessions.size === 0) { strip.hidden = true; strip.innerHTML = ''; _appsRenderViewportGrid(); return; }
+  strip.hidden = false;
+  const sessions = Array.from(_appsSessions.values()).sort((a, b) => a.startedAt - b.startedAt);
+  strip.innerHTML = sessions.map(s => {
+    const cls = ['apps-session-chip'];
+    if (s.id === _appsActiveSessionId) cls.push('active');
+    if (s.status === 'done') cls.push('done');
+    if (s.status === 'error' || s.status === 'panic' || s.status === 'stopped') cls.push('error');
+    const label = _appsEscape(s.app || s.title || s.id.slice(0, 16));
+    return (
+      '<div class="' + cls.join(' ') + '" data-sid="' + _appsEscape(s.id) + '" title="' + _appsEscape(s.id) + ' — ' + (s.status || 'running') + '">'
+        + '<span class="chip-status-dot"></span>'
+        + '<span class="chip-app">' + label + '</span>'
+        + '<button class="chip-close" type="button" title="Remove from list">&times;</button>'
+      + '</div>'
+    );
+  }).join('');
+  // Wire click handlers (delegation kept simple).
+  strip.querySelectorAll('.apps-session-chip').forEach(chip => {
+    chip.addEventListener('click', (e) => {
+      if (e.target.classList.contains('chip-close')) {
+        e.stopPropagation();
+        _appsCloseSession(chip.dataset.sid);
+        return;
+      }
+      _appsSwitchActiveSession(chip.dataset.sid);
+    });
+  });
+  _appsRenderViewportGrid();
+}
+
+// Render the multi-session viewport grid. Tiles show each session's most
+// recent screenshot, status-coded border, click-to-activate. The grid is
+// shown when 2+ sessions are tracked; with 1 session we keep the single
+// big-image view (less visual noise for the common case).
+function _appsRenderViewportGrid() {
+  const grid = document.getElementById('appsViewportGrid');
+  const singleImg = document.getElementById('appsViewportImg');
+  const empty = document.getElementById('appsViewportEmpty');
+  if (!grid) return;
+  const sessions = Array.from(_appsSessions.values()).sort((a, b) => a.startedAt - b.startedAt);
+  if (sessions.length < 2) {
+    grid.hidden = true; grid.innerHTML = '';
+    grid.removeAttribute('data-count');
+    return;
+  }
+  // Multi-session mode: hide the single-image view, show grid.
+  grid.hidden = false;
+  if (singleImg) singleImg.style.display = 'none';
+  if (empty) empty.style.display = 'none';
+  grid.setAttribute('data-count', String(Math.min(sessions.length, 6)));
+  grid.innerHTML = sessions.map(s => {
+    const cls = ['apps-viewport-tile'];
+    if (s.id === _appsActiveSessionId) cls.push('active');
+    if (s.status === 'done') cls.push('done');
+    if (s.status === 'error' || s.status === 'panic' || s.status === 'stopped') cls.push('error');
+    const label = _appsEscape(s.app || s.title || s.id.slice(0, 12));
+    const img = s.lastScreenshot
+      ? '<img src="' + s.lastScreenshot + '" alt="' + label + '">'
+      : '<span class="tile-empty">No screenshot yet</span>';
+    return (
+      '<div class="' + cls.join(' ') + '" data-sid="' + _appsEscape(s.id) + '">'
+        + '<div class="apps-viewport-tile-head">'
+          + '<span class="tile-status"></span>'
+          + '<span class="tile-label">' + label + '</span>'
+          + '<span style="font:10px var(--font-mono);color:var(--subtext0);">' + (s.status || 'running') + '</span>'
+        + '</div>'
+        + '<div class="apps-viewport-tile-img-wrap">' + img + '</div>'
+      + '</div>'
+    );
+  }).join('');
+  grid.querySelectorAll('.apps-viewport-tile').forEach(tile => {
+    tile.addEventListener('click', () => _appsSwitchActiveSession(tile.dataset.sid));
+  });
+}
+
+function _appsUpdateTabRunningDot() {
+  const btn = document.getElementById('appsTabBtn');
+  if (!btn) return;
+  const anyRunning = Array.from(_appsSessions.values()).some(s => s.status === 'running');
+  btn.classList.toggle('has-running', anyRunning);
+}
+
 function handleAppsAgentStep(msg) {
   if (!msg) return;
+  // First: register / update the per-session tracker on every event that
+  // carries a sessionId. This is what powers the strip + tab dot.
+  if (msg.sessionId) _appsRegisterSession(msg);
+  // Only render into the visible UI for events belonging to the active
+  // session. Background sessions still affect the strip + dot but don't
+  // flood the active log.
+  if (msg.sessionId && _appsActiveSessionId && msg.sessionId !== _appsActiveSessionId) {
+    // Still need to track terminal states so the chip flips color.
+    if (msg.kind === 'done') _appsMarkSessionStatus(msg.sessionId, 'done', msg.summary || null);
+    else if (msg.kind === 'stopped') _appsMarkSessionStatus(msg.sessionId, 'stopped');
+    else if (msg.kind === 'error') _appsMarkSessionStatus(msg.sessionId, 'error', msg.message || null);
+    else if (msg.kind === 'panic') _appsMarkSessionStatus(msg.sessionId, 'panic');
+    // Bell notification fires regardless of which session was active.
+    if ((msg.kind === 'done' || msg.kind === 'error') && typeof notify === 'function') {
+      const s = _appsSessions.get(msg.sessionId) || {};
+      const appLabel = s.app || s.title || msg.sessionId;
+      const sev = msg.kind === 'error' ? 'error' : 'info';
+      notify('Apps: ' + appLabel + ' ' + msg.kind, String(msg.summary || msg.message || '').slice(0, 240), { source: 'apps-agent', icon: 'monitor', severity: sev });
+    }
+    return;
+  }
+  // For ANY session (active or background), capture screenshot frames
+  // into the per-session record so the multi-session grid stays live.
+  // The active session also goes through the existing single-img viewport
+  // path below.
+  if (msg.kind === 'screenshot' && msg.sessionId && msg.base64) {
+    const s = _appsSessions.get(msg.sessionId);
+    if (s) {
+      s.lastScreenshot = 'data:' + (msg.mimeType || 'image/jpeg') + ';base64,' + msg.base64;
+      // Cheap re-render: rather than touching the whole grid, update just
+      // this tile's <img>. Falls back to full re-render if the tile
+      // doesn't exist yet (first frame for a brand-new session).
+      const tile = document.querySelector('.apps-viewport-tile[data-sid="' + CSS.escape(msg.sessionId) + '"]');
+      if (tile) {
+        const wrap = tile.querySelector('.apps-viewport-tile-img-wrap');
+        if (wrap) {
+          wrap.innerHTML = '<img src="' + s.lastScreenshot + '" alt="">';
+        }
+      } else {
+        _appsRenderViewportGrid();
+      }
+    }
+  }
   const kind = msg.kind;
   if (kind === 'token') {
     // Stream text into the current rationale entry.
@@ -17562,15 +18278,32 @@ function handleAppsAgentStep(msg) {
   if (kind === 'done') {
     _appsAppendLog({ kind: 'done', text: (msg.summary || 'Done.') + '  (type a follow-up below to continue)', klass: 'done' });
     _appsState.running = false;
+    if (msg.sessionId) _appsMarkSessionStatus(msg.sessionId, 'done', msg.summary || null);
     // Keep sessionId so the user can chain a follow-up task. The Start button
     // will route to /api/apps/session/continue instead of starting fresh.
     _appsUpdateRunningChrome(false);
     _appsUpdateStartButtonForFollowUp(true);
+    // Bottom-right toast + success chime so the user knows the run is over
+    // even if the Apps tab isn't focused.
+    if (typeof toast === 'function') {
+      const app = (_appsState.app || msg.app || '').trim();
+      const summary = String(msg.summary || 'Automation completed.').replace(/\s+/g, ' ').slice(0, 200);
+      toast(`Apps${app ? ': ' + app : ''} - ${summary}`, 'success', { duration: 5000 });
+    }
+    // Persistent bell-panel notification so completed runs survive even
+    // after the toast fades. This is what the user asked for explicitly:
+    // "we also need a notification (in the notification bell)".
+    if (typeof notify === 'function') {
+      const app = (_appsState.app || msg.app || '').trim();
+      const summary = String(msg.summary || 'Automation completed.').replace(/\s+/g, ' ').slice(0, 240);
+      notify('Apps' + (app ? ': ' + app : '') + ' done', summary, { source: 'apps-agent', icon: 'monitor', severity: 'info' });
+    }
     return;
   }
   if (kind === 'stopped') {
     _appsAppendLog({ kind: 'stopped', text: 'Stopped.', klass: 'done' });
     _appsState.running = false;
+    if (msg.sessionId) _appsMarkSessionStatus(msg.sessionId, 'stopped');
     _appsState.sessionId = null;
     _appsUpdateRunningChrome(false);
     _appsUpdateStartButtonForFollowUp(false);
@@ -17579,6 +18312,7 @@ function handleAppsAgentStep(msg) {
   if (kind === 'panic') {
     _appsAppendLog({ kind: 'panic', text: 'Panic stop.', klass: 'error' });
     _appsState.running = false;
+    if (msg.sessionId) _appsMarkSessionStatus(msg.sessionId, 'panic');
     _appsState.sessionId = null;
     _appsUpdateRunningChrome(false);
     _appsUpdateStartButtonForFollowUp(false);
@@ -17587,8 +18321,13 @@ function handleAppsAgentStep(msg) {
   if (kind === 'error') {
     _appsAppendLog({ kind: 'error', text: msg.message || 'error', klass: 'error' });
     _appsState.running = false;
+    if (msg.sessionId) _appsMarkSessionStatus(msg.sessionId, 'error', msg.message || null);
     _appsState.sessionId = null;
     _appsUpdateRunningChrome(false);
+    if (typeof notify === 'function') {
+      const app = (_appsState.app || msg.app || '').trim();
+      notify('Apps' + (app ? ': ' + app : '') + ' error', String(msg.message || 'error').slice(0, 240), { source: 'apps-agent', icon: 'monitor', severity: 'error' });
+    }
     return;
   }
 }
@@ -17973,6 +18712,10 @@ function handleBrowserAgentStep(msg) {
         if (row && Array.isArray(msg.reports) && msg.reports.length) _appendBrowserActionReports(row, msg.reports);
       }
       _setBrowserAgentRunning(false);
+      if (typeof toast === 'function') {
+        const summary = String(msg.summary || 'Browser automation completed.').replace(/\s+/g, ' ').slice(0, 200);
+        toast('Browser - ' + summary, 'success', { duration: 5000 });
+      }
       break;
     case 'stopped':
       _appendAgentLog('message', 'Stopped by user.');
@@ -23602,6 +24345,36 @@ window.addEventListener('focus', () => {
   }
 });
 
+// ── Force whole-document repaint on focus / visibility return ───────────
+// User-reported bug: alt-tab back into Symphonee and EVERYTHING outside
+// the actively-animating regions (terminal canvas / 3D canvas) stays as
+// the stale pre-blur compositor layer. The user sees a black UI around
+// the terminal and clicking anywhere fixes it because any DOM event
+// invalidates the layers as a side effect.
+//
+// webContents.invalidate() in Electron main isn't enough on its own —
+// some Windows compositor configs keep presenting the cached tiles
+// regardless. The reliable fix is to toggle a CSS property on the
+// document root that forces Chromium to re-rasterize every layer.
+//
+// `transform: translateZ(0)` is a no-op visually but it promotes the
+// element into its own composited layer, which forces the GPU to
+// re-rasterize it. Toggling it for one frame and removing it sidesteps
+// any layout/paint cost — the layer just gets repainted clean.
+function forceFullRepaint() {
+  try {
+    const el = document.documentElement;
+    el.style.transform = 'translateZ(0)';
+    requestAnimationFrame(() => {
+      try { el.style.transform = ''; } catch (_) {}
+    });
+  } catch (_) {}
+}
+window.addEventListener('focus', forceFullRepaint);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') forceFullRepaint();
+});
+
 // ── Close modals on overlay click ───────────────────────────────────────
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', (e) => {
@@ -27610,8 +28383,18 @@ function showRecipePreviewModal(id, fm, prompt) {
 }
 
 </script>
-<link rel="stylesheet" href="/vis-network.min.css">
-<script src="/vis-network.min.js"></script>
+<script src="/3d-force-graph.min.js"></script>
+<script src="/force-graph.min.js"></script>
+<script>
+  // Surface a clear error early if the WebGL graph lib didn't expose its
+  // global. Almost always means a stale renderer cache - the cache-clear
+  // in electron-main.js fixes it on next launch.
+  if (typeof window.ForceGraph3D === 'undefined') {
+    console.error('[mind] window.ForceGraph3D is undefined after script load. Stale cache? Try DevTools > Application > Clear storage, or quit + relaunch Symphonee.');
+  } else {
+    console.log('[mind] ForceGraph3D loaded:', typeof window.ForceGraph3D);
+  }
+</script>
 <script src="/mind-ui.js"></script>
 </body>
 </html>

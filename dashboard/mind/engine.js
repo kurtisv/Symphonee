@@ -25,12 +25,16 @@ const { extractLearnings } = require('./extractors/learnings');
 const { extractCliMemory } = require('./extractors/cli-memory');
 const { extractCliSkills } = require('./extractors/cli-skills');
 const { extractRecipes } = require('./extractors/recipes');
+const { extractAppRecipes } = require('./extractors/app-recipes');
+const { extractSiteMap } = require('./extractors/site-map');
 const { extractPlugins } = require('./extractors/plugins');
 const { extractInstructions } = require('./extractors/instructions');
 const { extractRepoCode } = require('./extractors/repo-code');
 const { extractCliHistory } = require('./extractors/cli-history');
 const { extractCliDrawers } = require('./extractors/cli-drawers');
 const { extractContextArtifacts } = require('./extractors/context-artifacts');
+const { extractRepos } = require('./extractors/repos');
+const { extractEntities } = require('./extractors/entities');
 const adapterRegistry = require('./extractors/base');
 
 async function runBuild({ repoRoot, space, sources = [], incremental = false, ctx = {}, onProgress = () => {} }) {
@@ -92,6 +96,18 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
     onProgress('Extracting recipes...');
     const f = extractRecipes({ repoRoot, manifest, incremental });
     fragments.push(f); summary.recipes = { scanned: f.scanned, skippedUnchanged: f.skippedUnchanged, nodes: f.nodes.length, edges: f.edges.length };
+  }
+
+  if (sources.includes('app-recipes') || sources.includes('recipes')) {
+    onProgress('Extracting app automations (recipes/memory/run-history)...');
+    const f = extractAppRecipes({ manifest, incremental });
+    fragments.push(f); summary.appRecipes = { scanned: f.scanned, skippedUnchanged: f.skippedUnchanged, nodes: f.nodes.length, edges: f.edges.length };
+  }
+
+  if (sources.includes('site-map') || sources.includes('recipes')) {
+    onProgress('Extracting site map (site-recipes / site-memory / page snapshots)...');
+    const f = extractSiteMap({ manifest, incremental });
+    fragments.push(f); summary.siteMap = { scanned: f.scanned, skippedUnchanged: f.skippedUnchanged, nodes: f.nodes.length, edges: f.edges.length };
   }
 
   if (sources.includes('plugins')) {
@@ -217,6 +233,43 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
     graph = buildMerge(existing, fragments, { directed: true });
   } else {
     graph = build(fragments, { directed: true });
+  }
+
+  // ── Post-merge enrichment (Phase D + A) ───────────────────────────────────
+  // These extractors read the fully-merged graph and synthesize new nodes /
+  // edges on top. Pure additive: nothing existing is rewritten or removed.
+  // We re-run build() to fold the synth fragments in so dedup, edge
+  // sanitization, and the rest of the pipeline treat them like any other
+  // fragment.
+  const enrichmentFragments = [];
+  if (sources.includes('repos')) {
+    cp('enrich:repos');
+    onProgress('Synthesizing first-class repo nodes...');
+    const f = extractRepos(graph);
+    enrichmentFragments.push(f);
+    summary.repos = { scanned: f.scanned, repos: f.repos, nodes: f.nodes.length, edges: f.edges.length };
+  }
+  if (sources.includes('entities')) {
+    cp('enrich:entities');
+    onProgress('Synthesizing canonical entity layer (brands, products, projects)...');
+    const seedEntities = (ctx && Array.isArray(ctx.seedEntities)) ? ctx.seedEntities : [];
+    // Pass the live cfg.Repos map so parent-directory groupings (e.g.
+    // every repo under C:/Code/Personal/Playdate/) become brand entities
+    // even when no individual slug names the parent.
+    const repoPaths = typeof ctx.getAllRepos === 'function' ? (ctx.getAllRepos() || {}) : {};
+    const f = extractEntities(graph, { seedEntities, repoRoot, repoPaths });
+    enrichmentFragments.push(f);
+    summary.entities = {
+      scanned: f.scanned,
+      entities: f.entities,
+      mentions: f.mentions,
+      declaredRelations: f.declaredRelations || 0,
+      nodes: f.nodes.length,
+      edges: f.edges.length,
+    };
+  }
+  if (enrichmentFragments.length) {
+    graph = build([{ nodes: graph.nodes, edges: graph.edges, hyperedges: graph.hyperedges }, ...enrichmentFragments], { directed: true });
   }
 
   onProgress(`Clustering ${graph.nodes.length} nodes...`);

@@ -15,6 +15,8 @@ const memory = require('./apps-memory');
 const recipes = require('./apps-recipes');
 const recipeRunner = require('./apps-recipe-runner');
 const recorder = require('./apps-recorder');
+const sandbox = require('./apps-sandbox');
+const com = require('./apps-com');
 
 const PROVIDER_ORDER = ['anthropic', 'openai', 'gemini', 'grok', 'qwen'];
 const CLI_PROVIDER_MAP = {
@@ -91,10 +93,120 @@ function mapCliToProvider(cli) {
   return key ? (CLI_PROVIDER_MAP[key] || null) : null;
 }
 
+// Extract input values for a verified recipe from the user's goal text.
+// One non-tool LLM round-trip; falls back to defaults on any error so the
+// recipe still runs. Returns a map { inputName: value } or null.
+//
+// We bias the prompt toward returning the default when the user's goal
+// doesn't mention a different value, so "play music on Spotify" with a
+// recipe whose default query is "Rock Music" resolves to "Rock Music"
+// instead of inventing something.
+async function extractRecipeInputs({ goal, recipeInputs, providerEntry, model }) {
+  if (!Array.isArray(recipeInputs) || !recipeInputs.length) return null;
+  if (!providerEntry || !providerEntry.adapter) return null;
+  const schema = recipeInputs.map(i => `- ${i.name}${i.default !== undefined ? ` (default: ${JSON.stringify(i.default)})` : ''}: ${i.description || i.type || 'string'}`).join('\n');
+  const prompt = [
+    'You map a user goal to recipe input values. Return ONLY a JSON object with one key per input, values as strings.',
+    '',
+    `User goal: ${goal}`,
+    '',
+    'Inputs to fill:',
+    schema,
+    '',
+    'Rules:',
+    '- If the goal explicitly names a value for an input, use it (e.g. "search for jazz" -> query="jazz").',
+    '- If the goal does not specify, return the default (NEVER invent a value).',
+    '- Return ONLY valid JSON, no prose, no code fences.',
+  ].join('\n');
+
+  const adapter = providerEntry.adapter;
+  const adapterKind = adapter.kind;
+  const messages = adapterKind === 'gemini'
+    ? [{ role: 'user', parts: [{ text: prompt }] }]
+    : [{ role: 'user', content: prompt }];
+  let resp;
+  try {
+    resp = await adapter.call({
+      messages,
+      apiKey: providerEntry.apiKey,
+      model: model || adapter.defaultModel,
+      tools: [],
+      maxTokens: 200,
+    });
+  } catch (_) { return null; }
+  if (!resp || resp.text == null) return null;
+  const text = String(resp.text || '').trim();
+  // Strip code fences if a model added them despite the instruction.
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  let parsed;
+  try { parsed = JSON.parse(m[0]); } catch (_) { return null; }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const out = {};
+  for (const inp of recipeInputs) {
+    if (parsed[inp.name] != null) out[inp.name] = String(parsed[inp.name]);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function isProviderExhaustionError(message) {
   const text = String(message || '').toLowerCase();
   if (!text) return false;
-  return /insufficient_quota|quota exceeded|quota has been exceeded|credit balance is too low|out of credits|out of credit|rate limit|rate-limit|429|resource exhausted|billing|purchase credits/.test(text);
+  // Quota / credit exhaustion (the original cases).
+  if (/insufficient_quota|quota exceeded|quota has been exceeded|credit balance is too low|out of credits|out of credit|rate limit|rate-limit|429|resource exhausted|billing|purchase credits/.test(text)) return true;
+  // Transient upstream / gateway failures. We treat these as fail-over
+  // signals too: if Anthropic's edge returned 503 we'd rather hand off
+  // to OpenAI / Gemini and resume than abort the user's automation. The
+  // continuation prompt makes the handoff seamless.
+  if (/\b50[234]\b|upstream connect error|connection timeout|connection reset|econnreset|enotfound|service unavailable|bad gateway|gateway timeout|overloaded|temporarily unavailable/.test(text)) return true;
+  return false;
+}
+
+// Build a continuation prompt for the next provider so the new agent
+// doesn't start cold after a credit/quota handoff. Includes:
+//   - Original goal
+//   - Concise summary of recorded actions (UIA + pixel) so the agent
+//     knows what was already attempted
+//   - Last failure note (so the new agent doesn't repeat the same step)
+//   - Directive to resume from current screen, not restart
+// Hard-capped to ~4 KB so we don't shovel a megabyte of action log into
+// the next provider's first turn.
+function buildContinuationPrompt({ originalGoal, session, fromProvider, toProvider, exhaustReason }) {
+  const lines = [];
+  lines.push(`Goal: ${originalGoal || ''}`);
+  lines.push('');
+  lines.push(`## Provider handoff: ${fromProvider} -> ${toProvider}`);
+  lines.push(`The previous AI provider was unable to continue (${exhaustReason || 'quota/credit exhausted'}).`);
+  lines.push('You are picking up an in-progress automation. Do NOT restart from scratch.');
+  lines.push('');
+  if (Array.isArray(session && session._recordedActions) && session._recordedActions.length) {
+    lines.push('## What was already done');
+    const recent = session._recordedActions.slice(-30);
+    for (const a of recent) {
+      const args = a.args || {};
+      let summary = a.name;
+      if (a.name === 'click_element' && args.selector) summary = `click_element ${JSON.stringify(args.selector).slice(0, 100)}`;
+      else if (a.name === 'type_into_element' && args.selector) summary = `type_into_element ${JSON.stringify(args.selector).slice(0, 80)} <- "${String(args.text || '').slice(0, 60)}"`;
+      else if (a.name === 'click') summary = `click x=${args.x} y=${args.y}`;
+      else if (a.name === 'type_text') summary = `type_text "${String(args.text || '').slice(0, 60)}"`;
+      else if (a.name === 'key') summary = `key ${args.combo || ''}`;
+      else if (a.name === 'navigate') summary = `navigate ${args.url || ''}`;
+      else summary = `${a.name} ${JSON.stringify(args).slice(0, 80)}`;
+      lines.push(`- ${summary}`);
+    }
+    lines.push('');
+  }
+  if (session && session.app)   lines.push(`Target app: ${session.app}`);
+  if (session && session.title) lines.push(`Target window title: "${session.title}"`);
+  if (session && session.hwnd != null) lines.push(`Window hwnd: ${session.hwnd} (already focused)`);
+  lines.push('');
+  lines.push('## What to do next');
+  lines.push('1. Call describe_window (preferred) or screenshot to see the CURRENT state.');
+  lines.push('2. Compare against the goal and the action history above.');
+  lines.push('3. Continue from where the previous provider left off — do NOT click "Search" again if it was already clicked, do NOT type the query again if it was already typed, etc.');
+  lines.push('4. When the goal is met, call finish.');
+  const text = lines.join('\n');
+  return text.length > 4096 ? text.slice(0, 4096) + '\n... (truncated)' : text;
 }
 
 function headerValue(req, name) {
@@ -147,6 +259,8 @@ async function runSessionWithFallback({
   notify,
 }) {
   let last = null;
+  const originalGoal = task;
+  let currentTask = task;
   for (let i = 0; i < attempts.length; i++) {
     const attempt = attempts[i];
     if (typeof broadcast === 'function') {
@@ -162,10 +276,14 @@ async function runSessionWithFallback({
         at: Date.now(),
       });
     }
+    // Force a fresh message thread on every provider switch so the new
+    // adapter sees the continuation prompt, not stale messages built for
+    // the previous provider's tool-use shape.
+    if (i > 0) session.providerKind = null;
     const result = await runSessionForEntry({
       entry: attempt.entry,
       session,
-      task,
+      task: currentTask,
       driver,
       model: attempt.model,
       broadcast,
@@ -181,6 +299,17 @@ async function runSessionWithFallback({
     if (!shouldRetry) break;
 
     const next = attempts[i + 1];
+    // Build a continuation prompt so the next provider picks up where the
+    // previous one left off, with full context of what was already done.
+    // Without this, the new agent restarts from scratch and re-clicks /
+    // re-types things that already happened on screen.
+    currentTask = buildContinuationPrompt({
+      originalGoal,
+      session,
+      fromProvider: attempt.entry.adapter.label,
+      toProvider: next.entry.adapter.label,
+      exhaustReason: message,
+    });
     if (typeof broadcast === 'function') {
       broadcast({
         type: 'apps-agent-step',
@@ -189,13 +318,14 @@ async function runSessionWithFallback({
         from: attempt.key,
         to: next.key,
         message,
+        continuationBytes: Buffer.byteLength(currentTask, 'utf8'),
         at: Date.now(),
       });
     }
     if (typeof notify === 'function') {
       notify(
         'Apps provider exhausted',
-        `${attempt.entry.adapter.label} ran out of credits/quota or was rate-limited. Retrying with ${next.entry.adapter.label}.`
+        `${attempt.entry.adapter.label} ran out of credits/quota or was rate-limited. Continuing with ${next.entry.adapter.label} from where we left off.`
       );
     }
     session.stopped = false;
@@ -248,18 +378,120 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
     const id = body.id ? String(body.id) : null;
     const path = body.path ? String(body.path) : null;
     const name = body.name ? String(body.name) : null;
+    const stealth = body.sandbox === true || body.stealth === true;
     if (!id && !path) return json(res, { error: 'id or path required' }, 400);
     if (typeof permGate === 'function') {
-      const label = 'Launch app: ' + (name || id || path);
+      const label = (stealth ? 'Stealth-launch app: ' : 'Launch app: ') + (name || id || path);
       const ok = await permGate(res, 'api', 'POST /api/apps/launch', label);
       if (!ok) return;
     }
     try {
-      const result = await driver.launchApp({ id, path, name });
+      const result = stealth
+        ? await sandbox.stealthLaunch({ id, path, name })
+        : await driver.launchApp({ id, path, name });
       json(res, { ok: true, ...result });
     } catch (e) {
       json(res, { ok: false, error: e.message }, 500);
     }
+  });
+
+  // Sandbox control surface. The hwnd from a stealth launch (or one passed
+  // to /sandbox/adopt) becomes a "sandboxed" target — the agent treats it
+  // like any other window, but launch/focus are no-ops on the host desktop.
+  addRoute('POST', '/api/apps/sandbox/adopt', async (req, res) => {
+    if (isIncognito()) return json(res, { error: 'Blocked by Incognito Mode.' }, 403);
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const hwnd = Number(body.hwnd);
+    if (!Number.isFinite(hwnd) || hwnd <= 0) return json(res, { error: 'hwnd required' }, 400);
+    if (typeof permGate === 'function') {
+      const ok = await permGate(res, 'api', 'POST /api/apps/sandbox/adopt', 'Stash window ' + hwnd + ' off-screen for stealth automation');
+      if (!ok) return;
+    }
+    try { json(res, { ok: true, ...(await sandbox.adoptIntoSandbox(hwnd, { app: body.app })) }); }
+    catch (e) { json(res, { ok: false, error: e.message }, 500); }
+  });
+
+  addRoute('POST', '/api/apps/sandbox/peek', async (req, res) => {
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const hwnd = Number(body.hwnd);
+    if (!Number.isFinite(hwnd) || hwnd <= 0) return json(res, { error: 'hwnd required' }, 400);
+    try { json(res, await sandbox.peek(hwnd)); }
+    catch (e) { json(res, { ok: false, error: e.message }, 400); }
+  });
+
+  addRoute('POST', '/api/apps/sandbox/unpeek', async (req, res) => {
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const hwnd = Number(body.hwnd);
+    if (!Number.isFinite(hwnd) || hwnd <= 0) return json(res, { error: 'hwnd required' }, 400);
+    try { json(res, await sandbox.unpeek(hwnd)); }
+    catch (e) { json(res, { ok: false, error: e.message }, 400); }
+  });
+
+  addRoute('POST', '/api/apps/sandbox/release', async (req, res) => {
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const hwnd = Number(body.hwnd);
+    if (!Number.isFinite(hwnd) || hwnd <= 0) return json(res, { error: 'hwnd required' }, 400);
+    const restore = body.restore !== false;
+    try { json(res, await sandbox.release(hwnd, { restore })); }
+    catch (e) { json(res, { ok: false, error: e.message }, 400); }
+  });
+
+  addRoute('GET', '/api/apps/sandbox/list', async (req, res) => {
+    json(res, { ok: true, sandboxed: sandbox.list() });
+  });
+
+  // COM-based Office automation. Headless (no window painted at all) — even
+  // more invisible than off-screen positioning. Bypasses UIA which can't
+  // drive Office's custom-canvas editing surfaces.
+  addRoute('POST', '/api/apps/com/word/write', async (req, res) => {
+    if (isIncognito()) return json(res, { error: 'Blocked by Incognito Mode.' }, 403);
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const filePath = body.filePath ? String(body.filePath) : null;
+    if (!filePath) return json(res, { error: 'filePath required' }, 400);
+    if (typeof permGate === 'function') {
+      const ok = await permGate(res, 'api', 'POST /api/apps/com/word/write', 'Write Word doc to ' + filePath);
+      if (!ok) return;
+    }
+    try { json(res, await com.wordWrite({ filePath, content: String(body.content || '') })); }
+    catch (e) { json(res, { ok: false, error: e.message }, 500); }
+  });
+
+  addRoute('POST', '/api/apps/com/word/read', async (req, res) => {
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const filePath = body.filePath ? String(body.filePath) : null;
+    if (!filePath) return json(res, { error: 'filePath required' }, 400);
+    try { json(res, await com.wordRead({ filePath })); }
+    catch (e) { json(res, { ok: false, error: e.message }, 500); }
+  });
+
+  addRoute('POST', '/api/apps/com/excel/write', async (req, res) => {
+    if (isIncognito()) return json(res, { error: 'Blocked by Incognito Mode.' }, 403);
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const filePath = body.filePath ? String(body.filePath) : null;
+    if (!filePath) return json(res, { error: 'filePath required' }, 400);
+    if (!Array.isArray(body.values)) return json(res, { error: 'values required (2D array)' }, 400);
+    if (typeof permGate === 'function') {
+      const ok = await permGate(res, 'api', 'POST /api/apps/com/excel/write', 'Write Excel sheet to ' + filePath + ' (' + body.values.length + ' rows)');
+      if (!ok) return;
+    }
+    try { json(res, await com.excelWrite({ filePath, values: body.values, sheetName: body.sheetName, autoFit: body.autoFit !== false })); }
+    catch (e) { json(res, { ok: false, error: e.message }, 500); }
+  });
+
+  addRoute('POST', '/api/apps/com/excel/read', async (req, res) => {
+    let body;
+    try { body = await readBody(req); } catch (e) { return json(res, { error: 'Bad JSON: ' + e.message }, 400); }
+    const filePath = body.filePath ? String(body.filePath) : null;
+    if (!filePath) return json(res, { error: 'filePath required' }, 400);
+    try { json(res, await com.excelRead({ filePath, sheetName: body.sheetName || null, maxRows: body.maxRows, maxCols: body.maxCols })); }
+    catch (e) { json(res, { ok: false, error: e.message }, 500); }
   });
 
   // One-off screenshot for a window. Used by the AI recipe generator so it
@@ -316,6 +548,7 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
       if (!ok) return;
     }
 
+    const stealth = body.sandbox === true || body.stealth === true;
     let installed;
     try { installed = await driver.listInstalledApps(); }
     catch (e) { return json(res, { error: 'listInstalledApps failed: ' + e.message }, 500); }
@@ -327,6 +560,7 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
 
     let hwnd = null;
     let title = null;
+    let adoptedSandbox = false;
     if (!match) {
       // Fallback: maybe the app is already running. Look for a window whose
       // title or processName matches the needle, skip the launch step.
@@ -340,9 +574,16 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
         }, 404);
       }
       hwnd = win.hwnd; title = win.title;
+      // If the caller asked for stealth and we picked up an already-running
+      // window, stash it off-screen now so the run doesn't disturb the user.
+      if (stealth && !sandbox.isSandboxed(hwnd)) {
+        try { await sandbox.adoptIntoSandbox(hwnd, { app: appName }); adoptedSandbox = true; } catch (_) {}
+      }
     } else {
       try {
-        const launched = await driver.launchApp({ id: match.id, path: match.path, name: match.name });
+        const launched = stealth
+          ? await sandbox.stealthLaunch({ id: match.id, path: match.path, name: match.name })
+          : await driver.launchApp({ id: match.id, path: match.path, name: match.name });
         hwnd = launched.hwnd; title = launched.title;
       } catch (e) {
         return json(res, { error: 'launchApp failed: ' + e.message, app: match.name }, 500);
@@ -360,12 +601,23 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
     if (session.running) return json(res, { error: 'Session already running. Stop it first or pass a different sessionId.' }, 409);
 
     try {
-      const focused = await driver.focusWindow(hwnd);
-      session.hwnd = hwnd;
-      session.title = focused.title || title;
+      // Sandboxed windows live off-screen; calling focusWindow on them would
+      // (a) drag them back onto the visible desktop and (b) steal foreground
+      // from whatever the user is doing. Skip the focus dance — UIA-based
+      // input doesn't need it.
+      const isSandboxed = sandbox.isSandboxed(hwnd);
+      if (isSandboxed) {
+        session.hwnd = hwnd;
+        session.title = title || (sandbox.getEntry(hwnd) || {}).app || 'sandboxed window';
+      } else {
+        const focused = await driver.focusWindow(hwnd);
+        session.hwnd = hwnd;
+        session.title = focused.title || title;
+      }
       session.app = match ? match.name : appName;
       session.goal = goal;
       session.stopped = false;
+      session.sandboxed = isSandboxed;
       driver.resetStopped();
     } catch (e) {
       const code = e && e.code;
@@ -383,15 +635,137 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
       }, 400);
     }
 
-    const task = [
+    // Pre-session lookup: check the per-app recipe file directly for a
+    // verified recipe whose name/description matches the goal. This is
+    // the fast path — it bypasses Mind index staleness entirely (a
+    // recipe edited to verified on disk works immediately, without
+    // waiting for an extractor pass). Mind is still consulted below
+    // for memory context and cross-app concept hints.
+    let priorRecipes = [];
+    let priorMemory = null;
+    let directVerifiedRecipe = null;
+    try {
+      const recipesMod = require('./apps-recipes');
+      const rawList = recipesMod.listRecipes(session.app);
+      const list = Array.isArray(rawList && rawList.recipes) ? rawList.recipes : [];
+      const goalLc = String(goal || '').toLowerCase();
+      // Score each verified recipe by token overlap with the goal so
+      // "Search for Rock Music" matches a recipe named "Search for Rock
+      // Music in the search bar..." but not an unrelated "Open Settings"
+      // recipe stored in the same file.
+      function score(r) {
+        const hay = ((r.name || '') + ' ' + (r.description || '')).toLowerCase();
+        const tokens = goalLc.split(/\s+/).filter(t => t.length >= 3);
+        if (!tokens.length) return 0;
+        let hits = 0;
+        for (const t of tokens) if (hay.includes(t)) hits++;
+        return hits / tokens.length;
+      }
+      const ranked = list.filter(r => r.status === 'verified').map(r => ({ r, s: score(r) })).sort((a, b) => b.s - a.s);
+      if (ranked.length && ranked[0].s >= 0.5) directVerifiedRecipe = ranked[0].r;
+    } catch (_) { /* file missing / parse fail — fall through to Mind */ }
+
+    try {
+      const mindStore = require('./mind/store');
+      const mindQuery = require('./mind/query');
+      // No direct space accessor here; default to '_global' which is the
+      // Symphonee notesNamespace fallback that mind/index.js uses too.
+      const space = '_global';
+      const repoRoot = require('path').resolve(__dirname, '..');
+      const graph = mindStore.loadGraph(repoRoot, space);
+      if (graph && Array.isArray(graph.nodes) && graph.nodes.length) {
+        const r = mindQuery.runQuery(graph, { question: `${session.app}: ${goal}`, budget: 1200 });
+        const candidates = (r.nodes || []).filter(n => n.kind === 'recipe' && (n.tags || []).includes('app-automation') && (n.tags || []).includes(session.app));
+        priorRecipes = candidates.slice(0, 3).map(n => ({
+          id: n.id, label: n.label, status: (n.tags || []).includes('verified') ? 'verified' : 'draft',
+          steps: n.steps, description: n.description, file: n.source && n.source.file,
+        }));
+        const memNode = (r.nodes || []).find(n => n.kind === 'doc' && (n.tags || []).includes('app-memory') && (n.tags || []).includes(session.app));
+        if (memNode && memNode.description) priorMemory = memNode.description;
+      }
+    } catch (_) { /* Mind unavailable — proceed without hints */ }
+
+    // Verified recipe hit? Direct disk lookup (above) wins over Mind
+    // because it survives index staleness. Either way, dispatch through
+    // the deterministic recipe runner — no LLM tokens spent on planning.
+    let resolvedRecipe = null;
+    if (body.skipMindMatch !== true) {
+      if (directVerifiedRecipe) {
+        resolvedRecipe = directVerifiedRecipe;
+      } else {
+        const verifiedHit = priorRecipes.find(p => p.status === 'verified');
+        if (verifiedHit) {
+          try {
+            const fs = require('fs');
+            if (verifiedHit.file && fs.existsSync(verifiedHit.file)) {
+              const data = JSON.parse(fs.readFileSync(verifiedHit.file, 'utf8'));
+              const nameFromLabel = String(verifiedHit.label || '').split(':').slice(1).join(':').trim();
+              resolvedRecipe = (Array.isArray(data.recipes) ? data.recipes : [])
+                .find(r => r.name === nameFromLabel || r.id === verifiedHit.id || r.status === 'verified')
+                || null;
+            }
+          } catch (_) { /* leave resolvedRecipe null and fall back to agent */ }
+        }
+      }
+      if (resolvedRecipe && typeof broadcast === 'function') {
+        try { broadcast({
+          type: 'apps-agent-step', sessionId: session.id, kind: 'mind_match',
+          recipe: { id: resolvedRecipe.id, name: resolvedRecipe.name, willRun: true, source: directVerifiedRecipe ? 'disk' : 'mind' },
+          message: `Replaying verified recipe "${resolvedRecipe.name}" — no LLM tokens.`,
+          at: Date.now(),
+        }); } catch (_) {}
+      }
+    }
+
+    const taskLines = [
       `Goal: ${goal}`,
       '',
       `Target window: "${session.title}" (hwnd=${hwnd}, app=${session.app})`,
-      'The window is already focused. Start with a screenshot and work toward the goal.',
-    ].join('\n');
+      'The window is already focused. Start with describe_window to see UI elements; only fall back to screenshot when UIA returns nothing useful.',
+    ];
+    if (priorRecipes.length) {
+      taskLines.push('');
+      taskLines.push('## Prior automations for this app (from Mind)');
+      for (const p of priorRecipes) {
+        taskLines.push(`- ${p.label} [${p.status}] — ${p.steps || 0} steps. ${p.description || ''}`);
+      }
+      taskLines.push('You may follow one of these step-by-step if it matches the goal, or improvise if none fits.');
+    }
+    if (priorMemory) {
+      taskLines.push('');
+      taskLines.push('## Prior memory for this app (from Mind)');
+      taskLines.push(priorMemory.slice(0, 800));
+    }
+    const task = taskLines.join('\n');
 
     session._providerRegistry = registry;
-    const runPromise = runSessionWithFallback({ attempts, session, task, driver, broadcast, notify });
+
+    // If we resolved a verified recipe with declared inputs, extract input
+    // values from the user's goal text. Defaults already populate via the
+    // runner's input-merge, so this only matters when the user wants
+    // something different than the default ("play classical" instead of
+    // the default "Rock Music"). One small LLM call, ~200 tokens.
+    let recipeInputs = undefined;
+    if (resolvedRecipe && Array.isArray(resolvedRecipe.inputs) && resolvedRecipe.inputs.length) {
+      try {
+        recipeInputs = await extractRecipeInputs({
+          goal, recipeInputs: resolvedRecipe.inputs,
+          providerEntry: attempts[0].entry, model: attempts[0].model,
+        });
+        if (typeof broadcast === 'function' && recipeInputs) {
+          try { broadcast({ type: 'apps-agent-step', sessionId: session.id, kind: 'recipe_inputs_extracted', inputs: recipeInputs, at: Date.now() }); } catch (_) {}
+        }
+      } catch (e) { /* fall back to defaults */ }
+    }
+
+    const runPromise = runSessionWithFallback({
+      attempts, session, task, driver, broadcast, notify,
+      // When a verified recipe was resolved, hand it to runSessionForEntry
+      // which routes through recipeRunner.runRecipe — deterministic playback
+      // with vision-locator fallback only on UIA misses.
+      recipe: resolvedRecipe || undefined,
+      inputs: recipeInputs,
+    });
 
     if (waitMs === 0) {
       json(res, {
@@ -470,12 +844,19 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
     if (session.running) return json(res, { error: 'Session already running. Stop it first.' }, 409);
 
     try {
-      const focused = await driver.focusWindow(hwnd);
-      session.hwnd = hwnd;
-      session.title = focused.title;
+      const isSandboxed = sandbox.isSandboxed(hwnd);
+      if (isSandboxed) {
+        session.hwnd = hwnd;
+        session.title = (sandbox.getEntry(hwnd) || {}).app || 'sandboxed window';
+      } else {
+        const focused = await driver.focusWindow(hwnd);
+        session.hwnd = hwnd;
+        session.title = focused.title;
+      }
       session.app = String(body.app || '').trim() || null;
       session.goal = goal;
       session.stopped = false;
+      session.sandboxed = isSandboxed;
       driver.resetStopped();
     } catch (e) {
       const code = e && e.code;
@@ -1294,7 +1675,24 @@ function mountAppsRoutes(addRoute, json, { getConfig, broadcast, permGate, resol
         name,
         description: String(body.description || '').trim() || `Captured from session ${sessionId}`,
         steps,
+        sourceSessionId: sessionId,
       });
+      // Live Mind sync so other CLIs see the new automation immediately.
+      if (r && r.path) {
+        try {
+          const http = require('http');
+          const payload = JSON.stringify({
+            path: r.path, label: `${app}: ${name}`, kind: 'recipe',
+            createdBy: 'apps-agent-manual', tags: ['app-automation', app],
+          });
+          const mreq = http.request({
+            host: '127.0.0.1', port: 3800, path: '/api/mind/add', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+          }, (mres) => { mres.resume(); });
+          mreq.on('error', () => {});
+          mreq.write(payload); mreq.end();
+        } catch (_) {}
+      }
       json(res, { ...r, captured: steps.length });
     } catch (e) {
       json(res, { error: e.message }, 400);

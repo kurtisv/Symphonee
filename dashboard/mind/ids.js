@@ -34,6 +34,38 @@ function deduplicateByLabel(nodes, edges) {
   const remap = new Map();     // old id -> surviving id
 
   for (const node of nodes) {
+    // Per-repo file nodes (kind === 'code', or kind === 'doc' with a
+    // file source) are inherently NOT shared across repos: every repo
+    // has its own README.md, src/index.ts, package.json, layout.tsx,
+    // etc. Their labels collapse to the basename for readability, but
+    // their IDs are namespaced by the repo prefix. Key them by id
+    // instead of label so each file survives as its own node, instead
+    // of one shared "README.md" / "index.ts" sucking in every repo's
+    // edges.
+    const src = node.source || {};
+    const isPerRepoFile = node.kind === 'code'
+      || (node.kind === 'doc' && (src.type === 'doc' || src.type === 'file') && src.file);
+    if (isPerRepoFile) {
+      canonical.set(`__file__${node.id}`, node);
+      continue;
+    }
+    // Post-merge enrichment kinds (Phase D + A). Entity and repo nodes are
+    // synthesized from already-merged graph state; collapsing them by label
+    // would let an entity like "Sanity" merge with an existing concept
+    // titled "Sanity", swapping kinds non-deterministically. Key by id so
+    // they live in their own namespace.
+    if (node.kind === 'entity' || node.kind === 'repo') {
+      canonical.set(`__synth__${node.id}`, node);
+      continue;
+    }
+    // Memory cards. Two cards with similar titles ("Don't use X" /
+    // "Don't use X with Y") could canonicalize to colliding labels and
+    // silently merge, destroying the second card's body. Memory is the
+    // user's knowledge - never silently drop it. Key by id.
+    if (node.kind === 'memory') {
+      canonical.set(`__memory__${node.id}`, node);
+      continue;
+    }
     const key = normLabel(node.label || node.id || '');
     if (!key) continue;
     const existing = canonical.get(key);

@@ -31,7 +31,7 @@ const viz = require('./viz');
 // In-memory job table for build/update progress. Jobs are ephemeral; the
 // canonical graph on disk is the system of record.
 const jobs = new Map();
-const DEFAULT_BUILD_SOURCES = ['notes', 'learnings', 'cli-memory', 'cli-skills', 'recipes', 'plugins', 'instructions', 'repo-code', 'cli-history', 'cli-drawers', 'context-artifacts'];
+const DEFAULT_BUILD_SOURCES = ['notes', 'learnings', 'cli-memory', 'cli-skills', 'recipes', 'app-recipes', 'site-map', 'plugins', 'instructions', 'repo-code', 'cli-history', 'cli-drawers', 'context-artifacts', 'repos', 'entities'];
 function makeJobId() { return 'mj_' + Math.random().toString(36).slice(2, 10); }
 
 function readBody(req) {
@@ -1030,7 +1030,141 @@ function mountMind(addRoute, json, ctx) {
     }
     persistDerivedGraph(space, g);
     if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'node-added', id, createdBy } });
-    return json(res, { ok: true, nodeId: id, audit, groundedCount: grounded.length });
+
+    // Auto-extract memory cards from the answer text. Conservative
+    // patterns ("remember:", "we decided", "the rule is", "prefer X",
+    // "watch out for", ...) become first-class kind:memory nodes linked
+    // back to this conversation node. Idempotent via content-hash so
+    // re-saving the same answer doesn't duplicate cards.
+    const memoryModule = require('./memory');
+    const candidates = memoryModule.extractMemoriesFromText(answer);
+    const memoriesCreated = [];
+    if (candidates.length) {
+      // Reload the graph so we see the conversation node we just wrote.
+      const reloaded = store.loadGraph(repoRoot, space) || g;
+      const existingMemoryHashes = new Set();
+      for (const n of reloaded.nodes) {
+        if (n.kind === 'memory' && typeof n.body === 'string') {
+          existingMemoryHashes.add(n.body.toLowerCase().trim().slice(0, 240));
+        }
+      }
+      // Carry forward brand tags from cited entity nodes so a memory
+      // about "DYOB design" auto-tags DYOB even if the answer text
+      // didn't list it.
+      const carryTags = [];
+      for (const cited of citedNodeIds) {
+        const node = reloaded.nodes.find(n => n.id === cited);
+        if (!node) continue;
+        if (node.kind === 'entity' && typeof node.label === 'string') carryTags.push(node.label);
+      }
+      for (const cand of candidates) {
+        const hash = cand.body.toLowerCase().trim().slice(0, 240);
+        if (existingMemoryHashes.has(hash)) continue;
+        existingMemoryHashes.add(hash);
+        try {
+          const r = await memoryModule.addMemoryCard({
+            repoRoot, space,
+            spec: {
+              ...cand,
+              tags: carryTags,
+              source: { type: 'conversation', ref: id },
+              createdBy: createdBy || 'mind/auto-extract',
+            },
+          });
+          memoriesCreated.push({ id: r.node.id, title: r.node.label, kindOfMemory: r.node.kindOfMemory });
+        } catch (_) { /* one bad pattern must not break the save */ }
+      }
+      if (memoriesCreated.length && broadcast) {
+        broadcast({ type: 'mind-update', payload: { kind: 'memory-extracted', conversationId: id, count: memoriesCreated.length, memories: memoriesCreated } });
+      }
+    }
+
+    return json(res, { ok: true, nodeId: id, audit, groundedCount: grounded.length, memoriesCreated });
+  });
+
+  // ── Recall: time-ranged + topic-filtered retrieval ─────────────────────
+  // Different from /api/mind/query (BFS sub-graph) - returns a ranked
+  // LIST of recall-eligible items (memories, conversations, drawers)
+  // restricted to a time window and optionally a repo. Answers "what
+  // did I figure out about X 10 days ago?" / "what do I know about
+  // Playdate?" without graph traversal.
+  //
+  // POST /api/mind/recall
+  //   {
+  //     "question": "DYOB design",          // optional, BM25 ranks
+  //     "since":    "10 days ago",          // ISO or natural string
+  //     "until":    "today",                // ISO or natural string
+  //     "repo":     "DYOB3",                // optional repo scope
+  //     "kinds":    ["memory","conversation"], // default all
+  //     "limit":    20
+  //   }
+  // Returns { hits, total, since, until, repo, question }
+  addRoute('POST', '/api/mind/recall', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body || typeof body !== 'object') {
+      return json(res, { error: 'request body must be a JSON object' }, 400);
+    }
+    const space = getSpace();
+    const g = store.loadGraph(repoRoot, space);
+    if (!g) return json(res, { hits: [], total: 0, message: 'no graph for this space' });
+    const recallModule = require('./recall');
+    try {
+      const result = recallModule.recall(g, {
+        question: body.question || '',
+        since:    body.since,
+        until:    body.until,
+        repo:     body.repo,
+        kinds:    body.kinds,
+        limit:    body.limit,
+      });
+      return json(res, result);
+    } catch (e) {
+      return json(res, { error: e.message }, 400);
+    }
+  });
+
+  // ── Memory cards: durable knowledge taught mid-conversation ─────────────
+  // The user (or an AI on their behalf) committed a fact. "DYOB doesn't
+  // follow the Bath Fitter design system." "For Playdate, prefer pulldown
+  // for menu navigation." "Don't mock the database in tests - we got
+  // burned last quarter." Each becomes a kind:memory node, indexed by
+  // tags, linked to its source conversation if known, and surfaceable on
+  // wakeup + recall queries.
+  //
+  // POST /api/mind/teach
+  //   {
+  //     "title":          "DYOB doesn't follow Bath Fitter brand",
+  //     "body":           "Different colour palette + typography ...",
+  //     "kindOfMemory":   "constraint" | "decision" | "preference" |
+  //                       "lesson" | "gotcha" | "pattern" | "fact",
+  //     "tags":           ["DYOB", "Bath Fitter", "design"],
+  //     "scope":          { "repo": "DYOB3" },          // optional
+  //     "source":         { "type": "conversation",     // optional
+  //                         "ref":  "<existing node id>" },
+  //     "createdBy":      "claude" | "codex" | "user" | ...
+  //   }
+  // Returns: { ok, nodeId, node, edges }
+  addRoute('POST', '/api/mind/teach', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body || typeof body !== 'object') {
+      return json(res, { error: 'request body must be a JSON object' }, 400);
+    }
+    const space = getSpace();
+    const memoryModule = require('./memory');
+    try {
+      const { node, edges } = await memoryModule.addMemoryCard({
+        repoRoot, space, spec: body,
+      });
+      if (broadcast) {
+        broadcast({ type: 'mind-update', payload: { kind: 'memory-added', id: node.id, title: node.label, createdBy: node.createdBy } });
+      }
+      return json(res, { ok: true, nodeId: node.id, node, edges });
+    } catch (e) {
+      if (e.code === 'MIND_LOCKED') {
+        return json(res, { error: e.message, holderPid: e.holderPid }, 409);
+      }
+      return json(res, { error: e.message }, 400);
+    }
   });
 
   // ── Manual ingest: a user/agent pushes one artefact at a time ────────────
@@ -1125,6 +1259,66 @@ function mountMind(addRoute, json, ctx) {
     return json(res, { enabled: !!(watcher && watcher._enabled) });
   });
 
+  // ── Layout cache (per space + mode) ──────────────────────────────────────
+  // The 3D / 2D force-graph simulation pins Intel iGPUs at 80%+ CPU/GPU on
+  // every load when there are thousands of nodes. We solve it by computing
+  // the layout ONCE and persisting (x, y, z) per node id. Subsequent loads
+  // place nodes at the cached positions and skip physics entirely. The
+  // cache is invalidated when the node set changes (different ids → re-layout).
+  //
+  // Storage: <repoRoot>/.symphonee/mind/spaces/<space>/layout-<mode>.json
+  // Shape: { computedAt, nodeCount, nodeHash, positions: {nodeId: [x,y,z]} }
+  const layoutPath = (space, mode) => path.join(repoRoot, '.symphonee', 'mind', 'spaces', space, `layout-${(mode || '3d').replace(/[^a-z0-9_-]/gi, '')}.json`);
+
+  addRoute('GET', '/api/mind/layout', (req, res) => {
+    const space = getSpace();
+    const url = new URL(req.url, 'http://x');
+    const mode = url.searchParams.get('mode') || '3d';
+    const p = layoutPath(space, mode);
+    if (!fs.existsSync(p)) return json(res, { cached: false });
+    try {
+      const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+      return json(res, { cached: true, ...data });
+    } catch (e) {
+      return json(res, { cached: false, error: e.message });
+    }
+  });
+
+  addRoute('POST', '/api/mind/layout', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.positions || typeof body.positions !== 'object') {
+      return json(res, { error: 'positions object required' }, 400);
+    }
+    const space = getSpace();
+    const mode = body.mode || '3d';
+    const p = layoutPath(space, mode);
+    try {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const payload = {
+        computedAt: new Date().toISOString(),
+        nodeCount: Object.keys(body.positions).length,
+        nodeHash: body.nodeHash || null,
+        mode,
+        positions: body.positions,
+      };
+      fs.writeFileSync(p, JSON.stringify(payload));
+      return json(res, { ok: true, cachedAt: payload.computedAt, nodeCount: payload.nodeCount });
+    } catch (e) {
+      return json(res, { error: e.message }, 500);
+    }
+  });
+
+  addRoute('DELETE', '/api/mind/layout', (req, res) => {
+    const space = getSpace();
+    const url = new URL(req.url, 'http://x');
+    const mode = url.searchParams.get('mode') || '3d';
+    const p = layoutPath(space, mode);
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+      return json(res, { ok: true });
+    } catch (e) { return json(res, { error: e.message }, 500); }
+  });
+
   // ── Delete (purge a hallucinated node) ───────────────────────────────────
   addRoute('DELETE', '/api/mind/node', async (req, res) => {
     const body = await readBody(req).catch(() => ({}));
@@ -1188,7 +1382,7 @@ function mountMind(addRoute, json, ctx) {
         queryUrl: '/api/mind/query',
         wakeupUrl: '/api/mind/wakeup',
         message: stats
-          ? 'A shared knowledge graph exists for this space. Call POST /api/mind/query before answering questions about this codebase, notes, or prior decisions. Save new findings via POST /api/mind/save-result.'
+          ? 'A shared knowledge graph exists for this space. For questions about CODE STRUCTURE call POST /api/mind/query. For questions about PRIOR WORK / PAST DECISIONS / WHAT DID WE FIGURE OUT call POST /api/mind/recall (returns memory cards + conversations ranked by topic + recency). When the user TEACHES you something durable ("remember:", "we decided", "always X", "never Y", "X has different Y", "prefer X", "watch out for"), call POST /api/mind/teach BEFORE answering — that is how the AI gets smarter across sessions. Save findings from regular Q&A via POST /api/mind/save-result, which also auto-extracts memory cards from teaching language in your answer.'
           : 'Mind graph is empty for this space. Run POST /api/mind/build to populate it.',
       };
     },
@@ -1242,28 +1436,110 @@ function mountMind(addRoute, json, ctx) {
     //
     // The worker is still expected to call /api/mind/query for anything
     // specific - the hint is the wake-up, not the answer.
+    // Run an incremental refresh on app startup so every session begins
+    // with a fresh graph (new files since last shutdown, new app/site
+    // recipes, new memory bullets). Fires a 'mind-startup-refresh' WS
+    // event with phase: started | done | error so the UI can toast.
+    // Idempotent: if a build is already in progress, this is a no-op.
+    async kickoffStartupRefresh() {
+      const space = getSpace();
+      const acq = lock.acquire(space, 'graph');
+      if (!acq.ok) {
+        // A build is already running (likely the auto-resumed watcher).
+        // Treat as success so the UI doesn't toast a stale error.
+        if (broadcast) broadcast({ type: 'mind-startup-refresh', payload: { phase: 'skipped', reason: 'build already in progress', space } });
+        return { ok: false, skipped: true, reason: 'busy' };
+      }
+      lock.release(space, 'graph');
+      const startedAt = Date.now();
+      if (broadcast) broadcast({ type: 'mind-startup-refresh', payload: { phase: 'started', space, startedAt } });
+      try {
+        const result = await engine.runBuild({
+          repoRoot, space,
+          sources: DEFAULT_BUILD_SOURCES,
+          incremental: true,
+          ctx,
+          onProgress: () => { /* progress is internal; the UI just wants the toast */ },
+        });
+        if (broadcast) broadcast({
+          type: 'mind-startup-refresh',
+          payload: {
+            phase: 'done', space,
+            durationMs: Date.now() - startedAt,
+            stats: store.statsFor(repoRoot, space),
+            sources: Object.keys(result && result.sources ? result.sources : {}),
+          },
+        });
+        return { ok: true, durationMs: Date.now() - startedAt };
+      } catch (e) {
+        if (broadcast) broadcast({ type: 'mind-startup-refresh', payload: { phase: 'error', space, error: e.message } });
+        return { ok: false, error: e.message };
+      }
+    },
+
     orchestratorHint(opts = {}) {
       const space = getSpace();
       const stats = store.statsFor(repoRoot, space);
       if (!stats) return `[mind: ${space} empty]`;
       const ageMin = Math.round((Date.now() - new Date(stats.lastBuildAt).getTime()) / 60000);
       const stamp = `[mind: ${space} nodes=${stats.nodes} edges=${stats.edges} communities=${stats.communities} staleness=${ageMin}m] Query before answering: POST http://127.0.0.1:3800/api/mind/query {"question":"..."}. Save findings: POST /api/mind/save-result {"question","answer","citedNodeIds"}.`;
-      if (opts.minimal) return stamp;
+      // Apps + sites awareness: enumerate which apps and which sites have
+      // automations indexed and how many are verified. Lets the dispatched
+      // worker know up front that a recipe path exists without re-querying.
+      // Two short lines, zero call cost.
+      let appsLine = '';
+      let sitesLine = '';
       try {
         const g = store.loadGraph(repoRoot, space);
-        if (!g) return stamp;
+        if (g && Array.isArray(g.nodes)) {
+          const byApp = new Map();
+          const bySite = new Map();
+          for (const n of g.nodes) {
+            if (n.kind !== 'recipe' || !Array.isArray(n.tags)) continue;
+            if (n.tags.includes('app-automation')) {
+              const appTag = n.tags.find(t => t !== 'app-automation' && t !== 'verified' && t !== 'draft' && t !== 'archived');
+              if (appTag) {
+                const slot = byApp.get(appTag) || { total: 0, verified: 0 };
+                slot.total++;
+                if (n.tags.includes('verified')) slot.verified++;
+                byApp.set(appTag, slot);
+              }
+            }
+            if (n.tags.includes('site-automation')) {
+              const siteTag = n.tags.find(t => t !== 'site-automation' && t !== 'verified' && t !== 'draft' && t !== 'archived');
+              if (siteTag) {
+                const slot = bySite.get(siteTag) || { total: 0, verified: 0 };
+                slot.total++;
+                if (n.tags.includes('verified')) slot.verified++;
+                bySite.set(siteTag, slot);
+              }
+            }
+          }
+          if (byApp.size) {
+            const summary = [...byApp.entries()].slice(0, 8).map(([a, s]) => `${a}=${s.verified}/${s.total}`).join(' ');
+            appsLine = `\n[apps: ${summary}] Use POST /api/apps/do { app, goal } to drive desktop apps; verified recipes replay without LLM tokens.`;
+          }
+          if (bySite.size) {
+            const summary = [...bySite.entries()].slice(0, 8).map(([h, s]) => `${h}=${s.verified}/${s.total}`).join(' ');
+            sitesLine = `\n[sites: ${summary}] Use POST /api/browser/router/run { goal, url } to drive websites; verified site recipes replay without LLM tokens.`;
+          }
+        }
+      } catch (_) {}
+      // Concatenate so legacy callers that read appsLine alone still work.
+      appsLine = appsLine + sitesLine;
+      if (opts.minimal) return stamp + appsLine;
+      try {
+        const g = store.loadGraph(repoRoot, space);
+        if (!g) return stamp + appsLine;
         const ui = getUiContext ? getUiContext() : {};
-        // When the orchestrator passes the worker's task prompt as opts.question,
-        // L1 becomes the BFS sub-graph for that task. Otherwise it's the
-        // generic "god nodes + recent conversations" view.
         const wake = composeWakeUp(g, {
           activeRepo: ui.activeRepo, activeRepoPath: ui.activeRepoPath, space,
           budgetTokens: opts.budgetTokens || 600,
           question: opts.question || '',
         });
-        return `${stamp}\n\n${wake.text}`;
+        return `${stamp}${appsLine}\n\n${wake.text}`;
       } catch (_) {
-        return stamp;
+        return stamp + appsLine;
       }
     },
   };
