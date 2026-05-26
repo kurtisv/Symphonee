@@ -1,7 +1,7 @@
 /**
  * Electron main process — wraps the HTTP+WS server in a desktop window.
  */
-const { app, BrowserWindow, nativeImage, dialog, screen, shell, webContents: webContentsNS, globalShortcut } = require('electron');
+const { app, BrowserWindow, nativeImage, nativeTheme, dialog, screen, shell, webContents: webContentsNS, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -1455,6 +1455,14 @@ if (!gotLock) {
     // Create the main window FIRST and point it at splash.html on disk so
     // the user sees the brand mark immediately. We swap to the dashboard
     // URL once the HTTP server is listening (with a CSS fade in splash.html).
+    //
+    // Force DWM to paint new windows' client area dark BEFORE the renderer's
+    // first frame arrives. Without this, Windows paints the unrendered
+    // BrowserWindow with the system-default light background for 1-2 frames
+    // on slow GPU/driver combos, producing a visible white flash before the
+    // splash (#1a1a1a) takes over. BrowserWindow.backgroundColor only
+    // governs the Chromium compositor, not DWM's pre-paint.
+    try { nativeTheme.themeSource = 'dark'; } catch (_) {}
     {
       const displays = screen.getAllDisplays();
       const pref = loadDisplayPref();
@@ -1487,9 +1495,18 @@ if (!gotLock) {
           backgroundThrottling: false,
         },
       });
-      win.maximize();
+      // Do NOT call win.maximize() here. maximize() implicitly shows the
+      // window even when it was created with show:false, exposing the
+      // unpainted renderer (white) until the splash actually paints — on
+      // slow renderer startup that's seconds of white, not a flash. Defer
+      // both maximize and show into ready-to-show so the user only sees
+      // the window once Chromium has produced its first frame.
       win.once('ready-to-show', () => {
-        try { win.show(); splashShownAt = Date.now(); } catch (_) {}
+        try {
+          win.maximize();
+          win.show();
+          splashShownAt = Date.now();
+        } catch (_) {}
       });
       win.on('closed', () => { win = null; });
       try { win.loadFile(path.join(__dirname, 'public', 'splash.html')); } catch (_) {}

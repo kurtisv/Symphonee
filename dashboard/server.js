@@ -16,6 +16,7 @@ const { gitAsync, gitSync } = require('./utils/git-async');
 const { SWRCache } = require('./utils/swr-cache');
 const { atomicWriteSync } = require('./utils/atomic-write');
 const { BusyGuard } = require('./utils/busy-guard');
+const instructionAudit = require('./instruction-audit');
 
 // Core-owned SWR caches. ADO/GitHub caches moved into their plugins in v0.4.0;
 // core keeps git-branch cache + a general-purpose plugin cache.
@@ -569,15 +570,9 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/git/log' && req.method === 'GET')       return handleGitLog(url, res);
     if (url.pathname === '/api/git/commit-diff' && req.method === 'GET') return handleCommitDiff(url, res);
     if (url.pathname === '/api/git/checkout' && req.method === 'POST')  return handleGitCheckout(req, res);
-    if (url.pathname === '/api/git/pull' && req.method === 'POST') {
-      if (incognitoGuard(res, 'git pull')) return; return handleGitPull(req, res);
-    }
-    if (url.pathname === '/api/git/push' && req.method === 'POST') {
-      if (incognitoGuard(res, 'git push')) return; return handleGitPush(req, res);
-    }
-    if (url.pathname === '/api/git/fetch' && req.method === 'POST') {
-      if (incognitoGuard(res, 'git fetch')) return; return handleGitFetch(req, res);
-    }
+    if (url.pathname === '/api/git/pull' && req.method === 'POST')    return handleGitPull(req, res);
+    if (url.pathname === '/api/git/push' && req.method === 'POST')    return handleGitPush(req, res);
+    if (url.pathname === '/api/git/fetch' && req.method === 'POST')   return handleGitFetch(req, res);
     if (url.pathname === '/api/git/discard' && req.method === 'POST')   return handleGitDiscard(req, res);
 
     // ── Split Diff ────────────────────────────────────────────────────────
@@ -690,16 +685,47 @@ const server = http.createServer(async (req, res) => {
           const mindInstr = fs.readFileSync(path.join(__dirname, 'mind', 'instructions.md'), 'utf8');
           instructions = instructions + '\n\n---\n\n' + mindInstr;
         } catch (_) {}
+        // Symphonee brain: current intent snapshot + dependency state.
+        // Every CLI sees this so it can read the live theory of what the
+        // user is doing before answering AND know whether the brain has
+        // the local models it needs. Also appends brain instructions so
+        // CLIs know how to interact with the planner front door. The
+        // brain is always on - no mode field, no toggle.
+        let brainField = null;
+        try {
+          if (brain && typeof brain.getIntent === 'function') {
+            const brainSetup = await require('./mind/ollama-setup').detectBrainSetup();
+            brainField = {
+              intent: brain.getIntent(),
+              triageModel: require('./brain/planner').TRIAGE_MODEL,
+              reasoningModel: require('./brain/planner').REASONING_MODEL,
+              setup: brainSetup,
+            };
+          }
+        } catch (_) {}
+        try {
+          const brainInstr = fs.readFileSync(path.join(__dirname, 'brain', 'instructions.md'), 'utf8');
+          instructions = instructions + '\n\n---\n\n' + brainInstr;
+        } catch (_) {}
+        // Instruction-coherence audit. Every CLI sees this on bootstrap so
+        // it can warn the user if the instruction system has degraded.
+        // Cached from the last writePluginHints / boot run; cheap on miss.
+        let auditField = instructionAudit.getCached();
+        if (!auditField) {
+          try { auditField = instructionAudit.run({ repoRoot }); } catch (_) { auditField = null; }
+        }
         // Compose payload
         const payload = {
           context, instructions, plugins, learnings, permissions: permissionsData,
           mind: mindField,
+          brain: brainField,
+          instructionsAudit: auditField,
           loadedAt: new Date().toISOString(),
           features: {
             orchestrateMode: true,
             graphRunsMode: true,
             mindMode: true,
-            incognitoMode: cfg.IncognitoMode === true,
+            brainMode: true,
           },
         };
         // Checksum: short hash so the CLI can echo it. Computed over a stable view.
@@ -708,6 +734,7 @@ const server = http.createServer(async (req, res) => {
           pluginCount: plugins.length, learningCount: learnings.length,
           features: payload.features, instructionsLen: instructions.length,
           mindNodes: mindField?.graphStats?.nodes || 0,
+          auditOk: auditField ? auditField.ok : null,
         });
         const crypto = require('crypto');
         payload.checksum = 'b' + crypto.createHash('sha256').update(stable).digest('hex').slice(0, 10);
@@ -854,16 +881,6 @@ function normalizeRootConfig(config) {
   return rootConfig;
 }
 
-// ── Incognito Mode guard ─────────────────────────────────────────────────
-function isIncognito() { return getConfig().IncognitoMode === true; }
-function incognitoGuard(res, action) {
-  if (isIncognito()) {
-    json(res, { error: `Blocked by Incognito Mode: "${action}" is not available in incognito. Plugin-backed integrations and remote operations are disabled. Turn off incognito in Settings to proceed.`, incognito: true }, 403);
-    return true;
-  }
-  return false;
-}
-
 // ── Themes ────────────────────────────────────────────────────────────────
 const themesPath = path.join(repoRoot, 'config', 'themes.json');
 
@@ -903,7 +920,7 @@ async function handleSaveConfig(req, res) {
   // Core caches that survive in core. Plugin caches (ADO, GH) are invalidated
   // via the 'config-changed' broadcast the next step already emits.
   swrGit.clear(); swrPlugins.clear();
-  // Regenerate AI instructions (incognito, orchestration, etc. may have changed)
+  // Regenerate AI instructions (plugin set, orchestration, etc. may have changed)
   try { writePluginHints(); } catch (_) {}
   json(res, { ok: true });
 }
@@ -3073,13 +3090,10 @@ function writePluginHints() {
   const END = '<!-- PLUGIN_INSTRUCTIONS_END -->';
   const REPO_START = '<!-- REPO_CONTEXT_START -->';
   const REPO_END = '<!-- REPO_CONTEXT_END -->';
-  const INCOGNITO_START = '<!-- INCOGNITO_START -->';
-  const INCOGNITO_END = '<!-- INCOGNITO_END -->';
   const cfg = getConfig();
   // Orchestration (and Graph Runs) are always on; BETA toggle is gone.
   const uiCtx = getUiContextWithPath();
   const hasRepo = !!uiCtx.activeRepo;
-  const incognitoActive = cfg.IncognitoMode === true;
 
   if (!fs.existsSync(templatePath)) {
     console.warn('  [writePluginHints] template not found: INSTRUCTIONS.base.md');
@@ -3101,14 +3115,6 @@ function writePluginHints() {
           content = content.substring(0, rStart) + content.substring(rEnd + REPO_END.length);
         }
       }
-      // Strip incognito section when NOT in incognito mode (include when active)
-      if (!incognitoActive) {
-        const iStart = content.indexOf(INCOGNITO_START);
-        const iEnd = content.indexOf(INCOGNITO_END);
-        if (iStart !== -1 && iEnd !== -1) {
-          content = content.substring(0, iStart) + content.substring(iEnd + INCOGNITO_END.length);
-        }
-      }
       // Inject plugin instructions
       const startIdx = content.indexOf(START);
       const endIdx = content.indexOf(END);
@@ -3124,6 +3130,18 @@ function writePluginHints() {
       atomicWriteSync(out, content);
     } catch (err) { console.error(`  [writePluginHints] failed to generate ${filename}:`, err.message); }
   }
+  // After (re)generating instruction files, re-run the instruction-coherence
+  // audit so /api/bootstrap reflects the latest state. Broadcast on failure
+  // so the dashboard can show a toast.
+  try {
+    const audit = instructionAudit.run({ repoRoot });
+    if (!audit.ok) {
+      console.warn(`  [audit] FAILED: ${audit.failedChecks.join(', ')}`);
+      try { broadcast({ type: 'instructions-audit', audit }); } catch (_) {}
+    } else {
+      console.log(`  [audit] PASS - ${audit.checks.length} checks, ${audit.ranAt}`);
+    }
+  } catch (e) { console.warn('  [audit] error running audit:', e.message); }
 }
 
 // ── Pre-trust folder for a CLI (called from the frontend before launching) ─
@@ -3148,6 +3166,13 @@ console.log('  Orchestrator bus mounted (/api/orchestrator/*)');
 
 // ── Mount Mind (shared knowledge graph for every dispatched CLI) ────────────
 const { mountMind } = require('./mind');
+// Brain reference holder - mountMind closes over this so it can call
+// brain.notifyIntent + sequences.recordEvent from inside its internal
+// notifyKnowledgeEvent function. We populate _brainForKnowledgeEvents
+// after mountBrain runs; the hook function only executes lazily on
+// real knowledge events, by which time the holder is set.
+let _brainForKnowledgeEvents = null;
+const _brainSequences = require('./brain/sequences');
 const mind = mountMind(addRoute, json, {
   repoRoot, broadcast,
   getUiContext: getUiContextWithPath,
@@ -3158,6 +3183,23 @@ const mind = mountMind(addRoute, json, {
   // (cfg.Repos) instead of just the active one.
   getAllRepos: () => (getConfig().Repos || {}),
   getAiApiKeys: () => (getConfig().AiApiKeys || {}),
+  // Reflection scheduler reads EnableContinuousLearning from here. Passed
+  // as a getter so settings changes take effect without restart.
+  getConfig,
+  // Knowledge-event hook: fires from inside Mind on save-result, teach,
+  // /add, learnings, etc. Feeds the brain's intent model AND the sequence
+  // recorder so workflow synthesis has signal. Best-effort; must never
+  // throw or block the Mind path.
+  onKnowledgeEvent: (ev) => {
+    try {
+      if (!_brainForKnowledgeEvents) return;
+      const ui = getUiContextWithPath();
+      const kind = ev.kind || ev.reason || 'knowledge-event';
+      const repo = ui && ui.activeRepo || null;
+      _brainForKnowledgeEvents.notifyIntent({ kind, detail: ev.reason || null, repo, source: 'mind/notify' });
+      _brainSequences.recordEvent(repoRoot, { kind, repo, detail: ev.reason || null, source: 'mind/notify' });
+    } catch (_) { /* swallow */ }
+  },
 });
 console.log('  Mind mounted (/api/mind/*) - shared knowledge graph');
 // Wire orchestrator -> Mind so every dispatched worker prompt is prefixed
@@ -3167,6 +3209,142 @@ if (orchestrator) {
   orchestrator.getMindHint = (opts) => mind.orchestratorHint(opts || {});
   orchestrator.saveTaskToMind = (task) => mind.saveTaskToMind(task);
 }
+
+// ── Mount Symphonee brain (planner + live intent model) ─────────────────────
+// The brain is the reasoning layer above Mind. Mind is memory; the brain
+// classifies inputs, picks tools, and (when planner mode is "active")
+// dispatches CLIs as tools via the orchestrator. Lives at /api/symphonee/*.
+// The brain is always on. When the orchestrator gets a spawn call without
+// a cli, the brain picks; otherwise the explicit cli wins. No mode toggle.
+const { mountBrain } = require('./brain');
+const brain = mountBrain(addRoute, json, {
+  repoRoot, broadcast,
+  getUiContext: getUiContextWithPath,
+  getConfig,
+});
+console.log('  Brain mounted (/api/symphonee/*) - planner + intent');
+
+// Give the orchestrator a reference to the brain so /api/orchestrator/spawn
+// can consult brain.plan() when no cli was supplied. Set after both mount
+// so dependency direction stays one-way: orchestrator uses brain, not the
+// other way round.
+if (orchestrator && typeof brain.plan === 'function') {
+  orchestrator.brain = brain;
+}
+
+// Populate the brain holder Mind's onKnowledgeEvent hook closes over.
+// From this line forward, every knowledge event (save-result, teach,
+// learnings, /add, file watch trigger) feeds brain.notifyIntent AND
+// sequences.recordEvent. Best-effort, fail-silent.
+_brainForKnowledgeEvents = brain;
+
+// ── Boot-time brain setup check ─────────────────────────────────────────────
+// Auto-install everything the brain needs. The user never has to think about
+// model installs - Symphonee handles it.
+//
+// Policy:
+//   - Ollama missing      -> toast points at the download URL (we cannot
+//                            install Ollama itself silently; it requires
+//                            an installer with admin rights).
+//   - Ollama stopped      -> auto-start via `ollama serve`.
+//   - Triage missing      -> auto-pull (~1 GB).
+//   - Reasoning missing   -> auto-pull (~16 GB). Yes it is big. It happens
+//                            once. Progress streams via the existing
+//                            ollama-pull WebSocket events so the UI can
+//                            render a real progress bar. Brain features
+//                            degrade until the pull completes but never
+//                            crash. No user click required.
+//
+// Pulls run serially so we don't slam Ollama with two concurrent
+// multi-gig streams. Deferred 4 s so the WS layer is ready.
+setTimeout(() => {
+  const setupMod = require('./mind/ollama-setup');
+  setupMod.detectBrainSetup().then(async (status) => {
+    if (!status.ollamaInstalled) {
+      console.log('[brain/setup] Ollama not installed - brain features disabled until you install it from https://ollama.com/download');
+      if (typeof broadcast === 'function') broadcast({
+        type: 'notification',
+        title: 'Symphonee brain: Ollama not installed',
+        body: 'Install Ollama from https://ollama.com/download to enable the brain features.',
+        level: 'warning', icon: 'cpu',
+      });
+      return;
+    }
+    if (!status.ollamaRunning) {
+      const r = await setupMod.ensureRunning({ installPath: status.installPath });
+      if (!r.ok) {
+        console.log('[brain/setup] Ollama installed but not running and could not be started.');
+        return;
+      }
+      status = await setupMod.detectBrainSetup();
+    }
+    const toPull = [];
+    if (!status.triageModelInstalled) toPull.push({ model: status.triageModel, sizeHint: '~1 GB' });
+    if (!status.reasoningModelInstalled) toPull.push({ model: status.reasoningModel, sizeHint: '~16 GB' });
+    if (!toPull.length) {
+      console.log('[brain/setup] all brain dependencies present.');
+      return;
+    }
+    for (const { model, sizeHint } of toPull) {
+      console.log(`[brain/setup] Auto-pulling "${model}" (${sizeHint})...`);
+      if (typeof broadcast === 'function') broadcast({
+        type: 'notification',
+        title: 'Symphonee brain: downloading ' + model,
+        body: `Pulling ${model} (${sizeHint}). One-time. Watch the progress in the activity feed.`,
+        level: 'info', icon: 'download',
+      });
+      try {
+        const r = await setupMod.ensureModel({ model, broadcast });
+        if (r && r.ok) {
+          console.log(`[brain/setup] "${model}" installed.`);
+          if (typeof broadcast === 'function') broadcast({
+            type: 'notification',
+            title: 'Symphonee brain: ' + model + ' ready',
+            body: 'Download complete. Brain features now active.',
+            level: 'success', icon: 'check-circle',
+          });
+          // When the heavy reasoning model lands, Symphonee restarts so
+          // every cached chat-status / llm-status / brain-faculty state
+          // starts fresh against the upgraded model. We notify the user
+          // first and wait 10 s so they see what is about to happen and
+          // can save any in-flight work.
+          if (model === status.reasoningModel) {
+            console.log('[brain/setup] reasoning model installed -- scheduling restart in 10 s.');
+            if (typeof broadcast === 'function') broadcast({
+              type: 'notification',
+              title: 'Restarting Symphonee in 10 s',
+              body: `Reasoning model ${model} just installed. Symphonee will restart to activate brain features fully. Save any unfinished work.`,
+              level: 'info', icon: 'rotate-cw',
+            });
+            setTimeout(() => {
+              try {
+                const req = http.request({
+                  hostname: '127.0.0.1', port: PORT, path: '/api/restart-app', method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+                });
+                req.on('error', () => { /* server already going down */ });
+                req.write('{}');
+                req.end();
+              } catch (_) { /* swallow */ }
+            }, 10_000);
+          }
+        } else {
+          console.warn(`[brain/setup] failed to pull "${model}":`, r && r.error);
+          if (typeof broadcast === 'function') broadcast({
+            type: 'notification',
+            title: 'Symphonee brain: ' + model + ' pull failed',
+            body: (r && r.error) || 'Pull failed; retry on next boot or POST /api/symphonee/setup/pull.',
+            level: 'warning', icon: 'alert-triangle',
+          });
+        }
+      } catch (err) {
+        console.warn(`[brain/setup] error pulling "${model}":`, err.message);
+      }
+    }
+  }).catch((err) => {
+    console.warn('[brain/setup] error:', err.message);
+  });
+}, 4000);
 
 // Auto-refresh Mind on every server boot so the graph is always current
 // when the user opens the app. Deferred 1.5s so the WebSocket layer is
@@ -3181,7 +3359,14 @@ setTimeout(() => {
 
 // ── Mount learnings ─────────────────────────────────────────────────────────
 const learningsDataDir = path.join(repoRoot, '.ai-workspace');
-_learningsInstance = mountLearnings(addRoute, json, { dataDir: learningsDataDir, getConfig, readBody });
+_learningsInstance = mountLearnings(addRoute, json, {
+  dataDir: learningsDataDir, getConfig, readBody,
+  onChange: (event) => {
+    // Wire learning ledger mutations into Mind so the brain reacts the
+    // same way it does to save-result / teach / file edits.
+    try { if (mind && mind.notifyKnowledgeEvent) mind.notifyKnowledgeEvent({ kind: event.kind, reason: event.kind, nodeIds: [] }); } catch (_) {}
+  },
+});
 console.log('  Learnings module mounted (/api/learnings/*)');
 // Pull shared learnings on startup, then regenerate instruction files
 _learningsInstance.pull().then(r => {
@@ -3240,7 +3425,7 @@ loadedPlugins = loadPlugins(pluginsDir, {
   addRoute, getConfig, broadcast, json, writePluginHints,
   swrCache: swrPlugins,
   shellDeps: {
-    gitExec, sanitizeText, permGate, incognitoGuard,
+    gitExec, sanitizeText, permGate,
     getRepoPath, repoRoot,
     https: require('https'),
     fs: require('fs'),
@@ -3398,6 +3583,21 @@ writePluginHints();
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
+  });
+  // Coherence audit. GET returns the cached result; POST forces a refresh.
+  // Every /api/bootstrap response also embeds the cached audit so every CLI
+  // sees the audit state at session start. This is the self-healing chain.
+  addRoute('GET', '/api/instructions/audit', (req, res) => {
+    let result = instructionAudit.getCached();
+    if (!result) { try { result = instructionAudit.run({ repoRoot }); } catch (e) { return json(res, { error: e.message }, 500); } }
+    return json(res, result);
+  });
+  addRoute('POST', '/api/instructions/audit', async (req, res) => {
+    try {
+      const result = instructionAudit.run({ repoRoot });
+      try { broadcast({ type: 'instructions-audit', audit: result }); } catch (_) {}
+      return json(res, result);
+    } catch (e) { return json(res, { error: e.message }, 500); }
   });
   // Individual: /api/instructions/{name} serves a single file
   addRoute('__PREFIX__', '/api/instructions', (req, res, url, subpath) => {

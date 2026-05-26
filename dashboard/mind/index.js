@@ -21,6 +21,16 @@ const { analyze } = require('./analyze');
 const { composeWakeUp, DEFAULT_BUDGET_TOKENS } = require('./wakeup');
 const { sanitizeLabel, validateUrl } = require('./security');
 const { MindWatcher } = require('./watch');
+const { reflectOnce, startReflectionScheduler } = require('./reflect');
+const { healOnce, startHealingScheduler } = require('./heal');
+const insights = require('./insights');
+const repeatedQuestionAnalyser = require('./analysers/repeated-question');
+const coEditAnalyser = require('./analysers/co-edit');
+const memoryDecayAnalyser = require('./analysers/memory-decay');
+const crossRepoAnalyser = require('./analysers/cross-repo');
+const memoryModule = require('./memory');
+const ollamaSetup = require('./ollama-setup');
+const llm = require('./llm');
 const lock = require('./lock');
 const checkpoint = require('./checkpoint');
 const impact = require('./impact');
@@ -61,15 +71,28 @@ async function tryDenseSeeds(repoRoot, space, question, k = 50) {
 }
 
 function mountMind(addRoute, json, ctx) {
-  const { repoRoot, getUiContext, getLearnings, getPlugins, getNotesDir, broadcast, getAiApiKeys } = ctx;
+  const { repoRoot, getUiContext, getLearnings, getPlugins, getNotesDir, broadcast, getAiApiKeys, getConfig } = ctx;
   // Make the user's configured API keys available to the embedding layer so
   // it can pick a provider automatically (OpenAI > Google) instead of
   // defaulting to Ollama. Refreshes on every request so config edits take
   // effect without a restart.
   function refreshEmbedKeys() {
+    // Keys still flow through in case the orchestrator/other features
+    // call embed() with an explicit provider, but the default picker is
+    // hard-locked to Ollama-or-nothing.
     try { embeddings.setAvailableApiKeys(getAiApiKeys ? getAiApiKeys() : {}); } catch (_) {}
   }
   refreshEmbedKeys();
+  // Probe Ollama at boot + every 5 min so the picker prefers local
+  // semantic search the moment Ollama becomes available (no restart
+  // required). Failure is silent — falls back to BM25.
+  embeddings.refreshOllamaStatus({ force: true }).catch(() => {});
+  setInterval(() => { embeddings.refreshOllamaStatus().catch(() => {}); }, 5 * 60 * 1000).unref();
+  // Same cadence for the chat-model probe so reflection wakes up the
+  // instant a chat model gets pulled (whether by auto-bootstrap or by
+  // the user running `ollama pull` manually).
+  llm.refreshChatStatus({ force: true }).catch(() => {});
+  setInterval(() => { llm.refreshChatStatus().catch(() => {}); }, 5 * 60 * 1000).unref();
 
   const getSpace = () => {
     const c = getUiContext ? getUiContext() : {};
@@ -87,6 +110,84 @@ function mountMind(addRoute, json, ctx) {
     next.surprises = surprises;
     next.suggested = suggested;
     return store.saveGraph(repoRoot, space, next);
+  }
+
+  // ── Knowledge-event hook (the brain reacts) ──────────────────────────────
+  //
+  // Anything that adds a node to the graph from a non-file source
+  // (save-result, teach, /add, learnings, manual ingest) should call
+  // notifyKnowledgeEvent so Mind does the same incremental rebuild +
+  // per-node embed it would do for a file change.
+  //
+  // Debounced separately from the file watcher: knowledge writes burst
+  // (one save-result -> N memory cards -> N embeds), so we coalesce a
+  // 3s window before re-clustering / re-embedding.
+  let knowledgeTimer = null;
+  const pendingNodes = new Set();
+  let pendingReasons = new Set();
+  let lastEventAt = 0;
+  const getLastEventAt = () => lastEventAt;
+
+  async function embedSingleNode(space, nodeId) {
+    refreshEmbedKeys();
+    const vs = new VectorStore(repoRoot, space);
+    const loaded = vs.load();
+    // Only embed if a vector store already exists for this space — we
+    // never want a single new node to spin up a brand-new store with
+    // dim 0. The full /api/mind/embed run owns initialisation.
+    if (!loaded || vs.count() === 0) return { ok: false, reason: 'no-vector-store' };
+    const g = store.loadGraph(repoRoot, space);
+    if (!g) return { ok: false, reason: 'no-graph' };
+    const node = g.nodes.find(n => n.id === nodeId);
+    if (!node) return { ok: false, reason: 'node-missing' };
+    const text = [node.label, node.body, node.answer].filter(Boolean).join('\n\n').slice(0, 4000);
+    if (!text.trim()) return { ok: false, reason: 'no-text' };
+    const provider = vs.provider || embeddings.pickProvider();
+    if (!provider) return { ok: false, reason: 'no-provider' };
+    try {
+      const vec = await embeddings.embedSingle(text, { provider, model: vs.model || undefined });
+      if (!vec) return { ok: false, reason: 'empty-embedding' };
+      vs.upsert(nodeId, vec);
+      vs.save();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: 'embed-error', error: err.message };
+    }
+  }
+
+  function notifyKnowledgeEvent({ kind, nodeIds = [], reason }) {
+    lastEventAt = Date.now();
+    for (const id of nodeIds) pendingNodes.add(id);
+    if (reason) pendingReasons.add(reason);
+    if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'knowledge-event', reason: kind || reason, nodeCount: nodeIds.length } });
+    // Out-of-band hook for layers above Mind (the brain feeds intent +
+    // sequence recorder from here). Must never throw or block.
+    if (typeof ctx.onKnowledgeEvent === 'function') {
+      try { ctx.onKnowledgeEvent({ kind, reason, nodeIds }); } catch (_) { /* swallow */ }
+    }
+    if (knowledgeTimer) clearTimeout(knowledgeTimer);
+    knowledgeTimer = setTimeout(async () => {
+      const ids = Array.from(pendingNodes);
+      const reasons = Array.from(pendingReasons);
+      pendingNodes.clear();
+      pendingReasons.clear();
+      knowledgeTimer = null;
+      const space = getSpace();
+      // Auto-embed every new node we know about. Independent of the
+      // full incremental build below — the per-node embed is cheap and
+      // gives semantic recall an immediate signal.
+      for (const id of ids) {
+        try { await embedSingleNode(space, id); } catch (_) { /* one bad embed must not block the rest */ }
+      }
+      // Same incremental rebuild the file watcher fires. Picks up any
+      // sources that may have changed alongside the knowledge event
+      // (e.g. a note that was edited in the same turn).
+      try {
+        await triggerIncrementalUpdate({ knowledgeEvent: true, reasons, nodeIds: ids });
+      } catch (e) {
+        console.warn('[mind/knowledge-event] update error:', e.message);
+      }
+    }, 3000);
   }
 
   // ── Reads ────────────────────────────────────────────────────────────────
@@ -168,6 +269,7 @@ function mountMind(addRoute, json, ctx) {
       activeRepo: ui.activeRepo, activeRepoPath: ui.activeRepoPath, space,
       budgetTokens: Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_BUDGET_TOKENS,
       question,
+      repoRoot,
     });
     return json(res, { space, ...wake });
   });
@@ -1030,6 +1132,7 @@ function mountMind(addRoute, json, ctx) {
     }
     persistDerivedGraph(space, g);
     if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'node-added', id, createdBy } });
+    notifyKnowledgeEvent({ kind: 'save-result', nodeIds: [id], reason: 'qa-saved' });
 
     // Auto-extract memory cards from the answer text. Conservative
     // patterns ("remember:", "we decided", "the rule is", "prefer X",
@@ -1076,6 +1179,9 @@ function mountMind(addRoute, json, ctx) {
       }
       if (memoriesCreated.length && broadcast) {
         broadcast({ type: 'mind-update', payload: { kind: 'memory-extracted', conversationId: id, count: memoriesCreated.length, memories: memoriesCreated } });
+      }
+      if (memoriesCreated.length) {
+        notifyKnowledgeEvent({ kind: 'memory-auto-extracted', nodeIds: memoriesCreated.map(m => m.id), reason: 'auto-memory' });
       }
     }
 
@@ -1158,6 +1264,7 @@ function mountMind(addRoute, json, ctx) {
       if (broadcast) {
         broadcast({ type: 'mind-update', payload: { kind: 'memory-added', id: node.id, title: node.label, createdBy: node.createdBy } });
       }
+      notifyKnowledgeEvent({ kind: 'teach', nodeIds: [node.id], reason: 'memory-card-taught' });
       return json(res, { ok: true, nodeId: node.id, node, edges });
     } catch (e) {
       if (e.code === 'MIND_LOCKED') {
@@ -1183,6 +1290,7 @@ function mountMind(addRoute, json, ctx) {
       tags: Array.isArray(body.tags) ? body.tags : [],
     });
     persistDerivedGraph(space, g);
+    notifyKnowledgeEvent({ kind: 'manual-ingest', nodeIds: [id], reason: 'manual-add' });
     return json(res, { ok: true, nodeId: id });
   });
 
@@ -1190,10 +1298,13 @@ function mountMind(addRoute, json, ctx) {
   let watcher = null;
   // Watch always re-ingests every Symphonee-managed repo on each tick. Mind
   // is meant to span all connected projects.
-  const triggerIncrementalUpdate = async (changedFiles) => {
+  const triggerIncrementalUpdate = async (trigger) => {
     const space = getSpace();
     const jobId = makeJobId();
-    const job = { id: jobId, kind: 'watch-update', space, status: 'running', startedAt: Date.now(), progress: [], trigger: { changedFiles } };
+    // trigger can be an array of changed file paths (file watcher) OR an
+    // object { knowledgeEvent, reasons, nodeIds } (notifyKnowledgeEvent).
+    const triggerSummary = Array.isArray(trigger) ? { changedFiles: trigger } : (trigger || {});
+    const job = { id: jobId, kind: triggerSummary.knowledgeEvent ? 'knowledge-update' : 'watch-update', space, status: 'running', startedAt: Date.now(), progress: [], trigger: triggerSummary };
     jobs.set(jobId, job);
     try {
       const result = await engine.runBuild({
@@ -1246,14 +1357,495 @@ function mountMind(addRoute, json, ctx) {
     return json(res, { enabled: true, debounceMs: watcher.debounceMs });
   });
 
-  // Auto-resume the watcher on server boot if the user had it on previously.
+  // Watcher is ON by default. Mind is meant to feel continuously alive —
+  // every edit, every learning, every conversation should land without
+  // anyone having to remember to rebuild. The only way it stays off is if
+  // the user explicitly disabled it (watch.json says enabled:false).
   // Defer one tick so the rest of the server (routes, broadcast) is wired.
   setImmediate(() => {
     try {
       const saved = readWatchPreference();
-      if (saved && saved.enabled) startWatcher();
-    } catch (_) { /* ignore */ }
+      if (saved && saved.enabled === false) return; // explicit opt-out
+      startWatcher();
+    } catch (_) { /* best-effort; default-on still applies */ }
   });
+
+  // ── Reflection (dream pass) ──────────────────────────────────────────────
+  // Manual trigger: POST /api/mind/reflect { windowHours?, dryRun? }
+  addRoute('POST', '/api/mind/reflect', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const space = getSpace();
+    try {
+      const result = await reflectOnce({
+        repoRoot, space,
+        windowHours: typeof body.windowHours === 'number' ? body.windowHours : 24,
+        dryRun: body.dryRun === true,
+      });
+      if (result.cardsCreated > 0 && broadcast) {
+        broadcast({ type: 'mind-update', payload: { kind: 'reflection-promoted', count: result.cardsCreated, cards: result.cards } });
+      }
+      return json(res, result);
+    } catch (e) {
+      return json(res, { ok: false, error: e.message }, 500);
+    }
+  });
+
+  // ── Embedding setup (Smart Search) ───────────────────────────────────────
+  //
+  // /api/mind/embed-status returns what the UI's Settings panel needs to
+  // render its current state: which provider is active, whether Ollama is
+  // installed/running/has the model, vector count.
+  addRoute('GET', '/api/mind/embed-status', async (req, res) => {
+    refreshEmbedKeys();
+    const space = getSpace();
+    let vectorCount = 0, vectorDim = 0;
+    try {
+      const vs = new VectorStore(repoRoot, space);
+      vs.load();
+      vectorCount = vs.count();
+      vectorDim = vs.dim;
+    } catch (_) {}
+    // Live probe of Ollama (forced — bypasses the 5min cache so the UI
+    // always sees current state when the user opens Settings).
+    try { await embeddings.refreshOllamaStatus({ force: true }); } catch (_) {}
+    try { await llm.refreshChatStatus({ force: true }); } catch (_) {}
+    const detect = await ollamaSetup.detect({
+      model: embeddings.OLLAMA_DEFAULT_MODEL,
+      chatModel: ollamaSetup.DEFAULT_CHAT_MODEL,
+    });
+    const provider = embeddings.pickProvider();
+    return json(res, {
+      activeProvider: provider || 'bm25',   // ollama | bm25 (cloud never picked)
+      ollama: {
+        installed: detect.installed,
+        installPath: detect.installPath,
+        running: detect.running,
+        modelInstalled: detect.modelInstalled,
+        model: detect.model,
+        models: detect.models,
+      },
+      chat: {
+        modelInstalled: detect.chatModelInstalled,
+        preferredModel: detect.preferredChat,
+        defaultModel: detect.chatModel,
+        installedChatModels: detect.chatModels,
+      },
+      vectors: { count: vectorCount, dim: vectorDim },
+      downloadUrl: 'https://ollama.com/download',
+    });
+  });
+
+  // Shared setup pipeline used by both the auto-bootstrap and the manual
+  // /api/mind/embed-setup route. Idempotent. Returns a result describing
+  // the final state. Every progress beat fires as a `mind-update` event
+  // with kind:'embed-setup' so any subscribed UI can render it.
+  let _embedSetupRunning = false;
+  async function runEmbedSetup({ model, source = 'manual' } = {}) {
+    if (_embedSetupRunning) return { ok: false, reason: 'already-running' };
+    _embedSetupRunning = true;
+    const m = model || embeddings.OLLAMA_DEFAULT_MODEL;
+    const space = getSpace();
+    const step = (kind, payload = {}) => {
+      if (!broadcast) return;
+      broadcast({ type: 'mind-update', payload: { kind: 'embed-setup', step: kind, source, ...payload } });
+    };
+    try {
+      step('detect', {});
+      let detect = await ollamaSetup.detect({ model: m });
+      if (!detect.installed) {
+        step('needs-install', { downloadUrl: 'https://ollama.com/download' });
+        return { ok: false, reason: 'needs-install' };
+      }
+      if (!detect.running) {
+        step('launching', { installPath: detect.installPath });
+        const launch = await ollamaSetup.ensureRunning({ installPath: detect.installPath });
+        if (!launch.ok) { step('launch-failed', launch); return { ok: false, reason: 'launch-failed' }; }
+        detect = await ollamaSetup.detect({ model: m });
+      }
+      if (!detect.modelInstalled) {
+        step('pulling-model', { model: m });
+        const pull = await ollamaSetup.ensureModel({ model: m, broadcast });
+        if (!pull.ok) { step('pull-failed', pull); return { ok: false, reason: 'pull-failed' }; }
+      }
+      // Vector store is provider-specific (OpenAI=1536, Ollama=768).
+      // Switching providers means dropping the old store before the
+      // rebuild — engine.refreshEmbeddings expects an empty store when
+      // initialising with a new provider.
+      step('dropping-old-vectors', {});
+      try {
+        const vs = new VectorStore(repoRoot, space);
+        if (vs.load() && vs.provider !== 'ollama') vs.drop();
+      } catch (_) { /* nothing to drop */ }
+      await embeddings.refreshOllamaStatus({ force: true });
+      step('rebuilding-vectors', { provider: 'ollama' });
+      const g = store.loadGraph(repoRoot, space);
+      if (!g) { step('done', { reason: 'no-graph', vectorCount: 0 }); return { ok: true, vectorCount: 0 }; }
+      try {
+        await engine.refreshEmbeddings({
+          repoRoot, space, graph: g,
+          ctx: { embedProvider: 'ollama' },
+          onProgress: (msg) => step('embed-progress', { msg }),
+        });
+      } catch (e) {
+        step('embed-failed', { error: e.message });
+        return { ok: false, reason: 'embed-failed', error: e.message };
+      }
+      step('done', { provider: 'ollama' });
+      return { ok: true, provider: 'ollama' };
+    } catch (e) {
+      step('error', { error: e.message });
+      return { ok: false, reason: 'error', error: e.message };
+    } finally {
+      _embedSetupRunning = false;
+    }
+  }
+
+  // /api/mind/embed-setup is now a thin wrapper over runEmbedSetup so
+  // the user can still trigger it explicitly (recovery / diagnostics).
+  // The same pipeline runs automatically on boot — see autoBootstrap below.
+  addRoute('POST', '/api/mind/embed-setup', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    json(res, { ok: true, started: true, model: body.model || embeddings.OLLAMA_DEFAULT_MODEL });
+    runEmbedSetup({ model: body.model, source: 'manual' }).catch(() => {});
+  });
+
+  // Auto-bootstrap: every boot, Mind tries to make local embeddings work
+  // without anyone clicking anything. Silent unless something needs the
+  // user — and even then it's a passive UI hint, not a modal.
+  //
+  // States:
+  //   - Ollama installed + running + model pulled + vectors match    -> nothing to do
+  //   - Ollama installed but not running                              -> launch
+  //   - Ollama running but model missing                              -> pull
+  //   - Vector store has wrong provider/dim                           -> drop + rebuild
+  //   - Ollama not installed                                          -> emit `needs-install` hint, exit
+  //
+  // After the initial bootstrap, the heal watchdog (every 5min) keeps
+  // filling in vectors for new nodes — no further intervention needed.
+  async function autoBootstrapEmbeddings() {
+    try {
+      const space = getSpace();
+      const m = embeddings.OLLAMA_DEFAULT_MODEL;
+      const chatM = ollamaSetup.DEFAULT_CHAT_MODEL;
+      const detect = await ollamaSetup.detect({ model: m, chatModel: chatM });
+      if (!detect.installed) {
+        if (broadcast) broadcast({
+          type: 'mind-update',
+          payload: { kind: 'embed-setup', step: 'needs-install', source: 'auto', downloadUrl: 'https://ollama.com/download' },
+        });
+        return;
+      }
+      // Embedding side: rebuild only when there's nothing usable yet OR
+      // the store belongs to a different provider. Heal watchdog handles
+      // ongoing backfill, so we don't touch the store when it's healthy.
+      let needsRebuild = false;
+      try {
+        const vs = new VectorStore(repoRoot, space);
+        if (!vs.load() || vs.count() === 0 || vs.provider !== 'ollama') needsRebuild = true;
+      } catch (_) { needsRebuild = true; }
+      if (!detect.running || !detect.modelInstalled || needsRebuild) {
+        await runEmbedSetup({ model: m, source: 'auto' });
+      } else {
+        await embeddings.refreshOllamaStatus({ force: true });
+      }
+      // Chat-model side: silently pull the reflection model if no chat
+      // model is installed yet. This is the "humanless" pull — the user
+      // never has to know it happened. ensureRunning was already handled
+      // above so we know Ollama is alive at this point.
+      const postEmbedDetect = await ollamaSetup.detect({ model: m, chatModel: chatM });
+      if (postEmbedDetect.running && !postEmbedDetect.chatModelInstalled) {
+        if (broadcast) broadcast({
+          type: 'mind-update',
+          payload: { kind: 'embed-setup', step: 'pulling-chat-model', source: 'auto', model: chatM },
+        });
+        const pull = await ollamaSetup.ensureModel({ model: chatM, broadcast });
+        if (pull.ok) {
+          if (broadcast) broadcast({
+            type: 'mind-update',
+            payload: { kind: 'embed-setup', step: 'chat-model-ready', source: 'auto', model: chatM },
+          });
+          await llm.refreshChatStatus({ force: true });
+        }
+      } else if (postEmbedDetect.chatModelInstalled) {
+        await llm.refreshChatStatus({ force: true });
+      }
+    } catch (e) {
+      if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'embed-setup', step: 'error', source: 'auto', error: e.message } });
+    }
+  }
+  // Run shortly after boot so other subsystems (broadcast, watcher,
+  // schedulers) are wired before any progress events start firing.
+  if (!ctx._autoBootstrapStarted) {
+    ctx._autoBootstrapStarted = true;
+    setTimeout(() => { autoBootstrapEmbeddings().catch(() => {}); }, 3_500);
+    // Retry every 30 min in case Ollama becomes available later (e.g.
+    // user installed it without restarting Symphonee).
+    setInterval(() => { autoBootstrapEmbeddings().catch(() => {}); }, 30 * 60 * 1000).unref();
+  }
+
+  // ── Self-healing watchdog ────────────────────────────────────────────────
+  // Manual trigger: POST /api/mind/heal { skipEmbed?, maxNodes? }
+  addRoute('POST', '/api/mind/heal', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const space = getSpace();
+    try {
+      const result = await healOnce({
+        repoRoot, space, getAiApiKeys,
+        opts: { skipEmbed: body.skipEmbed === true, maxNodes: body.maxNodes },
+      });
+      if (result.healed > 0 && broadcast) {
+        broadcast({ type: 'mind-update', payload: { kind: 'self-healed', healed: result.healed, findings: result.findings } });
+      }
+      return json(res, result);
+    } catch (e) {
+      return json(res, { ok: false, error: e.message }, 500);
+    }
+  });
+
+  // ── Proactive insights ────────────────────────────────────────────────
+  //
+  // Insights run all four analysers, dedupe via signature, persist as
+  // kind:insight graph nodes. The scheduler fires hourly (or on the
+  // continuous-learning cadence) and also after save-result for fast
+  // signals like repeated-question.
+
+  async function generateInsights({ source = 'manual', categories } = {}) {
+    const space = getSpace();
+    const ui = getUiContext ? getUiContext() : {};
+    const enabled = !categories || categories.length === 0
+      ? ['repeated-question', 'co-edit', 'memory-decay', 'cross-repo']
+      : categories;
+    const candidates = [];
+    if (enabled.includes('repeated-question')) {
+      try { candidates.push(...await repeatedQuestionAnalyser.detect({ repoRoot, space })); } catch (e) { console.warn('[insights/A]', e.message); }
+    }
+    if (enabled.includes('co-edit')) {
+      try { candidates.push(...await coEditAnalyser.detect({ getUiContext })); } catch (e) { console.warn('[insights/B]', e.message); }
+    }
+    if (enabled.includes('memory-decay')) {
+      try { candidates.push(...memoryDecayAnalyser.detect({ repoRoot, space })); } catch (e) { console.warn('[insights/C]', e.message); }
+    }
+    if (enabled.includes('cross-repo')) {
+      try { candidates.push(...await crossRepoAnalyser.detect({ repoRoot, space })); } catch (e) { console.warn('[insights/D]', e.message); }
+    }
+    const added = [];
+    for (const spec of candidates) {
+      try {
+        const r = await insights.addInsight({ repoRoot, space, spec });
+        if (!r.deduped) added.push(r.node);
+      } catch (e) { console.warn('[insights/add]', e.message); }
+    }
+    if (added.length && broadcast) {
+      broadcast({ type: 'mind-update', payload: { kind: 'insights-generated', source, count: added.length, ids: added.map(n => n.id) } });
+    }
+    return { ok: true, generated: added.length, candidates: candidates.length, source };
+  }
+
+  // GET /api/mind/insights?status=pending|acted|dismissed|snoozed|all
+  addRoute('GET', '/api/mind/insights', (req, res) => {
+    const url = new URL(req.url, 'http://x');
+    const status = url.searchParams.get('status') || 'pending';
+    const space = getSpace();
+    const items = insights.listInsights({ repoRoot, space, status });
+    return json(res, { items, count: items.length, status });
+  });
+
+  // GET /api/mind/suggestions?topic=<text>&limit=<n>
+  // The "is there anything we can do?" surface. Returns pending insights
+  // ranked by relevance to the topic (BM25 against title + body). If no
+  // topic is given, returns all pending insights sorted by recency. CLIs
+  // call this when the user asks for suggestions.
+  addRoute('GET', '/api/mind/suggestions', (req, res) => {
+    const url = new URL(req.url, 'http://x');
+    const topic = (url.searchParams.get('topic') || '').trim();
+    const limit = Math.max(1, Math.min(20, parseInt(url.searchParams.get('limit') || '8', 10) || 8));
+    const space = getSpace();
+    let items = insights.listInsights({ repoRoot, space, status: 'pending' });
+    if (topic) {
+      // Cheap BM25-style scoring without pulling in the full index.
+      // Each insight scores by how many topic terms appear in its
+      // searchable text (label + body + category + payload labels).
+      const terms = topic.toLowerCase().split(/[^a-z0-9_]+/).filter(t => t.length >= 3);
+      items = items.map(it => {
+        const blob = [
+          it.label, it.body, it.category,
+          it.action && it.action.payload && it.action.payload.title,
+          it.action && it.action.payload && it.action.payload.description,
+          ...(Array.isArray(it.action && it.action.payload && it.action.payload.tags) ? it.action.payload.tags : []),
+        ].filter(Boolean).join(' ').toLowerCase();
+        let score = 0;
+        for (const t of terms) {
+          if (blob.indexOf(t) !== -1) score += 1;
+        }
+        return { ...it, _topicScore: score };
+      }).filter(it => it._topicScore > 0).sort((a, b) => b._topicScore - a._topicScore);
+    }
+    return json(res, { items: items.slice(0, limit), count: Math.min(items.length, limit), topic: topic || null });
+  });
+
+  // POST /api/mind/insights/generate { categories?: ['repeated-question',...] }
+  addRoute('POST', '/api/mind/insights/generate', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    json(res, { ok: true, started: true });
+    generateInsights({ source: 'manual', categories: body.categories }).catch(() => {});
+  });
+
+  // POST /api/mind/insights/act { id }
+  // Executes the insight's action payload against the appropriate mind
+  // endpoint and marks the insight as acted on success.
+  addRoute('POST', '/api/mind/insights/act', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.id) return json(res, { error: 'id required' }, 400);
+    const space = getSpace();
+    const items = insights.listInsights({ repoRoot, space, status: 'all' });
+    const target = items.find(n => n.id === body.id);
+    if (!target) return json(res, { error: 'insight not found' }, 404);
+    let actionResult = null;
+    try {
+      switch (target.action.type) {
+        case 'create-memory': {
+          const r = await memoryModule.addMemoryCard({ repoRoot, space, spec: target.action.payload });
+          actionResult = { kind: 'memory', id: r.node.id };
+          notifyKnowledgeEvent({ kind: 'insight-acted-memory', nodeIds: [r.node.id], reason: 'insight-act' });
+          break;
+        }
+        case 'create-recipe': {
+          // Write a recipe stub to recipes/<slug>.json so the existing
+          // recipe surfaces pick it up. The user can flesh out steps
+          // later; we just save the files-to-edit hint.
+          const fs = require('fs');
+          const slug = (target.action.payload.slug || 'recipe').replace(/[^a-z0-9_-]/g, '-');
+          const recipesDir = path.join(repoRoot, 'recipes');
+          try { fs.mkdirSync(recipesDir, { recursive: true }); } catch (_) {}
+          const recipePath = path.join(recipesDir, slug + '.json');
+          const recipe = {
+            slug,
+            title: target.action.payload.title || slug,
+            description: target.action.payload.description || '',
+            files: target.action.payload.files || [],
+            source: 'mind/insights',
+            createdAt: new Date().toISOString(),
+          };
+          fs.writeFileSync(recipePath, JSON.stringify(recipe, null, 2));
+          actionResult = { kind: 'recipe', path: recipePath, slug };
+          break;
+        }
+        case 'archive-memories': {
+          const ids = Array.isArray(target.action.payload.ids) ? target.action.payload.ids : [];
+          const acq = lock.acquire(space, 'graph');
+          if (!acq.ok) return json(res, { error: 'mind busy' }, 409);
+          let archived = 0;
+          try {
+            const g = store.loadGraph(repoRoot, space);
+            if (g) {
+              for (const id of ids) {
+                const idx = g.nodes.findIndex(n => n.id === id && n.kind === 'memory');
+                if (idx === -1) continue;
+                g.nodes[idx] = { ...g.nodes[idx], status: 'archived', archivedAt: new Date().toISOString() };
+                archived++;
+              }
+              store.saveGraph(repoRoot, space, g);
+            }
+          } finally { lock.release(space, 'graph'); }
+          actionResult = { kind: 'archive', archivedCount: archived };
+          break;
+        }
+        case 'extract-shared': {
+          // Persist a note describing the suggestion; the user works
+          // through extraction at their own pace.
+          const fs = require('fs');
+          const notesDir = path.join(repoRoot, 'notes', getSpace());
+          try { fs.mkdirSync(notesDir, { recursive: true }); } catch (_) {}
+          const ts = Date.now();
+          const fname = `extract-shared-${ts}.md`;
+          const noteBody = [
+            `# ${target.action.payload.noteTitle || 'Extract shared'}`,
+            '',
+            target.action.payload.noteBody || '',
+            '',
+            'Repos:',
+            ...(target.action.payload.repos || []).map(r => `  - ${r}`),
+          ].join('\n');
+          fs.writeFileSync(path.join(notesDir, fname), noteBody);
+          actionResult = { kind: 'note', file: fname };
+          break;
+        }
+        default:
+          return json(res, { error: 'unknown action type: ' + target.action.type }, 400);
+      }
+      const updated = await insights.markActed({ repoRoot, space, id: body.id, result: actionResult });
+      if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'insight-acted', id: body.id, actionResult } });
+      return json(res, { ok: true, insight: updated, actionResult });
+    } catch (e) {
+      return json(res, { ok: false, error: e.message }, 500);
+    }
+  });
+
+  addRoute('POST', '/api/mind/insights/dismiss', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.id) return json(res, { error: 'id required' }, 400);
+    const space = getSpace();
+    try {
+      const updated = await insights.dismissInsight({ repoRoot, space, id: body.id });
+      if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'insight-dismissed', id: body.id } });
+      return json(res, { ok: true, insight: updated });
+    } catch (e) {
+      return json(res, { ok: false, error: e.message }, e.code === 'MIND_LOCKED' ? 409 : 500);
+    }
+  });
+
+  addRoute('POST', '/api/mind/insights/snooze', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body.id) return json(res, { error: 'id required' }, 400);
+    const space = getSpace();
+    try {
+      const updated = await insights.snoozeInsight({ repoRoot, space, id: body.id, durationMs: body.durationMs });
+      if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'insight-snoozed', id: body.id, snoozedUntil: updated.snoozedUntil } });
+      return json(res, { ok: true, insight: updated });
+    } catch (e) {
+      return json(res, { ok: false, error: e.message }, e.code === 'MIND_LOCKED' ? 409 : 500);
+    }
+  });
+
+  // Hourly scheduler. Reuses the same idle/continuous cadence the
+  // reflection cycle uses so users only have to think about one knob.
+  function startInsightsScheduler() {
+    const TICK_MS = 60 * 1000;
+    const HOURLY_MS = 60 * 60 * 1000;
+    const CONTINUOUS_MS = 15 * 60 * 1000; // less aggressive than reflection
+    let lastRun = 0;
+    let running = false;
+    const tick = async () => {
+      if (running) return;
+      let cfg = {};
+      try { cfg = getConfig ? getConfig() : {}; } catch (_) {}
+      const continuous = cfg.EnableContinuousLearning === true;
+      const since = Date.now() - lastRun;
+      if (!(since >= (continuous ? CONTINUOUS_MS : HOURLY_MS))) return;
+      running = true;
+      try {
+        await generateInsights({ source: continuous ? 'continuous' : 'hourly' });
+        lastRun = Date.now();
+      } catch (e) {
+        console.warn('[insights/scheduler]', e.message);
+      } finally { running = false; }
+    };
+    const timer = setInterval(tick, TICK_MS);
+    const boot = setTimeout(() => { tick().catch(() => {}); }, 45_000);
+    return () => { clearInterval(timer); clearTimeout(boot); };
+  }
+
+  // Start the background reflection + healing + insights loops. All
+  // are cheap when nothing's wrong (a few filesystem stats per tick);
+  // expensive only when there's actual work. Idempotent if mountMind
+  // is called twice (would never happen in production but keeps tests
+  // sane).
+  if (!ctx._schedulersStarted) {
+    ctx._schedulersStarted = true;
+    startReflectionScheduler({ repoRoot, getSpace, getConfig, getLastEventAt, broadcast });
+    startHealingScheduler({ repoRoot, getSpace, getAiApiKeys, broadcast });
+    startInsightsScheduler();
+  }
 
   addRoute('GET', '/api/mind/watch', (req, res) => {
     return json(res, { enabled: !!(watcher && watcher._enabled) });
@@ -1353,6 +1945,7 @@ function mountMind(addRoute, json, ctx) {
           if (g) wakeup = composeWakeUp(g, {
             activeRepo: ui.activeRepo, activeRepoPath: ui.activeRepoPath, space,
             budgetTokens: 600,
+            repoRoot,
           });
         } catch (_) { /* graph corrupt - skip wake-up, bootstrap still ships */ }
       }
@@ -1424,7 +2017,12 @@ function mountMind(addRoute, json, ctx) {
       });
       try { persistDerivedGraph(space, g); } catch (_) { /* schema validation failure - non-fatal */ }
       if (broadcast) broadcast({ type: 'mind-update', payload: { kind: 'node-added', id, createdBy: task.cli } });
+      notifyKnowledgeEvent({ kind: 'task-saved', nodeIds: [id], reason: 'orchestrator-task' });
     },
+
+    // Public knowledge-event hook. Anything outside Mind that adds graph
+    // state (learnings, notes, plugins) calls this so the brain reacts.
+    notifyKnowledgeEvent,
 
     // For orchestrator: hint injected as prefix into dispatched prompts.
     //
@@ -1536,6 +2134,7 @@ function mountMind(addRoute, json, ctx) {
           activeRepo: ui.activeRepo, activeRepoPath: ui.activeRepoPath, space,
           budgetTokens: opts.budgetTokens || 600,
           question: opts.question || '',
+          repoRoot,
         });
         return `${stamp}${appsLine}\n\n${wake.text}`;
       } catch (_) {
