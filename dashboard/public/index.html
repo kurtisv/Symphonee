@@ -784,6 +784,12 @@
     }
     .term-tab:hover { color: var(--text); }
     .term-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+    .term-tab-name { outline: none; }
+    .term-tab-name[contenteditable="true"] {
+      background: var(--surface0); border-radius: 3px; padding: 0 4px;
+      cursor: text; box-shadow: 0 0 0 1px var(--accent);
+      color: var(--text); min-width: 16px;
+    }
     .term-tab-close {
       display: inline-flex; align-items: center; justify-content: center;
       width: 18px; height: 18px;
@@ -4767,9 +4773,35 @@
       background: var(--base);
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       gap: 0; opacity: 0; pointer-events: none;
-      transition: opacity 0.25s ease;
+      transition: opacity 0.6s ease;
     }
     .loading-overlay.visible { opacity: 1; pointer-events: all; }
+    /* Boot variant: the intentional splash. Centered logo + big quote, no label
+       or progress bar, dark (#1a1a1a) to match splash.html for a seamless,
+       invisible handoff from the OS splash to the dashboard. */
+    .loading-overlay.boot { background: #1a1a1a; }
+    .loading-overlay-logo {
+      display: none;
+      width: 44%; max-width: 440px; height: auto; object-fit: contain;
+    }
+    .loading-overlay.boot .loading-overlay-logo { display: block; }
+    .loading-overlay.boot .loading-overlay-bar,
+    .loading-overlay.boot .loading-overlay-label { display: none; }
+    /* Animated 3-dot loader (boot only). Sits between logo and quote so the
+       screen reads as actively loading, not just a static splash. */
+    .boot-dots { display: none; gap: 8px; margin-top: 26px; }
+    .loading-overlay.boot .boot-dots { display: flex; }
+    .boot-dots span {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: rgba(255, 255, 255, 0.55);
+      animation: boot-dot 1.25s ease-in-out infinite;
+    }
+    .boot-dots span:nth-child(2) { animation-delay: 0.16s; }
+    .boot-dots span:nth-child(3) { animation-delay: 0.32s; }
+    @keyframes boot-dot {
+      0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+      40%           { opacity: 1;    transform: translateY(-6px); }
+    }
     .loading-overlay-bar {
       width: 160px; height: 3px; border-radius: 2px;
       background: var(--surface1); overflow: hidden;
@@ -4791,7 +4823,7 @@
     }
     .loading-overlay-quote {
       margin-top: 28px; text-align: center; max-width: 360px;
-      opacity: 0; transition: opacity 0.4s ease;
+      opacity: 0; transition: opacity 0.6s ease;
     }
     .loading-overlay-quote.visible { opacity: 1; }
     .loading-overlay-quote-text {
@@ -4802,6 +4834,14 @@
       font: 12px var(--font-ui); color: var(--overlay1);
       margin-top: 8px;
     }
+    /* Boot variant quote: big, clean, calm. These are LLM-generated facts about
+       your work, so no author line. */
+    .loading-overlay.boot .loading-overlay-quote { margin-top: 24px; max-width: 660px; padding: 0 28px; }
+    .loading-overlay.boot .loading-overlay-quote-text {
+      font: 500 23px/1.5 var(--font-ui); color: rgba(255, 255, 255, 0.72);
+      font-style: normal; letter-spacing: 0.2px;
+    }
+    .loading-overlay.boot .loading-overlay-quote-author { display: none; }
     /* ── Onboarding wizard ──────────────────────────────────────────────── */
     .onboarding {
       position: fixed; inset: 0; z-index: 10000;
@@ -4872,6 +4912,8 @@
 </script>
 
 <div class="loading-overlay" id="loadingOverlay">
+  <img class="loading-overlay-logo" src="/launch-logo.png" alt="Symphonee" />
+  <div class="boot-dots" aria-hidden="true"><span></span><span></span><span></span></div>
   <div class="loading-overlay-label" id="loadingLabel">Loading</div>
   <div class="loading-overlay-bar"><div class="loading-overlay-bar-fill"></div></div>
   <div class="loading-overlay-quote" id="loadingQuote">
@@ -4879,6 +4921,16 @@
     <div class="loading-overlay-quote-author" id="loadingQuoteAuthor"></div>
   </div>
 </div>
+<script>
+  // Show the boot overlay in its splash ("boot") form on first paint, so it is
+  // visually continuous with splash.html (same logo, same dark background) and
+  // covers the dashboard render. Quote cycling + the smooth hide are wired in
+  // the main script (_initBootLoading), which runs after this.
+  try {
+    var _ov = document.getElementById('loadingOverlay');
+    if (_ov) { _ov.classList.add('boot'); _ov.classList.add('visible'); }
+  } catch (_) {}
+</script>
 
 <!-- ═══ Onboarding Wizard ═══════════════════════════════════════════════ -->
 <div class="onboarding" id="onboarding">
@@ -4968,9 +5020,9 @@
     <div class="sidebar-scrollable">
       <div id="sidebarCoreActions">
         <div class="section-title">Actions</div>
-        <button class="btn" onclick="refreshAll()"><i data-lucide="refresh-cw"></i> Refresh</button>
+        <button class="btn" onclick="refreshAll()" title="Refresh work items, branches, and repo state"><i data-lucide="refresh-cw"></i> Refresh</button>
         <button class="btn" onclick="analyzeActiveRepo()" title="Generate a repo map and send it to the AI"><i data-lucide="brain"></i> Analyze Repo</button>
-        <button class="btn" onclick="openRepoMapModal()"><i data-lucide="map"></i> Generate Repo Map</button>
+        <button class="btn" onclick="openRepoMapModal()" title="Generate a symbol map of the active repo and open it in a viewer"><i data-lucide="map"></i> Generate Repo Map</button>
         <div id="sidebarPluginActionsCore"></div>
         <div class="divider"></div>
       </div>
@@ -5069,7 +5121,7 @@
     <!-- Terminal -->
     <div class="tab-panel active" id="panel-terminal">
       <div class="term-tabs" id="termTabs">
-        <div class="term-tab active" data-term="main" onclick="switchTerminal('main')" id="mainTermTab">Shell 1</div>
+        <div class="term-tab active" data-term="main" onclick="switchTerminal('main')" id="mainTermTab" title="Double-click to rename"><span class="term-tab-name">Shell 1</span></div>
         <button class="term-tab-add" onclick="addTerminal()" title="New terminal">+</button>
         <div style="flex:1;"></div>
         <span class="tab-bar-status" id="termStatus" style="margin-right:4px;"></span>
@@ -7000,6 +7052,12 @@ function createTermInstance(termId, label) {
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       const k = (e.key || '').toLowerCase();
       if (k === 'k' || k === 'i' || k === '/' || k === '.') return false;
+      // Ctrl/Cmd+V: paste the clipboard into the PTY. Without this xterm sends a
+      // raw ^V (0x16) and nothing useful happens. preventDefault suppresses the
+      // browser's native paste so the 'paste' listener below does not also fire
+      // (no double paste); return false keeps xterm from processing the key.
+      // Guard on keydown -- the handler also fires on keyup.
+      if (k === 'v' && e.type === 'keydown') { e.preventDefault(); pasteIntoTerm(); return false; }
     }
     return true;
   });
@@ -7009,22 +7067,41 @@ function createTermInstance(termId, label) {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', termId, data }));
   });
 
-  // Right-click
+  // Send clipboard text to the PTY as input. Shared by Ctrl/Cmd+V, the
+  // right-click menu, and the paste event (Win+V, dictation tools like Wispr
+  // Flow that inject text via the clipboard).
+  async function pasteIntoTerm() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', termId, data: text }));
+    } catch (_) {}
+  }
+
+  // Right-click: copy the selection if there is one, otherwise paste.
   container.addEventListener('contextmenu', async (e) => {
     e.preventDefault();
     e.stopPropagation();
     const sel = term.getSelection();
     if (sel) {
-      await navigator.clipboard.writeText(sel);
+      try { await navigator.clipboard.writeText(sel); } catch (_) {}
     } else {
-      try {
-        const text = await navigator.clipboard.readText();
-        if (text && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', termId, data: text }));
-      } catch (_) {}
+      pasteIntoTerm();
     }
   });
 
-  container.addEventListener('paste', (e) => { e.preventDefault(); e.stopPropagation(); });
+  // Native paste events: Win+V clipboard history, middle-click paste, and
+  // dictation tools (e.g. Wispr Flow) that inject via the clipboard. This used
+  // to just block the event, which silently broke ALL keyboard/voice paste in
+  // the terminal. Forward the event's clipboard text to the PTY instead.
+  // (Ctrl/Cmd+V is handled in the key handler above, which preventDefaults, so
+  // it does not also reach here -- no double paste.)
+  container.addEventListener('paste', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    let text = '';
+    try { text = (e.clipboardData || window.clipboardData).getData('text'); } catch (_) {}
+    if (text && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'input', termId, data: text }));
+  });
 
   termInstances.set(termId, { term, fitAddon, container, label: label || termId });
 
@@ -7035,7 +7112,9 @@ function createTermInstance(termId, label) {
     const tab = document.createElement('div');
     tab.className = 'term-tab';
     tab.dataset.term = termId;
+    tab.title = 'Double-click to rename';
     const nameSpan = document.createElement('span');
+    nameSpan.className = 'term-tab-name';
     nameSpan.textContent = label || termId;
     const closeBtn = document.createElement('button');
     closeBtn.className = 'term-tab-close';
@@ -7045,6 +7124,7 @@ function createTermInstance(termId, label) {
     tab.appendChild(closeBtn);
     tab.addEventListener('click', (e) => { if (!e.target.closest('.term-tab-close')) switchTerminal(termId); });
     tabsEl.insertBefore(tab, addBtn);
+    enableTabRename(tab, termId);
   }
 
   return { term, fitAddon };
@@ -7143,6 +7223,51 @@ function closeTerminal(termId) {
   if (typeof orchRefreshAgents === 'function') orchRefreshAgents();
 }
 
+// Inline-rename a terminal tab: double-click the name to edit it. Enter or blur
+// commits, Escape cancels. The custom label is stored on the term instance;
+// renumberShells() only renumbers auto "Shell N" labels, so custom names stick.
+function enableTabRename(tabEl, termId) {
+  if (!tabEl) return;
+  const nameEl = tabEl.querySelector('.term-tab-name');
+  if (!nameEl) return;
+  tabEl.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (nameEl.getAttribute('contenteditable') === 'true') return;
+    const prev = nameEl.textContent;
+    let done = false;
+    nameEl.setAttribute('contenteditable', 'true');
+    nameEl.spellcheck = false;
+    nameEl.focus();
+    try {
+      const range = document.createRange(); range.selectNodeContents(nameEl);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    } catch (_) {}
+    const commit = (save) => {
+      if (done) return; done = true;
+      nameEl.removeAttribute('contenteditable');
+      nameEl.removeEventListener('keydown', onKey);
+      nameEl.removeEventListener('blur', onBlur);
+      const val = nameEl.textContent.replace(/\s+/g, ' ').trim();
+      if (save && val) {
+        nameEl.textContent = val;
+        const inst = termInstances.get(termId);
+        if (inst) inst.label = val;
+      } else {
+        nameEl.textContent = prev;
+      }
+    };
+    const onKey = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); commit(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); commit(false); }
+    };
+    const onBlur = () => commit(true);
+    nameEl.addEventListener('keydown', onKey);
+    nameEl.addEventListener('blur', onBlur);
+  });
+}
+
 function getActiveTerm() {
   const inst = termInstances.get(activeTermId);
   return inst ? inst.term : null;
@@ -7155,6 +7280,7 @@ Object.defineProperty(window, 'fitAddon', { get: () => termInstances.get('main')
 
 // Create main terminal
 createTermInstance('main', 'Shell 1');
+enableTabRename(document.getElementById('mainTermTab'), 'main');
 
 // ── Resize handling ─────────────────────────────────────────────────────
 function fitTerminalNow() {
@@ -22269,6 +22395,10 @@ const AI_TOOLS_META = {
 
 let _aiToolsStatus = {}; // cli -> { installed, path }
 let _pwshStatus = { installed: false };
+// CLI ids whose install is currently in-flight. Kept in the model (not just on
+// the button) so a full renderAiTools() re-render -- triggered when a SIBLING
+// install finishes -- does not reset a still-installing tool back to "Install".
+const _aiInstalling = new Set();
 
 async function detectAiTools() {
   const container = document.getElementById('settingsAiTools');
@@ -22290,6 +22420,12 @@ function renderAiTools() {
 
   // PowerShell 7 prerequisite card
   const pwshInstalled = _pwshStatus.installed;
+  const pwshInstalling = _aiInstalling.has('pwsh');
+  const pwshBtn = pwshInstalling
+    ? `<button class="ai-tool-btn installing" id="aiToolBtn-pwsh" disabled>Installing...</button>`
+    : `<button class="ai-tool-btn ${pwshInstalled ? 'installed' : 'install'}" id="aiToolBtn-pwsh"
+                onclick="${pwshInstalled ? '' : "installCli('pwsh')"}"
+                ${pwshInstalled ? 'disabled' : ''}>${pwshInstalled ? 'Installed' : 'Install'}</button>`;
   const pwshCard = `
     <div style="margin-bottom:8px;padding:0 2px;">
       <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext0);margin-bottom:6px;">Prerequisites</div>
@@ -22301,9 +22437,7 @@ function renderAiTools() {
             ? '<span class="ai-tool-status installed">Installed</span>'
             : '<span class="ai-tool-status not-installed" style="color:var(--yellow);">Required for AI CLI tools</span>'}
         </div>
-        <button class="ai-tool-btn ${pwshInstalled ? 'installed' : 'install'}" id="aiToolBtn-pwsh"
-                onclick="${pwshInstalled ? '' : "installCli('pwsh')"}"
-                ${pwshInstalled ? 'disabled' : ''}>${pwshInstalled ? 'Installed' : 'Install'}</button>
+        ${pwshBtn}
       </div>
     </div>
     <div style="padding:0 2px;margin-bottom:6px;">
@@ -22314,11 +22448,18 @@ function renderAiTools() {
   const toolCards = Object.entries(AI_TOOLS_META).map(([id, meta]) => {
     const status = _aiToolsStatus[id] || { installed: false };
     const isInstalled = status.installed;
-    const btnClass = isInstalled ? 'installed' : 'install';
-    const btnText = isInstalled ? 'Installed' : 'Install';
+    const isInstalling = _aiInstalling.has(id);
     const statusText = isInstalled
       ? `<span class="ai-tool-status installed">Installed</span>`
       : `<span class="ai-tool-status not-installed">Not installed &middot; <code style="font-size:9px;color:var(--subtext0);">npm i -g ${meta.pkg}</code></span>`;
+
+    // In-progress installs win over the installed/not-installed state so a
+    // re-render (e.g. a sibling install finishing) keeps showing "Installing...".
+    const btn = isInstalling
+      ? `<button class="ai-tool-btn installing" id="aiToolBtn-${id}" disabled>Installing...</button>`
+      : `<button class="ai-tool-btn ${isInstalled ? 'installed' : 'install'}" id="aiToolBtn-${id}"
+                onclick="${isInstalled ? '' : `installCli('${id}')`}"
+                ${isInstalled ? 'disabled' : ''}>${isInstalled ? 'Installed' : 'Install'}</button>`;
 
     return `
       <div class="ai-tool-card" id="aiToolCard-${id}">
@@ -22327,9 +22468,7 @@ function renderAiTools() {
           <div class="ai-tool-name">${meta.name}</div>
           ${statusText}
         </div>
-        <button class="ai-tool-btn ${btnClass}" id="aiToolBtn-${id}"
-                onclick="${isInstalled ? '' : `installCli('${id}')`}"
-                ${isInstalled ? 'disabled' : ''}>${btnText}</button>
+        ${btn}
       </div>`;
   }).join('');
 
@@ -22339,6 +22478,7 @@ function renderAiTools() {
 async function installCli(cli) {
   const btn = document.getElementById(`aiToolBtn-${cli}`);
   if (!btn) return;
+  _aiInstalling.add(cli);
   btn.className = 'ai-tool-btn installing';
   btn.textContent = 'Installing...';
   btn.disabled = true;
@@ -22363,8 +22503,10 @@ async function installCli(cli) {
       } else {
         toast(`${displayName} installed successfully`, 'success');
       }
+      _aiInstalling.delete(cli);
       renderAiTools();
     } else {
+      _aiInstalling.delete(cli);
       btn.className = 'ai-tool-btn install';
       btn.textContent = 'Retry';
       btn.disabled = false;
@@ -22373,6 +22515,7 @@ async function installCli(cli) {
       if (data.fallbackCmd) { showInstallFallbackHint(btn, data.fallbackCmd, errMsg); }
     }
   } catch (e) {
+    _aiInstalling.delete(cli);
     btn.className = 'ai-tool-btn install';
     btn.textContent = 'Retry';
     btn.disabled = false;
@@ -23563,14 +23706,19 @@ function showLoading(text) {
   _loadingTimer = setTimeout(hideLoading, 8000);
 }
 function _showRandomQuote() {
+  // In boot ("splash") mode these are plain LLM facts shown big, so render them
+  // unquoted with no author. The manual-refresh mode keeps the "quote" — author
+  // styling.
+  const boot = document.getElementById('loadingOverlay').classList.contains('boot');
+  const fmt = (s) => boot ? s : '"' + s + '"';
   const q = _loadingQuotes[Math.floor(Math.random() * _loadingQuotes.length)];
   const quoteEl = document.getElementById('loadingQuote');
   const textEl = document.getElementById('loadingQuoteText');
   const authorEl = document.getElementById('loadingQuoteAuthor');
   quoteEl.classList.remove('visible');
   setTimeout(() => {
-    textEl.textContent = '"' + q.text + '"';
-    authorEl.textContent = '— ' + q.author;
+    textEl.textContent = fmt(q.text);
+    authorEl.textContent = q.author ? '— ' + q.author : '';
     quoteEl.classList.add('visible');
   }, 150);
   clearInterval(_quoteTimer);
@@ -23578,8 +23726,8 @@ function _showRandomQuote() {
     const next = _loadingQuotes[Math.floor(Math.random() * _loadingQuotes.length)];
     quoteEl.classList.remove('visible');
     setTimeout(() => {
-      textEl.textContent = '"' + next.text + '"';
-      authorEl.textContent = '— ' + next.author;
+      textEl.textContent = fmt(next.text);
+      authorEl.textContent = next.author ? '— ' + next.author : '';
       quoteEl.classList.add('visible');
     }, 400);
   }, 4000);
@@ -23591,6 +23739,53 @@ function hideLoading() {
   quoteEl.classList.remove('visible');
   document.getElementById('loadingOverlay').classList.remove('visible');
 }
+
+// ── Boot loading overlay ────────────────────────────────────────────────────
+// Covers the initial dashboard render with cycling Mind-generated quotes
+// (continuous with splash.html), then hides once the window has fully loaded.
+let _bootOverlayDone = false;
+function hideBootOverlay() {
+  if (_bootOverlayDone) return;
+  _bootOverlayDone = true;
+  hideLoading();
+  // Drop the boot (splash) styling once it has faded out, so a later manual
+  // showLoading() (refresh/import) uses the normal compact overlay, not the
+  // big centered-logo splash.
+  const ov = document.getElementById('loadingOverlay');
+  if (ov) setTimeout(() => ov.classList.remove('boot'), 700);
+}
+async function _initBootLoading() {
+  const ov = document.getElementById('loadingOverlay');
+  if (!ov) return;
+  // Hard safety cap registered FIRST so the overlay can never get stuck even if
+  // something below throws.
+  setTimeout(hideBootOverlay, 12000);
+  // Pull personal quotes from the Mind; fall back to the built-in set. Mutate
+  // the existing array in place so _showRandomQuote keeps using it.
+  try {
+    const r = await fetch('/api/splash/quotes');
+    if (r.ok) {
+      const d = await r.json();
+      if (d && Array.isArray(d.quotes) && d.quotes.length) {
+        _loadingQuotes.length = 0;
+        for (const q of d.quotes) _loadingQuotes.push({ text: q.text, author: q.author || 'Symphonee' });
+      }
+    }
+  } catch (_) {}
+  ov.classList.add('boot');
+  ov.classList.add('visible');
+  _showRandomQuote();
+  // Hide once the page has fully loaded, with a comfortable minimum dwell so the
+  // splash reads as intentional (logo + a quote you can actually finish reading)
+  // even when the app is fully cached and would otherwise flash by. (Hard cap
+  // already registered at the top of this fn.)
+  const MIN_REVEAL = 2500;
+  const start = Date.now();
+  const finish = () => setTimeout(hideBootOverlay, Math.max(0, MIN_REVEAL - (Date.now() - start)));
+  if (document.readyState === 'complete') finish();
+  else window.addEventListener('load', finish, { once: true });
+}
+_initBootLoading();
 async function refreshAll() {
   showLoading('Refreshing');
   const minWait = new Promise(r => setTimeout(r, 4000));
@@ -23994,6 +24189,10 @@ async function obDetectAiTools() {
 }
 
 let _obPwshStatus = { installed: false };
+// Same in-flight tracker as the Settings AI tools (_aiInstalling): survives the
+// full obRenderAiTools() re-render so a sibling install finishing does not reset
+// a still-installing tool to "Install".
+const _obInstalling = new Set();
 
 function obRenderAiTools() {
   const container = document.getElementById('obAiTools');
@@ -24001,6 +24200,10 @@ function obRenderAiTools() {
 
   // PowerShell 7 prerequisite
   const pwshOk = _obPwshStatus.installed;
+  const pwshInstalling = _obInstalling.has('pwsh');
+  const pwshBtn = pwshInstalling
+    ? `<button class="ai-tool-btn installing" id="obAiBtn-pwsh" disabled>Installing...</button>`
+    : `<button class="ai-tool-btn ${pwshOk ? 'installed' : 'install'}" id="obAiBtn-pwsh" onclick="${pwshOk ? '' : "obInstallCli('pwsh')"}" ${pwshOk ? 'disabled' : ''}>${pwshOk ? 'Installed' : 'Install'}</button>`;
   const pwshCard = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext0);margin-bottom:6px;">Prerequisites</div>
     <div class="ai-tool-card" style="${pwshOk ? '' : 'border-color:var(--yellow);'}">
@@ -24008,7 +24211,7 @@ function obRenderAiTools() {
       <div class="ai-tool-info"><div class="ai-tool-name">PowerShell 7</div>
         ${pwshOk ? '<span class="ai-tool-status installed">Installed</span>' : '<span class="ai-tool-status not-installed" style="color:var(--yellow);">Required for AI CLI tools</span>'}
       </div>
-      <button class="ai-tool-btn ${pwshOk ? 'installed' : 'install'}" id="obAiBtn-pwsh" onclick="${pwshOk ? '' : "obInstallCli('pwsh')"}" ${pwshOk ? 'disabled' : ''}>${pwshOk ? 'Installed' : 'Install'}</button>
+      ${pwshBtn}
     </div>
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext0);margin:8px 0 6px;">AI Tools</div>`;
 
@@ -24016,12 +24219,16 @@ function obRenderAiTools() {
   const meta = { claude: { name: 'Claude Code', color: '#d97757', pkg: '@anthropic-ai/claude-code' }, gemini: { name: 'Gemini CLI', color: '#078efa', pkg: '@google/gemini-cli' }, copilot: { name: 'Copilot CLI', color: '#8534f3', pkg: '@github/copilot' }, codex: { name: 'Codex CLI', color: '#10a37f', pkg: '@openai/codex' }, grok: { name: 'Grok Code', color: '#ef4444', pkg: '@webdevtoday/grok-cli' } };
   const toolCards = Object.entries(meta).map(([id, m]) => {
     const installed = _obAiStatus[id]?.installed;
+    const installing = _obInstalling.has(id);
+    const btn = installing
+      ? `<button class="ai-tool-btn installing" id="obAiBtn-${id}" disabled>Installing...</button>`
+      : `<button class="ai-tool-btn ${installed ? 'installed' : 'install'}" id="obAiBtn-${id}" onclick="${installed ? '' : `obInstallCli('${id}')`}" ${installed ? 'disabled' : ''}>${installed ? 'Installed' : 'Install'}</button>`;
     return `<div class="ai-tool-card">
       <div class="ai-tool-dot" style="background:${m.color}"></div>
       <div class="ai-tool-info"><div class="ai-tool-name">${m.name}</div>
         ${installed ? '<span class="ai-tool-status installed">Installed</span>' : `<span class="ai-tool-status not-installed">Not installed</span>`}
       </div>
-      <button class="ai-tool-btn ${installed ? 'installed' : 'install'}" id="obAiBtn-${id}" onclick="${installed ? '' : `obInstallCli('${id}')`}" ${installed ? 'disabled' : ''}>${installed ? 'Installed' : 'Install'}</button>
+      ${btn}
     </div>`;
   }).join('');
 
@@ -24031,6 +24238,7 @@ function obRenderAiTools() {
 async function obInstallCli(cli) {
   const btn = document.getElementById(`obAiBtn-${cli}`);
   if (!btn) return;
+  _obInstalling.add(cli);
   btn.className = 'ai-tool-btn installing'; btn.textContent = 'Installing...'; btn.disabled = true;
   // Clear any previous fallback hint
   const prevHint = btn.closest('.ai-tool-card')?.querySelector('.install-fallback-hint');
@@ -24046,15 +24254,17 @@ async function obInstallCli(cli) {
       } else {
         toast('Installed!', 'success');
       }
+      _obInstalling.delete(cli);
       obRenderAiTools();
     }
     else {
+      _obInstalling.delete(cli);
       btn.className = 'ai-tool-btn install'; btn.textContent = 'Retry'; btn.disabled = false;
       const errMsg = data.error || 'Install failed';
       toast(`Install failed: ${errMsg}`, 'error');
       if (data.fallbackCmd) { showInstallFallbackHint(btn, data.fallbackCmd, errMsg); }
     }
-  } catch (_) { btn.className = 'ai-tool-btn install'; btn.textContent = 'Retry'; btn.disabled = false; }
+  } catch (_) { _obInstalling.delete(cli); btn.className = 'ai-tool-btn install'; btn.textContent = 'Retry'; btn.disabled = false; }
 }
 
 function showInstallFallbackHint(btn, cmd, msg) {
@@ -24604,26 +24814,26 @@ function getCmdActions() {
   const actions = [
     // Navigation (core always-on)
     { label: 'Go to Terminal', icon: 'terminal', action: () => switchTab('terminal'), category: 'Navigate', hint: 'Ctrl+T' },
-    { label: 'Go to Files', icon: 'folder', action: () => switchTab('files'), category: 'Navigate' },
-    { label: 'Go to Notes', icon: 'file-text', action: () => switchTab('notes'), category: 'Navigate' },
+    { label: 'Go to Files', icon: 'folder', action: () => switchTab('files'), category: 'Navigate', hint: 'Browse and open repo files' },
+    { label: 'Go to Notes', icon: 'file-text', action: () => switchTab('notes'), category: 'Navigate', hint: 'Your notes and learnings' },
     // Core actions (always-on)
     { label: 'Refresh', icon: 'refresh-cw', action: () => refreshAll(), category: 'Action', hint: 'Ctrl+R' },
     { label: 'Generate Repo Map', icon: 'map', action: () => openRepoMapModal(), category: 'Action', hint: 'Symbol map of the active repo' },
     { label: 'Analyze Repo', icon: 'brain', action: () => analyzeActiveRepo(), category: 'AI', hint: 'Generate a repo map and send it to the AI' },
     { label: 'Search Notes + Learnings', icon: 'search', action: () => { document.getElementById('cmdPaletteInput').value = 'find '; filterCmdPalette(); }, category: 'Action', hint: 'find <query>' },
     // Git (local ops always work; remote pull/push still listed but fail gracefully without auth)
-    { label: 'Switch Branch', icon: 'git-branch', action: () => openGitModal('branches'), category: 'Git' },
-    { label: 'Commit Changes', icon: 'git-commit', action: () => openGitModal('commit'), category: 'Git' },
-    { label: 'Compare Branches', icon: 'git-compare', action: () => openGitModal('compare'), category: 'Git' },
+    { label: 'Switch Branch', icon: 'git-branch', action: () => openGitModal('branches'), category: 'Git', hint: 'Check out a different branch' },
+    { label: 'Commit Changes', icon: 'git-commit', action: () => openGitModal('commit'), category: 'Git', hint: 'Stage and commit working changes' },
+    { label: 'Compare Branches', icon: 'git-compare', action: () => openGitModal('compare'), category: 'Git', hint: 'Diff two branches' },
     // AI (core)
-    { label: 'Launch AI', icon: 'play', action: () => { if (!aiLaunched) launchAi(); switchTab('terminal'); }, category: 'AI' },
-    { label: 'Stop AI', icon: 'square', action: () => { if (aiLaunched) stopAi(); }, category: 'AI' },
-    { label: 'Resume Session', icon: 'rotate-ccw', action: () => { resumeAiSession(); switchTab('terminal'); }, category: 'AI' },
+    { label: 'Launch AI', icon: 'play', action: () => { if (!aiLaunched) launchAi(); switchTab('terminal'); }, category: 'AI', hint: 'Start the AI in the terminal' },
+    { label: 'Stop AI', icon: 'square', action: () => { if (aiLaunched) stopAi(); }, category: 'AI', hint: 'Stop the running AI session' },
+    { label: 'Resume Session', icon: 'rotate-ccw', action: () => { resumeAiSession(); switchTab('terminal'); }, category: 'AI', hint: 'Resume the last AI session' },
     // Settings
-    { label: 'Open Settings', icon: 'settings', action: () => openSettings(), category: 'Settings' },
+    { label: 'Open Settings', icon: 'settings', action: () => openSettings(), category: 'Settings', hint: 'Repos, plugins, and AI keys' },
     // Scheduled jobs (recurring prompts to any CLI)
     { label: 'Scheduled Jobs', icon: 'calendar-clock', action: () => openJobsModal(), category: 'AI', hint: 'Run AI prompts on a schedule' },
-    { label: 'Create Scheduled Job', icon: 'plus', action: () => openJobEditor(), category: 'AI' },
+    { label: 'Create Scheduled Job', icon: 'plus', action: () => openJobEditor(), category: 'AI', hint: 'Schedule a recurring AI prompt' },
   ];
   // Plugin-contributed quick actions + AI actions. No plugin names hardcoded.
   // The palette reads from each loaded plugin's leftQuickActions and aiActions
