@@ -1,0 +1,152 @@
+'use strict';
+// KIT (Know It Too) -- package a topic plus everything connected to it as a
+// portable mind-graph, and ingest a KIT by merging only the gaps into the local
+// graph (no duplicates). Pure graph operations: no LLM dependency, fully
+// deterministic. Node/edge shape matches mind/store.js graphs.
+
+const KIT_VERSION = 1;
+
+function _norm(s) { return String(s == null ? '' : s).toLowerCase(); }
+
+// Seeds for a topic: nodes whose label or any tag contains the topic string.
+function resolveSeeds(graph, topic) {
+  const t = _norm(topic).trim();
+  if (!t || !graph || !Array.isArray(graph.nodes)) return [];
+  const seeds = [];
+  for (const n of graph.nodes) {
+    if (!n) continue;
+    const label = _norm(n.label);
+    const tags = Array.isArray(n.tags) ? n.tags.map(_norm) : [];
+    if (label.includes(t) || tags.some(tag => tag.includes(t))) seeds.push(n.id);
+  }
+  return seeds;
+}
+
+// BFS the connected sub-graph from the seeds, bounded by node count + depth so a
+// KIT is a focused neighborhood, not the entire graph.
+function walk(graph, seedIds, { maxNodes = 800, maxDepth = 4 } = {}) {
+  const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
+  const adj = new Map();
+  for (const e of (graph.edges || [])) {
+    if (!e) continue;
+    if (!adj.has(e.source)) adj.set(e.source, []);
+    if (!adj.has(e.target)) adj.set(e.target, []);
+    adj.get(e.source).push(e.target);
+    adj.get(e.target).push(e.source);
+  }
+  const visited = new Set();
+  let frontier = seedIds.filter(id => nodeById.has(id));
+  for (const id of frontier) visited.add(id);
+  let depth = 0;
+  while (frontier.length && depth < maxDepth && visited.size < maxNodes) {
+    const next = [];
+    for (const id of frontier) {
+      for (const nb of (adj.get(id) || [])) {
+        if (!visited.has(nb) && nodeById.has(nb)) {
+          visited.add(nb);
+          next.push(nb);
+          if (visited.size >= maxNodes) break;
+        }
+      }
+      if (visited.size >= maxNodes) break;
+    }
+    frontier = next;
+    depth++;
+  }
+  return visited;
+}
+
+// Build a portable KIT from a topic (or explicit seedIds).
+function exportKit(graph, { topic = '', seedIds = null, space = null, maxNodes = 800, maxDepth = 4 } = {}) {
+  if (!graph || !Array.isArray(graph.nodes)) return { ok: false, reason: 'empty-graph' };
+  const seeds = (Array.isArray(seedIds) && seedIds.length) ? seedIds : resolveSeeds(graph, topic);
+  if (!seeds.length) return { ok: false, reason: 'no-match', topic };
+  const keep = walk(graph, seeds, { maxNodes, maxDepth });
+  const nodes = graph.nodes.filter(n => n && keep.has(n.id));
+  const edges = (graph.edges || []).filter(e => e && keep.has(e.source) && keep.has(e.target));
+  return {
+    ok: true,
+    kit: {
+      kitVersion: KIT_VERSION,
+      topic: topic || null,
+      exportedFromSpace: space,
+      exportedAt: new Date().toISOString(),
+      seedIds: seeds.slice(0, 50),
+      stats: { nodes: nodes.length, edges: edges.length },
+      nodes,
+      edges,
+    },
+  };
+}
+
+// Ingest a KIT into `graph` (mutates it). Adds only the gaps: a node is skipped
+// if an identical id exists, or a same-kind-same-label node exists (mapped so
+// its edges reconnect to the local node). An edge is skipped if either endpoint
+// is missing after remap or an identical (source,target,relation) edge exists.
+function ingestKit(graph, kit) {
+  if (!kit || !Array.isArray(kit.nodes)) return { ok: false, reason: 'invalid-kit' };
+  graph.nodes = graph.nodes || [];
+  graph.edges = graph.edges || [];
+
+  const byId = new Map(graph.nodes.map(n => [n.id, n]));
+  const klKey = (n) => n.kind + ' ' + _norm(n.label);
+  const byKindLabel = new Map(graph.nodes.map(n => [klKey(n), n.id]));
+  const idRemap = new Map(); // incoming id -> local id
+
+  let addedNodes = 0, skippedNodes = 0;
+  for (const n of kit.nodes) {
+    if (!n || !n.id) { skippedNodes++; continue; }
+    if (byId.has(n.id)) { idRemap.set(n.id, n.id); skippedNodes++; continue; }
+    const k = klKey(n);
+    if (byKindLabel.has(k)) { idRemap.set(n.id, byKindLabel.get(k)); skippedNodes++; continue; }
+    const node = { ...n, source: { type: 'kit', ref: kit.topic || 'imported' }, ingestedAt: new Date().toISOString() };
+    graph.nodes.push(node);
+    byId.set(node.id, node);
+    byKindLabel.set(k, node.id);
+    idRemap.set(n.id, node.id);
+    addedNodes++;
+  }
+
+  const edgeKey = (s, t, r) => s + ' ' + t + ' ' + (r || '');
+  const existing = new Set(graph.edges.map(e => edgeKey(e.source, e.target, e.relation)));
+  let addedEdges = 0, skippedEdges = 0;
+  for (const e of (kit.edges || [])) {
+    if (!e) { skippedEdges++; continue; }
+    const s = idRemap.get(e.source) || e.source;
+    const t = idRemap.get(e.target) || e.target;
+    if (!byId.has(s) || !byId.has(t)) { skippedEdges++; continue; }
+    const k = edgeKey(s, t, e.relation);
+    if (existing.has(k)) { skippedEdges++; continue; }
+    graph.edges.push({ ...e, source: s, target: t, createdBy: 'kit-ingest' });
+    existing.add(k);
+    addedEdges++;
+  }
+
+  return { ok: true, addedNodes, skippedNodes, addedEdges, skippedEdges, totalNodes: graph.nodes.length, totalEdges: graph.edges.length };
+}
+
+// Compact, readable digest of a spec sub-graph for dropping into an AI's
+// context -- grouped by kind, label + a short content snippet per node, capped.
+// This is what makes a "spec" useful to the dispatched agent (focused, cheap)
+// instead of a raw 200-node graph.
+function specDigest(kit, { anchor = '', maxChars = 2800, perKind = 12 } = {}) {
+  if (!kit || !Array.isArray(kit.nodes)) return '';
+  const byKind = {};
+  for (const n of kit.nodes) { if (n) (byKind[n.kind] = byKind[n.kind] || []).push(n); }
+  const order = ['repo', 'entity', 'memory', 'decision', 'insight', 'note', 'doc', 'artifact', 'concept', 'recipe', 'tag', 'conversation', 'code'];
+  const rank = (k) => { const i = order.indexOf(k); return i < 0 ? 99 : i; };
+  const kinds = Object.keys(byKind).sort((a, b) => rank(a) - rank(b));
+  let out = `Spec for "${anchor}" -- ${kit.stats ? kit.stats.nodes : kit.nodes.length} nodes, ${kit.stats ? kit.stats.edges : (kit.edges || []).length} edges.`;
+  for (const k of kinds) {
+    if (out.length > maxChars) break;
+    const items = byKind[k].slice(0, perKind);
+    const lines = items.map(n => {
+      const snip = String(n.body || n.answer || n.description || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+      return '  - ' + String(n.label || '').slice(0, 110) + (snip ? ': ' + snip : '');
+    });
+    out += `\n\n${k} (${byKind[k].length}):\n` + lines.join('\n');
+  }
+  return out.slice(0, maxChars + 240);
+}
+
+module.exports = { exportKit, ingestKit, resolveSeeds, walk, specDigest, KIT_VERSION };

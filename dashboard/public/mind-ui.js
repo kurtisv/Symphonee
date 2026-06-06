@@ -536,10 +536,11 @@
 
   function render() {
     teardownNetwork();
-    // Mind map view always full-bleed (its own ribbon + body manage padding).
+    _specsTeardown();
+    // Mind map + Specs + Skills views are full-bleed (they manage their own layout).
     const main = $('mindMain');
     if (main) {
-      const fullBleed = (state.view === 'mindmap');
+      const fullBleed = (state.view === 'mindmap' || state.view === 'specs' || state.view === 'skills');
       main.style.padding = fullBleed ? '0' : '14px 18px';
       main.style.overflow = fullBleed ? 'hidden' : '';
       main.style.overflowY = fullBleed ? 'hidden' : 'auto';
@@ -547,11 +548,14 @@
       main.style.display = fullBleed ? 'flex' : '';
       main.style.flexDirection = fullBleed ? 'column' : '';
     }
+    // Skills are procedural recipes, independent of the knowledge graph, so this
+    // view renders even before a brain is built.
+    if (state.view === 'skills') return renderSkills();
     if (!state.graph) {
       $('mindMain').innerHTML = `
         <div style="text-align:center;padding:60px 20px;color:var(--subtext0);">
           <div style="font-size:14px;margin-bottom:8px;color:var(--text);">No brain yet for this space.</div>
-          <div style="font-size:12px;margin-bottom:16px;">Run a build to ingest your notes, learnings, CLI memory, recipes, plugins, instructions, and active repo code.</div>
+          <div style="font-size:12px;margin-bottom:16px;">Run a build to ingest your notes, learnings, CLI memory, skills, plugins, instructions, and active repo code.</div>
           <button class="tab-bar-btn" onclick="MindUI.build()" style="padding:6px 14px;font-size:12px;">Build the brain</button>
         </div>`;
       return;
@@ -561,7 +565,327 @@
     else if (state.view === 'impact') renderImpact();
     else if (state.view === 'knowledge') renderKnowledge();
     else if (state.view === 'mindmap') renderMindmap();
+    else if (state.view === 'specs') renderSpecs();
   }
+
+  // ── Specs view: search your knowledge anchors, view a focused spec sub-graph,
+  // export/import as a KIT. The "spec" and the "KIT export" are the same bounded
+  // sub-graph produced by the KIT engine (/api/mind/kit/export). ───────────────
+  const _spec = { anchors: null, selected: null, kit: null, fg: null, filter: '' };
+  function _toast(msg, kind) { try { if (typeof window.toast === 'function') window.toast(msg, kind); } catch (_) {} }
+  function _specsTeardown() {
+    if (_spec.fg) { try { _spec.fg._destructor && _spec.fg._destructor(); } catch (_) {} _spec.fg = null; }
+  }
+  async function renderSpecs() {
+    const main = $('mindMain');
+    if (!main) return;
+    main.innerHTML =
+      '<div style="display:flex;width:100%;height:100%;min-height:0;">' +
+        '<div style="width:300px;flex-shrink:0;border-right:1px solid var(--surface0);display:flex;flex-direction:column;min-height:0;">' +
+          '<div style="padding:12px 12px 8px;display:flex;flex-direction:column;gap:8px;">' +
+            '<input id="specsSearch" placeholder="Search your knowledge..." autocomplete="off" spellcheck="false" style="background:var(--surface0);border:1px solid var(--surface1);border-radius:8px;color:var(--text);font-size:12px;padding:9px 11px;outline:none;transition:border-color .15s,box-shadow .15s;">' +
+            '<div style="display:flex;gap:6px;">' +
+              '<button id="specsImportBtn" class="tab-bar-btn" style="flex:1;font-size:11px;">Import KIT</button>' +
+              '<input id="specsImportFile" type="file" accept="application/json,.json" style="display:none;">' +
+            '</div>' +
+          '</div>' +
+          '<div id="specsList" style="flex:1;overflow-y:auto;padding:0 8px 12px;"></div>' +
+        '</div>' +
+        '<div style="flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;">' +
+          '<div id="specsHeader" style="padding:12px 16px;border-bottom:1px solid var(--surface0);display:flex;align-items:center;gap:10px;min-height:22px;">' +
+            '<span style="font-size:12px;color:var(--subtext0);">Pick a subject to see its knowledge spec, then export it as a KIT to share.</span>' +
+          '</div>' +
+          '<div id="specsGraph" style="flex:1;min-height:0;position:relative;background:radial-gradient(900px 520px at 50% 28%, color-mix(in srgb, var(--accent) 7%, transparent), transparent);"></div>' +
+        '</div>' +
+      '</div>';
+    const search = $('specsSearch');
+    if (search) {
+      search.addEventListener('input', () => { _spec.filter = search.value; _renderAnchorList(); });
+      search.addEventListener('focus', () => { search.style.borderColor = 'var(--accent)'; search.style.boxShadow = '0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent)'; });
+      search.addEventListener('blur', () => { search.style.borderColor = 'var(--surface1)'; search.style.boxShadow = ''; });
+      setTimeout(() => { try { search.focus(); } catch (_) {} }, 60);
+    }
+    const importBtn = $('specsImportBtn'), importFile = $('specsImportFile');
+    if (importBtn && importFile) { importBtn.onclick = () => importFile.click(); importFile.onchange = () => _specsIngest(importFile); }
+    if (!_spec.anchors) {
+      $('specsList').innerHTML = '<div style="padding:12px;color:var(--subtext0);font-size:11px;">Loading subjects...</div>';
+      try { const r = await fetch('/api/mind/anchors'); const d = await r.json(); _spec.anchors = d.subjects || d.anchors || []; } catch (_) { _spec.anchors = []; }
+    }
+    _renderAnchorList();
+    if (_spec.selected) _specsSelect(_spec.selected, true);
+  }
+  // Compact "what this subject contains" line, e.g. "142 code . 23 conv . 8 notes".
+  function _countsLine(counts) {
+    if (!counts) return '';
+    const labelFor = { code: 'code', note: 'notes', conversation: 'conv', drawer: 'sessions', concept: 'concepts', doc: 'docs', recipe: 'recipes', artifact: 'artifacts', memory: 'memories', insight: 'insights', tag: 'tags', entity: 'entities' };
+    const order = ['code', 'note', 'conversation', 'drawer', 'concept', 'doc', 'recipe', 'artifact', 'memory', 'insight'];
+    const parts = [];
+    for (const k of order) {
+      if (counts[k]) parts.push(counts[k] + ' ' + (labelFor[k] || k));
+      if (parts.length >= 4) break;
+    }
+    return parts.join('  .  ');
+  }
+  function _renderAnchorList() {
+    const host = $('specsList'); if (!host) return;
+    const f = (_spec.filter || '').trim().toLowerCase();
+    let list = _spec.anchors || [];
+    if (f) list = list.filter(a => a.label.toLowerCase().indexOf(f) >= 0 || (a.kind || '').toLowerCase().indexOf(f) >= 0);
+    const shown = list.slice(0, 200);
+    if (!shown.length) { host.innerHTML = '<div style="padding:12px;color:var(--subtext0);font-size:11px;">' + (f ? 'No matches.' : 'No subjects yet - build the brain first.') + '</div>'; return; }
+    host.innerHTML = shown.map(a => {
+      const sel = _spec.selected && _spec.selected.id === a.id;
+      const color = KIND_COLOR[a.kind] || '#9399b2';
+      const breakdown = _countsLine(a.counts);
+      return '<div class="specs-item" data-id="' + escapeHtml(a.id) + '" style="display:flex;align-items:flex-start;gap:8px;padding:8px 9px;border-radius:8px;cursor:pointer;margin-bottom:2px;' + (sel ? 'background:color-mix(in srgb, var(--accent) 20%, var(--surface0));' : '') + '">' +
+        '<span style="width:8px;height:8px;border-radius:50%;background:' + color + ';flex-shrink:0;box-shadow:0 0 6px ' + color + '66;margin-top:3px;"></span>' +
+        '<span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;">' +
+          '<span style="display:flex;align-items:center;gap:6px;">' +
+            '<span style="flex:1;font-size:12.5px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(a.label) + '</span>' +
+            '<span style="font-size:8.5px;color:var(--subtext0);text-transform:uppercase;letter-spacing:.4px;flex-shrink:0;padding:1px 5px;border-radius:6px;background:' + color + '22;">' + escapeHtml(a.kind) + '</span>' +
+          '</span>' +
+          (breakdown ? '<span style="font-size:10px;color:var(--subtext0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(breakdown) + '</span>' : '') +
+        '</span>' +
+      '</div>';
+    }).join('') + (list.length > shown.length ? '<div style="padding:8px 9px;color:var(--subtext0);font-size:10px;">+' + (list.length - shown.length) + ' more - keep typing to narrow</div>' : '');
+    host.querySelectorAll('.specs-item').forEach(el => {
+      const id = el.getAttribute('data-id');
+      el.addEventListener('click', () => { const a = (_spec.anchors || []).find(x => x.id === id); if (a) _specsSelect(a); });
+      el.addEventListener('mouseenter', () => { if (!(_spec.selected && _spec.selected.id === id)) el.style.background = 'var(--surface0)'; });
+      el.addEventListener('mouseleave', () => { if (!(_spec.selected && _spec.selected.id === id)) el.style.background = ''; });
+    });
+  }
+  async function _specsSelect(anchor, keepGraph) {
+    _spec.selected = anchor;
+    _renderAnchorList();
+    const header = $('specsHeader'), graphHost = $('specsGraph');
+    if (header) header.innerHTML =
+      '<span style="font-size:13px;font-weight:600;color:var(--text);">' + escapeHtml(anchor.label) + '</span>' +
+      '<span style="font-size:9px;color:var(--subtext0);text-transform:uppercase;letter-spacing:.3px;">' + escapeHtml(anchor.kind) + '</span>' +
+      '<span id="specsCounts" style="font-size:11px;color:var(--subtext0);">building...</span>' +
+      '<span style="flex:1;"></span>' +
+      '<button id="specsExportBtn" class="tab-bar-btn" style="font-size:11px;">Export KIT</button>';
+    const exportBtn = $('specsExportBtn'); if (exportBtn) exportBtn.onclick = () => _specsExport();
+    if (keepGraph && _spec.kit) { _renderSpecGraph(_spec.kit); const c = $('specsCounts'); if (c) c.textContent = _specKitCounts(_spec.kit); return; }
+    if (graphHost) graphHost.innerHTML = '<div style="padding:30px;color:var(--subtext0);font-size:12px;">Building spec...</div>';
+    let kit = null;
+    try {
+      // Use ALL the subject's merged seeds (repo + tag + entity) so the spec is
+      // everything connected to the subject, not just one node. A higher node cap
+      // lets notes + conversations through, not only code.
+      const seedIds = (anchor.seedIds && anchor.seedIds.length) ? anchor.seedIds : [anchor.id];
+      const r = await fetch('/api/mind/kit/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seedIds, maxNodes: 500, maxDepth: 3 }) });
+      const d = await r.json();
+      if (d.ok) kit = d.kit;
+    } catch (_) {}
+    if (_spec.selected !== anchor) return; // selection changed while loading
+    if (!kit) { if (graphHost) graphHost.innerHTML = '<div style="padding:30px;color:var(--subtext0);font-size:12px;">No connected knowledge for this subject.</div>'; return; }
+    _spec.kit = kit;
+    const counts = $('specsCounts'); if (counts) counts.textContent = _specKitCounts(kit);
+    _renderSpecGraph(kit);
+  }
+  // Header summary for a loaded spec: total + the kinds that matter for sharing.
+  function _specKitCounts(kit) {
+    const by = {};
+    for (const n of (kit.nodes || [])) { if (n) by[n.kind] = (by[n.kind] || 0) + 1; }
+    const line = _countsLine(by);
+    return kit.stats.nodes + ' nodes . ' + kit.stats.edges + ' edges' + (line ? '  (' + line + ')' : '');
+  }
+  function _renderSpecGraph(kit) {
+    const host = $('specsGraph'); if (!host) return;
+    _specsTeardown();
+    host.innerHTML = '';
+    if (typeof window.ForceGraph !== 'function') { host.innerHTML = '<div style="padding:30px;color:var(--subtext0);">Graph renderer unavailable.</div>'; return; }
+    const nodes = kit.nodes.map(n => ({ id: n.id, label: n.label, kind: n.kind, color: KIND_COLOR[n.kind] || '#9399b2' }));
+    const idset = new Set(nodes.map(n => n.id));
+    const links = (kit.edges || []).filter(e => idset.has(e.source) && idset.has(e.target)).map(e => ({ source: e.source, target: e.target }));
+    try {
+      const fg = window.ForceGraph()(host)
+        .graphData({ nodes, links })
+        .backgroundColor('rgba(0,0,0,0)')
+        .nodeRelSize(4)
+        .nodeColor(n => n.color)
+        .nodeLabel(n => escapeHtml(n.label) + '  [' + n.kind + ']')
+        .linkColor(() => 'rgba(150,150,180,0.22)')
+        .linkWidth(0.6)
+        .onNodeClick(n => { try { showNodeDetail(n.id); } catch (_) {} })
+        .width(host.clientWidth || 600)
+        .height(host.clientHeight || 400);
+      _spec.fg = fg;
+    } catch (e) { host.innerHTML = '<div style="padding:30px;color:var(--subtext0);">Could not render spec graph.</div>'; }
+  }
+  function _specsExport() {
+    const kit = _spec.kit; if (!kit) return;
+    try {
+      const blob = new Blob([JSON.stringify(kit, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const safe = String((_spec.selected && _spec.selected.label) || 'kit').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 40);
+      a.href = url; a.download = 'kit-' + safe + '.json'; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      _toast('KIT exported (' + kit.stats.nodes + ' nodes)', 'success');
+    } catch (_) { _toast('Export failed', 'error'); }
+  }
+  async function _specsIngest(input) {
+    const file = input.files && input.files[0]; if (!file) return;
+    try {
+      const text = await file.text();
+      const kit = JSON.parse(text);
+      if (!kit || !Array.isArray(kit.nodes)) { _toast('Not a valid KIT file', 'error'); input.value = ''; return; }
+      const r = await fetch('/api/mind/kit/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kit }) });
+      const d = await r.json();
+      if (d.ok) { _toast('Ingested ' + d.addedNodes + ' new nodes (' + d.skippedNodes + ' already known)', 'success'); _spec.anchors = null; renderSpecs(); }
+      else _toast('Ingest failed: ' + (d.reason || ''), 'error');
+    } catch (_) { _toast('Ingest failed', 'error'); }
+    input.value = '';
+  }
+
+  // ── Skills view: the procedural layer of the brain (browse/author skills +
+  // review the reflection loop's proposed skills). Lives under Mind because
+  // skills are part of the brain; independent of the knowledge graph. Exposed on
+  // window so inline handlers resolve, mirroring the other Mind sub-views. ──────
+  const MindSkills = {
+    state: { skills: [], proposals: [], selectedId: null, editing: false, current: null },
+    md(s) { try { return (typeof window.renderMarkdownToHtml === 'function') ? window.renderMarkdownToHtml(s || '') : escapeHtml(s || '').replace(/\n/g, '<br>'); } catch (_) { return escapeHtml(s || ''); } },
+    render() {
+      const main = $('mindMain'); if (!main) return;
+      main.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--surface0);flex-shrink:0;">' +
+          '<span style="font-size:13px;font-weight:600;color:var(--text);">Skills</span>' +
+          '<span style="font-size:11px;color:var(--subtext0);">how we work, consistently -- procedures every CLI follows</span>' +
+          '<span style="flex:1;"></span>' +
+          '<button class="tab-bar-btn" style="font-size:11px;" onclick="MindSkills.reflect()" title="Mine Mind corrections into proposed skills">Reflect now</button>' +
+          '<button class="tab-bar-btn" style="font-size:11px;background:var(--accent);color:#000;border:none;font-weight:600;" onclick="MindSkills.newSkill()">New skill</button>' +
+        '</div>' +
+        '<div style="flex:1;display:flex;min-height:0;">' +
+          '<div id="skMindList" style="width:300px;flex-shrink:0;border-right:1px solid var(--surface0);overflow-y:auto;padding:10px;"></div>' +
+          '<div id="skMindDetail" style="flex:1;min-width:0;overflow-y:auto;padding:18px 22px;"></div>' +
+        '</div>';
+      this.load();
+    },
+    async load() {
+      try {
+        const [s, p] = await Promise.all([
+          fetch('/api/skills').then(r => r.json()).catch(() => ({ skills: [] })),
+          fetch('/api/skills/proposals').then(r => r.json()).catch(() => ({ proposals: [] })),
+        ]);
+        this.state.skills = s.skills || [];
+        this.state.proposals = p.proposals || [];
+      } catch (_) {}
+      this.renderList();
+      if (this.state.selectedId && this.state.skills.find(x => x.id === this.state.selectedId)) this.select(this.state.selectedId);
+      else this.detailEmpty();
+    },
+    renderList() {
+      const host = document.getElementById('skMindList'); if (!host) return;
+      let html = '';
+      const props = this.state.proposals || [];
+      if (props.length) {
+        html += '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--yellow);margin:2px 4px 8px;">Proposed by reflection (' + props.length + ')</div>';
+        for (const p of props) {
+          html += '<div style="background:color-mix(in srgb, var(--yellow) 10%, var(--surface0));border:1px solid color-mix(in srgb, var(--yellow) 30%, var(--surface2));border-radius:8px;padding:9px 10px;margin-bottom:6px;">' +
+            '<div style="font-size:12.5px;font-weight:600;color:var(--text);margin-bottom:3px;">' + escapeHtml(p.name) + '</div>' +
+            '<div style="font-size:10.5px;color:var(--subtext0);line-height:1.4;margin-bottom:7px;">' + escapeHtml(p.description) + '</div>' +
+            '<div style="display:flex;gap:6px;">' +
+              '<button class="tab-bar-btn" style="font-size:11px;" onclick="MindSkills.review(\'' + escapeHtml(p.id) + '\')">Review</button>' +
+              '<button style="font-size:11px;padding:4px 9px;background:var(--green);border:none;border-radius:5px;color:#000;font-weight:600;cursor:pointer;" onclick="MindSkills.accept(\'' + escapeHtml(p.id) + '\')">Accept</button>' +
+              '<button style="font-size:11px;padding:4px 9px;background:var(--surface1);border:1px solid var(--surface2);border-radius:5px;color:var(--red);cursor:pointer;" onclick="MindSkills.reject(\'' + escapeHtml(p.id) + '\')">Reject</button>' +
+            '</div></div>';
+        }
+        html += '<div style="height:10px;"></div>';
+      }
+      html += '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--subtext0);margin:2px 4px 8px;">Skills (' + this.state.skills.length + ')</div>';
+      if (!this.state.skills.length) html += '<div style="font-size:11px;color:var(--subtext0);padding:8px;">No skills yet. Click "New skill".</div>';
+      for (const s of this.state.skills) {
+        const sel = this.state.selectedId === s.id && !this.state.editing;
+        html += '<div onclick="MindSkills.select(\'' + escapeHtml(s.id) + '\')" style="cursor:pointer;border-radius:8px;padding:9px 10px;margin-bottom:4px;' + (sel ? 'background:color-mix(in srgb, var(--accent) 18%, var(--surface0));' : '') + '">' +
+          '<div style="font-size:12.5px;font-weight:600;color:var(--text);">' + escapeHtml(s.name) + '</div>' +
+          '<div style="font-size:10.5px;color:var(--subtext0);line-height:1.4;">' + escapeHtml(s.description) + '</div>' +
+        '</div>';
+      }
+      host.innerHTML = html;
+    },
+    detailEmpty() {
+      const d = document.getElementById('skMindDetail');
+      if (d) d.innerHTML = '<div style="color:var(--subtext0);font-size:12px;padding:24px;text-align:center;">Select a skill to view it, review a proposal, or create a new one.<br><br>Skills are the procedures every CLI follows so behaviour stays consistent. Proposals are drafted by the reflection loop from your Mind corrections -- accept to make them real.</div>';
+    },
+    async select(id) {
+      this.state.selectedId = id; this.state.editing = false; this.renderList();
+      const d = document.getElementById('skMindDetail'); if (!d) return;
+      d.innerHTML = '<div style="color:var(--subtext0);font-size:12px;padding:20px;">Loading...</div>';
+      let skill = null;
+      try { const r = await fetch('/api/skills/item?id=' + encodeURIComponent(id)).then(x => x.json()); if (r.ok) skill = r.skill; } catch (_) {}
+      if (!skill) { d.innerHTML = '<div style="color:var(--red);font-size:12px;padding:20px;">Could not load skill.</div>'; return; }
+      this.state.current = skill;
+      d.innerHTML =
+        '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="font-size:16px;font-weight:700;color:var(--text);">' + escapeHtml(skill.name) + '</div>' +
+            '<div style="font-size:12px;color:var(--subtext0);margin-top:3px;">' + escapeHtml(skill.description) + '</div>' +
+            '<div style="margin-top:7px;display:flex;gap:5px;flex-wrap:wrap;align-items:center;">' + (skill.tags || []).map(t => '<span style="font-size:9.5px;background:var(--surface1);color:var(--subtext0);padding:2px 7px;border-radius:8px;">' + escapeHtml(t) + '</span>').join('') + '<code style="font-size:9.5px;color:var(--overlay1);">' + escapeHtml(skill.id) + '</code></div>' +
+          '</div>' +
+          '<button class="tab-bar-btn" style="font-size:12px;" onclick="MindSkills.edit()">Edit</button>' +
+          '<button class="tab-bar-btn" style="font-size:12px;color:var(--red);" onclick="MindSkills.del(\'' + escapeHtml(skill.id) + '\')">Delete</button>' +
+        '</div>' +
+        '<div style="border-top:1px solid var(--surface0);padding-top:14px;font-size:13px;line-height:1.55;color:var(--text);">' + this.md(skill.body || '') + '</div>';
+    },
+    edit() { this.editForm(this.state.current || {}, {}); },
+    newSkill() { this.state.selectedId = null; this.editForm({ id: '', name: '', description: '', when: '', tags: [], body: '## Use when\n- \n\n## Do not use when\n- \n\n## Steps (primary path)\n1. \n\n## Safety\n- \n\n## Verification\n- \n' }, {}); },
+    review(id) { const p = (this.state.proposals || []).find(x => x.id === id); if (p) this.editForm(p, { accept: true }); },
+    editForm(skill, opts) {
+      opts = opts || {}; this.state.editing = true; this.renderList();
+      const d = document.getElementById('skMindDetail'); if (!d) return;
+      const inp = 'background:var(--surface0);border:1px solid var(--surface2);border-radius:6px;color:var(--text);font-size:12.5px;padding:8px 10px;outline:none;width:100%;box-sizing:border-box;';
+      d.innerHTML =
+        '<div style="display:flex;flex-direction:column;gap:9px;height:100%;">' +
+          (opts.accept ? '<div style="font-size:11px;color:var(--yellow);">Reviewing a proposed skill -- edit then Accept to add it to the corpus.</div>' : '') +
+          '<input id="skmName" placeholder="Skill name (imperative)" value="' + escapeHtml(skill.name || '') + '" style="' + inp + '">' +
+          '<input id="skmId" placeholder="id (kebab-case; blank = from name)" value="' + escapeHtml(skill.id || '') + '" ' + (skill.id && !opts.accept ? 'readonly' : '') + ' style="' + inp + (skill.id && !opts.accept ? 'opacity:.6;' : '') + '">' +
+          '<input id="skmDesc" placeholder="One-line description: what it does + when to use it" value="' + escapeHtml(skill.description || '') + '" style="' + inp + '">' +
+          '<input id="skmWhen" placeholder="when: short trigger phrase (optional)" value="' + escapeHtml(skill.when || '') + '" style="' + inp + '">' +
+          '<input id="skmTags" placeholder="tags, comma, separated" value="' + escapeHtml((skill.tags || []).join(', ')) + '" style="' + inp + '">' +
+          '<textarea id="skmBody" placeholder="Body markdown: ## Use when / ## Steps (primary path) / ## Safety / ## Verification" style="' + inp + 'flex:1;min-height:240px;font-family:var(--font-mono,monospace);line-height:1.5;resize:none;">' + escapeHtml(skill.body || '') + '</textarea>' +
+          '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+            '<button class="tab-bar-btn" onclick="MindSkills.cancel()">Cancel</button>' +
+            '<button style="font-size:12px;padding:7px 16px;background:var(--accent);border:none;border-radius:6px;color:#000;font-weight:600;cursor:pointer;" onclick="MindSkills.save(' + (opts.accept ? '\'' + escapeHtml(skill.id) + '\'' : 'null') + ')">' + (opts.accept ? 'Accept' : 'Save') + '</button>' +
+          '</div>' +
+        '</div>';
+    },
+    cancel() { this.state.editing = false; if (this.state.selectedId) this.select(this.state.selectedId); else { this.renderList(); this.detailEmpty(); } },
+    async save(acceptId) {
+      const g = (id) => (document.getElementById(id) || {}).value || '';
+      const name = g('skmName').trim();
+      const id = (g('skmId').trim() || name);
+      const description = g('skmDesc').trim();
+      const when = g('skmWhen').trim();
+      const tags = g('skmTags').split(',').map(s => s.trim()).filter(Boolean);
+      const body = g('skmBody');
+      if (!name || !description || !body.trim()) { _toast('Name, description and body are required', 'error'); return; }
+      const r = await fetch('/api/skills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, name, description, when, tags, body }) }).then(x => x.json()).catch(() => ({}));
+      if (!r.ok) { _toast('Save failed: ' + (r.error || ''), 'error'); return; }
+      if (acceptId) { try { await fetch('/api/skills/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: acceptId }) }); } catch (_) {} }
+      this.state.editing = false; this.state.selectedId = r.id; _toast('Skill saved', 'success'); this.load();
+    },
+    async del(id) {
+      if (!confirm('Delete the skill "' + id + '"?')) return;
+      await fetch('/api/skills/item?id=' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
+      this.state.selectedId = null; this.state.current = null; _toast('Skill deleted', 'success'); this.load();
+    },
+    async accept(id) {
+      const r = await fetch('/api/skills/proposals/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).then(x => x.json()).catch(() => ({}));
+      if (r.ok) { this.state.selectedId = r.id; _toast('Proposal accepted -- now a skill every CLI inherits', 'success'); } else _toast('Accept failed', 'error');
+      this.load();
+    },
+    async reject(id) { await fetch('/api/skills/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => {}); this.load(); },
+    async reflect() {
+      _toast('Reflecting on Mind corrections...', 'info');
+      const r = await fetch('/api/skills/reflect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()).catch(() => ({}));
+      _toast(r && r.proposals ? (r.proposals.length + ' new proposal(s)') : 'Nothing new to propose', 'success');
+      this.load();
+    },
+  };
+  window.MindSkills = MindSkills;
+  function renderSkills() { MindSkills.render(); }
 
   // ── Unified Search view (replaces both Query and Smart search) ──────────
   // Single tab. Auto-uses hybrid (BM25 + dense) when vectors are loaded;
@@ -3606,17 +3930,88 @@
   }
   async function askAbout(labelEnc) {
     const q = decodeURIComponent(labelEnc);
-    const r = await API('/api/mind/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q, budget: 1200 }) });
+    // Ground the answer on the actual clicked node (set by showNodeDetail), not a
+    // re-search of its label -- this is what makes the answer specific instead of
+    // the vague "the context does not contain..." we used to get.
+    const nodeId = state.selectedNode || null;
+    const askQuestion = nodeId
+      ? `In one short paragraph, explain what "${q}" is in my work and how it connects to the related items. Be concrete and specific; do not say the context is insufficient.`
+      : q;
     const detail = $('mindDetail');
     detail.style.display = 'block';
     detail.innerHTML = `
-      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Query: ${escapeHtml(q)}</div>
-      <div style="font-size:11px;color:var(--subtext0);margin-bottom:8px;">Sub-graph: ${r.nodes?.length || 0} nodes / ${r.edges?.length || 0} edges (~${r.estTokens || 0} tokens)</div>
-      <div style="background:var(--base);padding:8px;border-radius:4px;font-size:11px;color:var(--text);margin-bottom:8px;">${escapeHtml(r.answer?.summary || '')}</div>
-      <div style="font-size:10px;color:var(--subtext0);font-style:italic;">${escapeHtml(r.answer?.note || '')}</div>
-      <div style="margin-top:10px;display:flex;flex-direction:column;gap:3px;">
-        ${(r.nodes || []).slice(0, 50).map(n => `<a href="#" class="mind-neighbor-link" data-id="${n.id}" style="font-size:11px;color:var(--accent);text-decoration:none;padding:3px 6px;background:var(--mantle);border-radius:3px;">${escapeHtml(n.label)} <span style="color:var(--subtext0);">(${escapeHtml(n.kind)})</span></a>`).join('')}
-      </div>`;
+      <div style="padding:16px;display:flex;flex-direction:column;gap:10px;">
+        <div style="font-size:13px;font-weight:600;color:var(--text);">${escapeHtml(q)}</div>
+        <div class="mind-ask-loading">Asking Mind<span>.</span><span>.</span><span>.</span></div>
+      </div>
+      <style>
+        .mind-ask-loading { font-size:11px; color:var(--subtext0); }
+        .mind-ask-loading span { animation: maskdot 1.2s infinite; opacity:0.3; }
+        .mind-ask-loading span:nth-child(2){ animation-delay:0.2s; }
+        .mind-ask-loading span:nth-child(3){ animation-delay:0.4s; }
+        @keyframes maskdot { 0%,80%,100%{opacity:0.25;} 40%{opacity:1;} }
+      </style>`;
+    // Lead with a real written answer from the local model (Gemma/Qwen) grounded
+    // in the graph; fetch the raw sub-graph in parallel and tuck it away as
+    // "related knowledge" -- useful for the AI / drill-down, but secondary to the
+    // human-readable explanation the user actually wants.
+    let ans = null, sub = null;
+    try {
+      [ans, sub] = await Promise.all([
+        API('/api/mind/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: askQuestion, nodeId }) }).catch(() => null),
+        API('/api/mind/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q, budget: 1200 }) }).catch(() => null),
+      ]);
+    } catch (_) {}
+    const answerText = (ans && ans.ok && ans.answer) ? ans.answer : '';
+    const subNodes = (sub && sub.nodes) || [];
+    const noModel = ans && ans.reason === 'no-local-model';
+    const emptyMsg = noModel
+      ? 'No local chat model is running. Start Ollama with a model like gemma or qwen to get a written answer; the related knowledge below is still available.'
+      : 'Could not generate a written answer right now. The related knowledge below is what Mind knows about this.';
+
+    detail.innerHTML = `
+      <div class="mind-ask">
+        <div class="mind-ask-scroll">
+          <div class="mind-ask-q">${escapeHtml(q)}</div>
+          ${answerText
+            ? `<div class="mind-ask-answer">${escapeHtml(answerText)}</div>
+               <div class="mind-ask-model">answered locally by ${escapeHtml(ans.model || 'local model')}${ans.grounded ? ' &middot; grounded in ' + ans.grounded + ' knowledge node' + (ans.grounded === 1 ? '' : 's') : ''}</div>`
+            : `<div class="mind-ask-empty">${escapeHtml(emptyMsg)}</div>`}
+          ${subNodes.length ? `
+            <details class="mind-ask-graph" ${answerText ? '' : 'open'}>
+              <summary>Related knowledge <span class="mind-section-count">${subNodes.length}</span></summary>
+              <div class="mind-ask-nodes">
+                ${subNodes.slice(0, 50).map(n => `<a href="#" class="mind-neighbor-link" data-id="${escapeHtml(n.id)}">${escapeHtml(n.label)} <span class="mind-ask-kind">(${escapeHtml(n.kind)})</span></a>`).join('')}
+              </div>
+            </details>` : ''}
+        </div>
+        <div class="mind-detail-actions">
+          <button class="mind-action-btn mind-action-primary" onclick="MindUI.closeDetail()">Close</button>
+        </div>
+      </div>
+      <style>
+        #mindDetail { padding:0 !important; overflow:hidden !important; }
+        .mind-ask { display:flex; flex-direction:column; height:100%; min-height:0; overflow:hidden; }
+        .mind-ask-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:16px; display:flex; flex-direction:column; gap:12px; }
+        .mind-ask-q { font-size:13px; font-weight:600; color:var(--text); line-height:1.35; word-break:break-word; }
+        .mind-ask-answer { font-size:12.5px; color:var(--text); line-height:1.6; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; background:var(--base); padding:12px 14px; border-radius:6px; border-left:2px solid var(--accent); }
+        .mind-ask-model { font-size:10px; color:var(--subtext0); font-style:italic; }
+        .mind-ask-empty { font-size:11.5px; color:var(--subtext0); line-height:1.5; background:var(--base); padding:10px 12px; border-radius:6px; }
+        .mind-ask-graph { font-size:11px; }
+        .mind-ask-graph > summary { cursor:pointer; font-size:10px; font-weight:700; color:var(--subtext0); text-transform:uppercase; letter-spacing:0.6px; list-style:none; display:flex; align-items:center; gap:6px; padding:4px 0; }
+        .mind-ask-graph > summary::-webkit-details-marker { display:none; }
+        .mind-ask-graph > summary::before { content:'\\25B8'; display:inline-block; transition:transform 0.15s; }
+        .mind-ask-graph[open] > summary::before { transform:rotate(90deg); }
+        .mind-ask-nodes { display:flex; flex-direction:column; gap:3px; margin-top:6px; max-height:300px; overflow-y:auto; overflow-x:hidden; }
+        .mind-ask-nodes a { font-size:11px; color:var(--accent); text-decoration:none; padding:4px 7px; background:var(--mantle); border-radius:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .mind-ask-nodes a:hover { background:var(--surface0); }
+        .mind-ask-kind { color:var(--subtext0); }
+        .mind-detail-actions { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--surface0); background:var(--mantle); flex-shrink:0; }
+        .mind-action-btn { font-size:13px; font-weight:600; padding:11px 16px; border-radius:6px; border:1px solid var(--surface1); background:var(--surface0); color:var(--text); cursor:pointer; line-height:1; }
+        .mind-action-btn:hover { background:var(--surface1); }
+        .mind-action-primary { flex:1; }
+        .mind-section-count { background:var(--surface0); color:var(--subtext0); padding:0 6px; border-radius:8px; font-weight:500; font-size:9.5px; }
+      </style>`;
     detail.querySelectorAll('.mind-neighbor-link').forEach(a => {
       a.addEventListener('click', (ev) => { ev.preventDefault(); showNodeDetail(a.dataset.id); });
     });

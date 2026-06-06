@@ -224,6 +224,13 @@
       border-radius: 5px;
       font: 600 10px var(--font-mono); color: var(--text);
     }
+    /* ── Hotkeys editor mini buttons ─────────────────────────────────────── */
+    .hotkey-mini {
+      background: var(--surface1); border: 1px solid var(--surface2);
+      color: var(--subtext1); font: 600 10px var(--font-ui);
+      padding: 3px 8px; border-radius: 5px; cursor: pointer; flex-shrink: 0;
+    }
+    .hotkey-mini:hover { color: var(--text); border-color: var(--overlay0); }
 
     /* ── Theme: Warm Metallic ────────────────────────────────────────────── */
     [data-theme="warm-metallic"] {
@@ -789,6 +796,7 @@
       background: var(--surface0); border-radius: 3px; padding: 0 4px;
       cursor: text; box-shadow: 0 0 0 1px var(--accent);
       color: var(--text); min-width: 16px;
+      user-select: text; -webkit-user-select: text;
     }
     .term-tab-close {
       display: inline-flex; align-items: center; justify-content: center;
@@ -4287,15 +4295,6 @@
     .git-commit-file .file-status.added, .git-commit-file .file-status.new { color: var(--green); }
     .git-commit-file .file-status.deleted { color: var(--red); }
 
-    /* ── Voice recording indicator ────────────────────────────────────────── */
-    .voice-indicator {
-      display: none; position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-      z-index: 300; background: var(--accent); color: #fff; padding: 10px 20px;
-      border-radius: 99px; font: 13px var(--font-ui); font-weight: 600;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.4); align-items: center; gap: 8px;
-    }
-    .voice-indicator.recording { display: flex; animation: pulse 1.5s ease infinite; }
-    .voice-dot { width: 10px; height: 10px; background: #fff; border-radius: 50%; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
 
     /* ── Sidebar bottom hints ────────────────────────────────────────────── */
@@ -4311,31 +4310,6 @@
     }
     .voice-hint.visible { display: flex; }
     .voice-hint svg { width: 13px; height: 13px; flex-shrink: 0; }
-
-    /* Voice input status indicator shown inside the Whisper settings section. */
-    .voice-status {
-      display: flex; align-items: center; gap: 8px;
-      margin: 6px 0 10px; padding: 6px 10px;
-      background: var(--surface0); border: 1px solid var(--surface1);
-      border-radius: var(--radius); font: 11px var(--font-ui); color: var(--subtext0);
-      user-select: none;
-    }
-    .voice-status svg { width: 13px; height: 13px; flex-shrink: 0; }
-    .voice-status kbd {
-      font: 10px var(--font-mono); background: var(--mantle);
-      border: 1px solid var(--surface0); border-radius: 4px;
-      padding: 3px 7px; color: var(--subtext1);
-    }
-    .voice-status .voice-status-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: var(--overlay0); flex-shrink: 0;
-      box-shadow: 0 0 0 0 transparent;
-    }
-    .voice-status.active { color: var(--text); border-color: color-mix(in srgb, var(--green) 40%, var(--surface2)); }
-    .voice-status.active .voice-status-dot {
-      background: var(--green);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
-    }
 
     /* ── Command Palette (Ctrl+K) ────────────────────────────────────────── */
     .cmd-palette-overlay {
@@ -4844,28 +4818,43 @@
     .loading-overlay.boot .loading-overlay-quote-author { display: none; }
     /* ── Onboarding wizard ──────────────────────────────────────────────── */
     .onboarding {
-      position: fixed; inset: 0; z-index: 10000;
-      background: var(--base); display: none;
+      position: fixed; inset: 0; z-index: 10000; display: none;
+      background:
+        radial-gradient(1100px 560px at 50% -8%, color-mix(in srgb, var(--accent) 11%, transparent), transparent),
+        radial-gradient(900px 500px at 50% 110%, color-mix(in srgb, var(--accent) 7%, transparent), transparent),
+        var(--base);
       flex-direction: column; align-items: center; justify-content: center;
+      padding: 48px 24px;
     }
     .onboarding.visible { display: flex; }
+    /* Slim top progress bar (typeform-style) */
+    .onboarding-progress {
+      position: fixed; top: 0; left: 0; right: 0; height: 3px;
+      background: color-mix(in srgb, var(--surface1) 55%, transparent);
+    }
+    .onboarding-progress-fill {
+      height: 100%; width: 0;
+      background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 70%, var(--text)), var(--accent));
+      border-radius: 0 3px 3px 0; transition: width 0.4s cubic-bezier(0.22,1,0.36,1);
+      box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 65%, transparent);
+    }
+    /* No card box -- a centered single-column flow that fills the screen. */
     .onboarding-card {
-      width: 520px; max-height: 80vh; display: flex; flex-direction: column;
-      background: var(--mantle); border: 1px solid var(--surface1);
-      border-radius: var(--radius-lg); box-shadow: 0 16px 48px rgba(0,0,0,0.4);
-      overflow: hidden;
+      width: 100%; max-width: 600px; max-height: 100%;
+      display: flex; flex-direction: column;
+      background: transparent; border: none; box-shadow: none; overflow: visible;
     }
-    .onboarding-body { padding: 28px 32px; overflow-y: auto; flex: 1; }
-    .onboarding-title { font: 20px var(--font-ui); font-weight: 700; color: var(--text); margin-bottom: 6px; }
-    .onboarding-subtitle { font: 13px var(--font-ui); color: var(--subtext0); margin-bottom: 20px; line-height: 1.5; }
-    .onboarding-field { margin-bottom: 14px; }
-    .onboarding-field label { display: block; font: 11px var(--font-ui); font-weight: 600; color: var(--subtext1); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
+    .onboarding-body { padding: 6px 6px 2px; overflow-y: auto; flex: 0 1 auto; }
+    .onboarding-title { font: 30px var(--font-ui); font-weight: 700; color: var(--text); margin-bottom: 8px; letter-spacing: -0.4px; line-height: 1.18; }
+    .onboarding-subtitle { font: 15px var(--font-ui); color: var(--subtext0); margin-bottom: 28px; line-height: 1.55; }
+    .onboarding-field { margin-bottom: 16px; }
+    .onboarding-field label { display: block; font: 11px var(--font-ui); font-weight: 600; color: var(--subtext1); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; }
     .onboarding-field input, .onboarding-field select {
-      width: 100%; padding: 8px 10px; font: 13px var(--font-ui); color: var(--text);
-      background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius);
-      outline: none; box-sizing: border-box;
+      width: 100%; padding: 12px 14px; font: 15px var(--font-ui); color: var(--text);
+      background: var(--surface0); border: 1px solid var(--surface1); border-radius: 10px;
+      outline: none; box-sizing: border-box; transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .onboarding-field input:focus, .onboarding-field select:focus { border-color: var(--accent); }
+    .onboarding-field input:focus, .onboarding-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
     .onboarding-hint {
       font: 11px/1.5 var(--font-ui); color: var(--subtext0); margin-top: 4px;
       padding: 8px 10px; background: var(--surface0); border-radius: var(--radius);
@@ -4875,21 +4864,22 @@
     .onboarding-hint code { font: 10px var(--font-mono); background: var(--base); padding: 1px 4px; border-radius: 2px; }
     .onboarding-footer {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 14px 32px; border-top: 1px solid var(--surface0);
+      padding: 24px 6px 0; margin-top: 10px; border-top: none;
     }
-    .onboarding-dots { display: flex; gap: 6px; }
-    .onboarding-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--surface1); transition: background 0.2s; }
-    .onboarding-dot.active { background: var(--accent); }
-    .onboarding-dot.done { background: var(--green); }
-    .onboarding-btns { display: flex; gap: 8px; }
+    .onboarding-dots { display: flex; gap: 7px; }
+    .onboarding-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--surface2); transition: background 0.2s, transform 0.2s; }
+    .onboarding-dot.active { background: var(--accent); transform: scale(1.3); }
+    .onboarding-dot.done { background: color-mix(in srgb, var(--accent) 55%, var(--surface2)); }
+    .onboarding-btns { display: flex; gap: 10px; }
     .onboarding-btn {
-      padding: 8px 20px; border: none; border-radius: var(--radius); font: 12px var(--font-ui);
-      font-weight: 600; cursor: pointer; transition: opacity 0.1s;
+      padding: 11px 26px; border: none; border-radius: 10px; font: 13px var(--font-ui);
+      font-weight: 600; cursor: pointer; transition: opacity 0.1s, transform 0.12s, box-shadow 0.15s;
     }
-    .onboarding-btn:hover { opacity: 0.85; }
+    .onboarding-btn:hover { opacity: 0.92; }
     .onboarding-btn-secondary { background: var(--surface1); color: var(--text); }
     .onboarding-btn-primary { background: var(--accent); color: var(--crust); }
-    .onboarding-btn:disabled { opacity: 0.4; cursor: default; }
+    .onboarding-btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 35%, transparent); }
+    .onboarding-btn:disabled { opacity: 0.4; cursor: default; transform: none; box-shadow: none; }
     .onboarding-section-title { font: 12px var(--font-ui); font-weight: 600; color: var(--text); margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--surface0); }
     .onboarding-repo-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--surface0); font-size: 12px; }
     .onboarding-repo-name { font-weight: 600; color: var(--accent); min-width: 80px; }
@@ -4900,6 +4890,17 @@
     .onboarding-overview-text { flex: 1; }
     .onboarding-overview-text strong { color: var(--text); font-size: 13px; display: block; margin-bottom: 2px; }
     .onboarding-overview-text span { color: var(--subtext0); font-size: 11px; line-height: 1.4; }
+    /* Step-in transition (typeform-style) */
+    .onboarding-body.ob-step-in { animation: obStepIn 0.32s cubic-bezier(0.22,1,0.36,1); }
+    @keyframes obStepIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    /* Final-screen video guide grid */
+    .ob-video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 8px; }
+    .ob-video-card { background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius); padding: 10px; cursor: default; transition: border-color 0.15s, transform 0.15s; }
+    .ob-video-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--surface2)); transform: translateY(-1px); }
+    .ob-video-thumb { position: relative; height: 64px; border-radius: 6px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface1)), var(--surface1)); display: flex; align-items: center; justify-content: center; color: var(--accent); margin-bottom: 8px; }
+    .ob-video-play { position: absolute; right: 6px; bottom: 6px; width: 22px; height: 22px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 85%, #000); color: var(--crust); display: flex; align-items: center; justify-content: center; }
+    .ob-video-title { font-size: 12px; font-weight: 600; color: var(--text); }
+    .ob-video-desc { font-size: 10px; color: var(--subtext0); line-height: 1.4; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -4913,13 +4914,13 @@
 
 <div class="loading-overlay" id="loadingOverlay">
   <img class="loading-overlay-logo" src="/launch-logo.png" alt="Symphonee" />
-  <div class="boot-dots" aria-hidden="true"><span></span><span></span><span></span></div>
   <div class="loading-overlay-label" id="loadingLabel">Loading</div>
   <div class="loading-overlay-bar"><div class="loading-overlay-bar-fill"></div></div>
   <div class="loading-overlay-quote" id="loadingQuote">
     <div class="loading-overlay-quote-text" id="loadingQuoteText"></div>
     <div class="loading-overlay-quote-author" id="loadingQuoteAuthor"></div>
   </div>
+  <div class="boot-dots" aria-hidden="true"><span></span><span></span><span></span></div>
 </div>
 <script>
   // Show the boot overlay in its splash ("boot") form on first paint, so it is
@@ -4934,6 +4935,7 @@
 
 <!-- ═══ Onboarding Wizard ═══════════════════════════════════════════════ -->
 <div class="onboarding" id="onboarding">
+  <div class="onboarding-progress"><div class="onboarding-progress-fill" id="obProgressFill"></div></div>
   <div class="onboarding-card">
     <div class="onboarding-body" id="onboardingBody"></div>
     <div class="onboarding-footer">
@@ -4952,10 +4954,10 @@
     <img src="/logo.svg" class="header-logo" alt="">
     <span class="header-title">Symphonee</span>
   </div>
-  <div class="cmd-trigger" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)">
+  <div class="cmd-trigger" id="cmdTrigger" onclick="openCmdPalette()" title="Command Palette (Ctrl+K)">
     <i data-lucide="search" style="width:12px;height:12px;color:var(--subtext0);flex-shrink:0;"></i>
     <span>Search or run a command...</span>
-    <kbd>Ctrl+K</kbd>
+    <kbd id="cmdTriggerKbd">Ctrl+K</kbd>
   </div>
   <div class="header-right">
     <div id="onboardingChip" style="display:none;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:color-mix(in srgb, var(--accent) 14%, var(--surface0));border:1px solid color-mix(in srgb, var(--accent) 40%, var(--surface2));color:var(--text);font-size:11px;font-weight:600;font-family:var(--font-ui);margin-right:6px;cursor:pointer;" onclick="toggleOnboardingPanel(event)" title="Getting started">
@@ -5091,7 +5093,6 @@
           <button class="tab-btn" data-tab="apps" id="appsTabBtn" onclick="switchTab('apps')" style="display:none;">Apps<span class="tab-running-dot" title="An apps-agent session is running"></span></button>
           <button class="tab-btn" data-tab="backlog" data-plugin-id="azure-devops" id="backlogTabBtn" onclick="switchTab('backlog')" style="display:none;">Backlog</button>
           <button class="tab-btn" data-tab="workitem" id="workitemTabBtn" onclick="switchTab('workitem')" style="display:none;">Work Item</button>
-          <button class="tab-btn closable" data-tab="recipe-editor" id="recipeEditorTabBtn" onclick="switchTab('recipe-editor')" style="display:none;"><span>Recipe Editor</span><span class="tab-close" onclick="event.stopPropagation();closeRecipeEditor();" title="Close">&times;</span></button>
           <button class="tab-btn closable" data-tab="automations-editor" id="appsAutomationsTabBtn" onclick="switchTab('automations-editor')" style="display:none;"><span id="appsAutomationsTabLabel">Automations</span><span class="tab-close" onclick="event.stopPropagation();appsCloseAutomations();" title="Close">&times;</span></button>
           <button class="tab-btn closable" data-tab="apps-instructions" id="appsInstructionsTabBtn" onclick="switchTab('apps-instructions')" style="display:none;"><span id="appsInstructionsTabLabel">Instructions</span><span class="tab-close" onclick="event.stopPropagation();appsCloseInstructions();" title="Close">&times;</span></button>
           <button class="tab-btn" data-tab="activity" data-plugin-id="azure-devops" id="activityTabBtn" onclick="switchTab('activity')" style="display:none;">Activity Timeline</button>
@@ -5241,48 +5242,6 @@
         <div class="empty-state">
           <i data-lucide="clipboard-list"></i>
           <div class="empty-state-text">Select a work item to view details</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Recipe Editor -->
-    <div class="tab-panel" id="panel-recipe-editor">
-      <div style="display:flex;height:100%;font-family:var(--font-ui);font-size:13px;">
-        <div style="flex:1;display:flex;flex-direction:column;padding:16px 18px;overflow:hidden;min-width:0;">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-shrink:0;">
-            <i data-lucide="book-plus" style="width:20px;height:20px;color:var(--accent);"></i>
-            <strong id="recipeEditorTitle" style="font-size:16px;">New Recipe</strong>
-            <div style="flex:1;"></div>
-            <button onclick="previewRecipe()" id="recipePreviewBtn" style="font-size:13px;padding:7px 14px;background:var(--surface1);border:1px solid var(--surface2);color:var(--text);border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;"><i data-lucide="eye" style="width:13px;height:13px;"></i> Preview</button>
-            <button onclick="closeRecipeEditor()" style="font-size:13px;padding:7px 16px;background:var(--surface1);border:1px solid var(--surface2);color:var(--text);border-radius:4px;cursor:pointer;">Cancel</button>
-            <button onclick="saveRecipe()" id="recipeSaveBtn" style="font-size:13px;padding:7px 18px;background:var(--accent);border:none;color:#000;border-radius:4px;cursor:pointer;font-weight:600;">Save Recipe</button>
-          </div>
-          <div style="overflow-y:auto;flex-shrink:0;max-height:50%;padding-right:4px;">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-              <div><label style="font-size:12px;color:var(--subtext0);display:block;margin-bottom:5px;">Filename (id)</label><input id="reFilename" type="text" placeholder="my-recipe" style="width:100%;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:13px var(--font-ui);outline:none;box-sizing:border-box;"></div>
-              <div><label style="font-size:12px;color:var(--subtext0);display:block;margin-bottom:5px;">Display name</label><input id="reName" type="text" placeholder="My Recipe" style="width:100%;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:13px var(--font-ui);outline:none;box-sizing:border-box;"></div>
-            </div>
-            <div style="margin-bottom:12px;"><label style="font-size:12px;color:var(--subtext0);display:block;margin-bottom:5px;">Description</label><input id="reDescription" type="text" placeholder="One-line description" style="width:100%;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:13px var(--font-ui);outline:none;box-sizing:border-box;"></div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
-              <div><label style="font-size:12px;color:var(--subtext0);display:block;margin-bottom:5px;">Icon</label><input id="reIcon" type="text" value="play" readonly style="width:100%;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:13px var(--font-mono);outline:none;box-sizing:border-box;"></div>
-              <div><label style="font-size:12px;color:var(--subtext0);display:block;margin-bottom:5px;">Intent</label><select id="reIntent" style="width:100%;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:13px var(--font-ui);outline:none;box-sizing:border-box;"><option>quick-summary</option><option selected>deep-code</option><option>plan-and-implement</option><option>long-autonomy</option><option>web-research</option><option>web-research-cheap</option><option>pr-review</option><option>parallel-fanout</option></select></div>
-              <div><label style="font-size:12px;color:var(--subtext0);display:block;margin-bottom:5px;">Mode (advisory)</label><select id="reMode" style="width:100%;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:13px var(--font-ui);outline:none;box-sizing:border-box;"><option value="">-</option><option>review</option><option selected>edit</option><option>trusted</option><option>bypass</option></select></div>
-            </div>
-            <div style="margin-bottom:14px;"><label style="font-size:12px;color:var(--subtext0);display:block;margin-bottom:5px;">Pick an icon</label><div id="reIconPicker" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(36px, 1fr));gap:6px;padding:8px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;max-height:120px;overflow-y:auto;"></div></div>
-            <label id="reDispatchLabel" style="display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text);margin-bottom:16px;cursor:pointer;"><input id="reDispatch" type="checkbox" style="width:15px;height:15px;cursor:pointer;"> Dispatch to a fresh worker (requires AI Orchestration). Default off = inject into your active terminal.</label>
-            <div style="font-size:12px;color:var(--subtext0);margin-bottom:8px;display:flex;align-items:center;gap:10px;">Inputs <button onclick="addRecipeInputRow()" style="font-size:12px;padding:4px 10px;background:var(--surface1);border:1px solid var(--surface2);color:var(--text);border-radius:3px;cursor:pointer;">+ Add input</button></div>
-            <div id="reInputsList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;"></div>
-          </div>
-          <label style="font-size:12px;color:var(--subtext0);margin-bottom:6px;flex-shrink:0;">Prompt body (markdown)</label>
-          <div id="recipeBodyEditor" style="flex:1;min-height:220px;border:1px solid var(--surface2);border-radius:4px;overflow:hidden;"></div>
-        </div>
-        <div style="width:280px;border-left:1px solid var(--surface2);padding:16px 14px;background:var(--mantle);overflow-y:auto;flex-shrink:0;">
-          <div style="font-size:12px;color:var(--subtext0);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">Insert Variable</div>
-          <div id="reVarsContext" style="display:flex;flex-direction:column;gap:6px;margin-bottom:18px;"></div>
-          <div style="font-size:12px;color:var(--subtext0);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">From Your Inputs</div>
-          <div id="reVarsInputs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:18px;"><div style="font-size:12px;color:var(--subtext0);font-style:italic;">Add an input above first.</div></div>
-          <div style="font-size:12px;color:var(--subtext0);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">Snippets</div>
-          <div id="reSnippets" style="display:flex;flex-direction:column;gap:6px;"></div>
         </div>
       </div>
     </div>
@@ -5552,6 +5511,8 @@
           <button class="mind-tab mind-view-btn" data-view="impact" onclick="MindUI.setView('impact')" title="Symbol-level call graph - what breaks if I change X?">Impact</button>
           <button class="mind-tab mind-view-btn" data-view="knowledge" onclick="MindUI.setView('knowledge')" title="Project schemas, specs, ADRs declared via .symphonee/context-artifacts.json">Knowledge</button>
           <button class="mind-tab mind-view-btn" data-view="mindmap" onclick="MindUI.setView('mindmap')" title="The graph itself - switch between graph and community map">Mind map</button>
+          <button class="mind-tab mind-view-btn" data-view="specs" onclick="MindUI.setView('specs')" title="Search your knowledge, view a focused spec sub-graph, export/import as a KIT">Specs</button>
+          <button class="mind-tab mind-view-btn" data-view="skills" onclick="MindUI.setView('skills')" title="Procedures every CLI follows -- browse, author, and review AI-proposed skills">Skills</button>
         </div>
         <div class="mind-body" style="flex:1;display:flex;min-height:0;">
           <div id="mindMain" style="flex:1;overflow:auto;padding:14px 18px;min-width:0;"></div>
@@ -5833,11 +5794,6 @@
                   <div class="orch-cta-title">Launch an AI session</div>
                   <div class="orch-cta-sub">Full terminal with Claude, Gemini, Codex, or Grok</div>
                 </button>
-                <button class="orch-cta-card" onclick="openCmdPalette();setTimeout(()=>{const i=document.getElementById('cmdPaletteInput');if(i){i.value='recipe';filterCmdPalette();i.focus();}},60);">
-                  <i data-lucide="book-open"></i>
-                  <div class="orch-cta-title">Run a recipe</div>
-                  <div class="orch-cta-sub">Saved prompts for routine work</div>
-                </button>
               </div>
             </div>
           </div>
@@ -5855,7 +5811,6 @@
       <button class="intel-tab active" data-itab="activity" data-plugin-id="azure-devops" id="intelTab-activity" onclick="switchIntelTab('activity')" style="display:none;">Activity</button>
       <button class="intel-tab" data-itab="team" data-plugin-id="azure-devops" id="intelTab-team" onclick="switchIntelTab('team')" style="display:none;">Team</button>
       <button class="intel-tab" data-itab="gitlog" id="intelTab-gitlog" onclick="switchIntelTab('gitlog')">Git Log</button>
-      <button class="intel-tab" data-itab="recipes" id="intelTab-recipes" onclick="switchIntelTab('recipes'); refreshRecipesPanel();">Recipes</button>
       <div class="tab-open-wrap" id="intelReopenWrap" style="display:none;flex-shrink:0;">
         <button class="tab-open-btn" onclick="toggleIntelReopenMenu()" title="Open closed panels" style="font-size:12px;padding:4px 6px;width:22px;height:22px;margin-top:6px;">+</button>
         <div class="tab-open-menu" id="intelReopenMenu"></div>
@@ -5881,17 +5836,7 @@
       <div id="gitLogList" style="color:var(--subtext0);font-size:12px;padding:4px;">Select a repo in Files tab</div>
     </div>
 
-    <!-- Recipes Panel -->
-    <div class="intel-panel" id="ipanel-recipes">
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
-        <button onclick="openRecipeEditor()" title="Create a new recipe in the editor" style="font-size:13px;padding:6px 12px;background:var(--accent);border:none;color:#000;border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;font-weight:600;"><i data-lucide="plus" style="width:13px;height:13px;"></i> New Recipe</button>
-        <button onclick="openRecipesFolder()" title="Open recipes folder in OS file manager" style="font-size:12px;padding:6px 12px;background:var(--surface1);border:1px solid var(--surface2);color:var(--text);border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;"><i data-lucide="folder-open" style="width:12px;height:12px;"></i> Folder</button>
-        <div style="flex:1;"></div>
-        <button onclick="refreshRecipesPanel()" title="Rescan recipes folder" style="font-size:12px;padding:6px 12px;background:var(--surface1);border:1px solid var(--surface2);color:var(--text);border-radius:4px;cursor:pointer;display:flex;align-items:center;gap:6px;"><i data-lucide="refresh-cw" style="width:12px;height:12px;"></i> Rescan</button>
-      </div>
-      <div id="recipesPanelList" style="display:flex;flex-direction:column;gap:8px;font-size:13px;"><div style="color:var(--subtext0);padding:8px;">Loading...</div></div>
-    </div>
-  </aside>
+    </aside>
 </div>
 
 <!-- ═══ Create Work Item Modal ═══════════════════════════════════════════ -->
@@ -6131,7 +6076,7 @@
       <ul style="margin:0 0 12px 16px;padding:0;color:var(--subtext0);">
         <li>All configured PATs, API keys, and preferences</li>
         <li>All plugin configs and installed third-party plugins</li>
-        <li>All custom themes, notes, recipes, and learnings</li>
+        <li>All custom themes, notes, and learnings</li>
         <li>Display preferences (sidebar widths, etc.)</li>
       </ul>
       <p style="margin:0 0 16px;color:var(--subtext1);"><strong>You cannot undo this.</strong> Export first if you want to keep anything.</p>
@@ -6174,6 +6119,9 @@
         </button>
         <button class="settings-nav-btn" data-settings-tab="theme" onclick="switchSettingsTab('theme', this)">
           <i data-lucide="palette" style="width:14px;height:14px;"></i> Theme
+        </button>
+        <button class="settings-nav-btn" data-settings-tab="hotkeys" onclick="switchSettingsTab('hotkeys', this)">
+          <i data-lucide="keyboard" style="width:14px;height:14px;"></i> Hotkeys
         </button>
         <div style="flex:1;"></div>
         <button class="settings-nav-btn settings-export-import-btn" onclick="openExportImportMenu(this)">
@@ -6518,6 +6466,15 @@
           </div>
         </div>
 
+        <!-- Hotkeys Tab -->
+        <div class="settings-tab" id="settingsTab-hotkeys">
+          <div class="settings-section">
+            <div class="settings-section-title">Keyboard Shortcuts</div>
+            <div class="settings-section-desc">Click a shortcut, then press a new key combo to rebind it (Esc to cancel). If the combo is already in use, it is automatically unbound from the other action. Changes save to your config and travel with Settings export/import.</div>
+            <div id="hotkeysList" style="margin-top:8px;"></div>
+          </div>
+        </div>
+
         <!-- Other Tab -->
         <div class="settings-tab" id="settingsTab-other">
           <div class="settings-section">
@@ -6599,19 +6556,6 @@
             <div class="modal-field">
               <label>Personal Access Token</label>
               <div style="display:flex;gap:0;"><input id="settingsGitHubPAT" type="password" placeholder="ghp_..." style="border-radius:var(--radius) 0 0 var(--radius);flex:1;"><button type="button" onclick="toggleSecretField('settingsGitHubPAT',this)" style="background:var(--surface0);border:1px solid var(--surface1);border-left:none;border-radius:0 var(--radius) var(--radius) 0;padding:0 10px;cursor:pointer;color:var(--subtext0);display:flex;align-items:center;" title="Show/hide"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
-            </div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-section-title">Voice Input (OpenAI Whisper)</div>
-            <div class="settings-section-desc">Hold Ctrl+Shift to talk, release to transcribe. Uses OpenAI Whisper API ($0.006/min).</div>
-            <div id="voiceHint" class="voice-status" role="status">
-              <span class="voice-status-dot"></span>
-              <i data-lucide="mic"></i>
-              <span class="voice-status-text">Add a key to enable voice input</span>
-            </div>
-            <div class="modal-field">
-              <label>OpenAI API Key</label>
-              <div style="display:flex;gap:0;"><input id="settingsWispr" type="password" placeholder="sk-..." style="border-radius:var(--radius) 0 0 var(--radius);flex:1;"><button type="button" onclick="toggleSecretField('settingsWispr',this)" style="background:var(--surface0);border:1px solid var(--surface1);border-left:none;border-radius:0 var(--radius) var(--radius) 0;padding:0 10px;cursor:pointer;color:var(--subtext0);display:flex;align-items:center;" title="Show/hide"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
             </div>
           </div>
         </div>
@@ -6890,12 +6834,6 @@
   </div>
 </div>
 
-<!-- ═══ Voice Recording Indicator ════════════════════════════════════════ -->
-<div class="voice-indicator" id="voiceIndicator">
-  <div class="voice-dot"></div>
-  <span>Recording... Release to send</span>
-</div>
-
 <div class="toast-container" id="toastContainer"></div>
 <div class="rich-toast-stack" id="richToastStack"></div>
 
@@ -6994,6 +6932,7 @@ let reconnectTimer = null;
 // ── Multi-Terminal System ────────────────────────────────────────────────
 const termInstances = new Map(); // termId -> { term, fitAddon, container }
 let activeTermId = 'main';
+let _renamingTab = false; // while true, switchTerminal must not steal focus back to the xterm (it would blur the inline rename field)
 let termCounter = 0;
 
 function createTermOpts() {
@@ -7051,7 +6990,15 @@ function createTermInstance(termId, label) {
     if (e.key === 'Control' || e.key === 'Shift') return false;
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       const k = (e.key || '').toLowerCase();
-      if (k === 'k' || k === 'i' || k === '/' || k === '.') return false;
+      // Let a combo bound to an allow-in-input hotkey that WOULD fire (command
+      // palette, AI focus, help, etc. -- including REBOUND ones) bubble to the
+      // global hub instead of going to the PTY. The when() check means context
+      // shortcuts (e.g. note Ctrl+S) do NOT suppress the terminal's own keys.
+      try {
+        const combo = eventToCombo(e);
+        const act = combo && _hotkeyMap.get(combo);
+        if (act && act.allowInInput && (act.when ? act.when() : true)) return false;
+      } catch (_) {}
       // Ctrl/Cmd+V: paste the clipboard into the PTY. Without this xterm sends a
       // raw ^V (0x16) and nothing useful happens. preventDefault suppresses the
       // browser's native paste so the 'paste' listener below does not also fire
@@ -7149,7 +7096,7 @@ function switchTerminal(termId) {
         lastRows = rows;
         if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'resize', termId, cols, rows }));
       } catch (_) {}
-      inst.term.focus();
+      if (!_renamingTab) inst.term.focus();
     }); });
   }
   // Sync AI controls for the newly-active shell
@@ -7196,7 +7143,7 @@ function addTerminal(label, cwd) {
   // Create server PTY with the known-good dimensions; switchTerminal's
   // double-rAF will fit() the xterm and send a resize once layout is done.
   if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'create-term', termId, cwd, cols, rows }));
+    ws.send(JSON.stringify({ type: 'create-term', termId, cwd, cols, rows, label: name }));
   }
   return termId;
 }
@@ -7236,6 +7183,7 @@ function enableTabRename(tabEl, termId) {
     if (nameEl.getAttribute('contenteditable') === 'true') return;
     const prev = nameEl.textContent;
     let done = false;
+    _renamingTab = true; // keep switchTerminal's deferred focus from blurring us
     nameEl.setAttribute('contenteditable', 'true');
     nameEl.spellcheck = false;
     nameEl.focus();
@@ -7245,14 +7193,19 @@ function enableTabRename(tabEl, termId) {
     } catch (_) {}
     const commit = (save) => {
       if (done) return; done = true;
+      _renamingTab = false;
       nameEl.removeAttribute('contenteditable');
       nameEl.removeEventListener('keydown', onKey);
       nameEl.removeEventListener('blur', onBlur);
+      // Return focus to the active terminal so typing resumes immediately.
+      try { const ai = termInstances.get(activeTermId); if (ai) ai.term.focus(); } catch (_) {}
       const val = nameEl.textContent.replace(/\s+/g, ' ').trim();
       if (save && val) {
         nameEl.textContent = val;
         const inst = termInstances.get(termId);
         if (inst) inst.label = val;
+        // Persist the rename so it survives an app restart.
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'rename-term', termId, label: val }));
       } else {
         nameEl.textContent = prev;
       }
@@ -7360,12 +7313,30 @@ requestAnimationFrame(fitTerminalNow);
             setTimeout(cb, 300); // small delay to let PTY fully init
           }
           break;
-        case 'term-list':
-          // Server sent list of active terminals — create main if needed
-          if (!termInstances.has('main') || msg.terminals.includes('main')) {
-            // Main already created in HTML
+        case 'term-list': {
+          const list = Array.isArray(msg.terminals) ? msg.terminals : [];
+          // Apply a persisted custom name to the main shell.
+          if (msg.mainLabel) {
+            const mainName = document.querySelector('#mainTermTab .term-tab-name');
+            if (mainName) mainName.textContent = msg.mainLabel;
+            const mi = termInstances.get('main'); if (mi) mi.label = msg.mainLabel;
+          }
+          // Recreate any non-main shells that exist server-side but not in this
+          // renderer. After an app restart the renderer is fresh, so this brings
+          // back the user's open shells with their saved names + working dirs.
+          // (On a ws reconnect the instances already exist, so this no-ops.)
+          for (const t of list) {
+            const id = typeof t === 'string' ? t : (t && t.id);
+            if (!id || id === 'main' || termInstances.has(id)) continue;
+            const label = (t && typeof t === 'object' && t.label) ? t.label : id;
+            createTermInstance(id, label);
+            const inst = termInstances.get(id);
+            if (inst && t && t.cwd) inst.cwd = t.cwd;
+            const mm = /^term-(\d+)$/.exec(id);
+            if (mm) termCounter = Math.max(termCounter, parseInt(mm[1], 10));
           }
           break;
+        }
         case 'term-cwd': {
           const tid = msg.termId || 'main';
           const inst = termInstances.get(tid);
@@ -7427,11 +7398,13 @@ requestAnimationFrame(fitTerminalNow);
           notifyPluginIframes('configChanged', {});
           break;
         case 'mind-startup-refresh': {
-          // Auto-refresh fired on server boot. We surface only the terminal
-          // 'done' state as a bottom-right toast so the user gets one
-          // notification per startup, not three.
+          // Auto-refresh fired on server boot. During the initial boot the
+          // loading overlay covers this work, so we suppress the toast (the user
+          // should not see "Mind refreshed" pop in right after reveal). It only
+          // shows if the overlay already revealed -- the rare build that ran past
+          // the overlay's wait cap.
           const p = msg.payload || {};
-          if (p.phase === 'done' && typeof toast === 'function') {
+          if (p.phase === 'done' && _bootOverlayDone && typeof toast === 'function') {
             const sec = p.durationMs ? Math.max(1, Math.round(p.durationMs / 1000)) : 0;
             const stat = p.stats ? ` ${p.stats.nodes} nodes` : '';
             toast(`Mind refreshed.${stat}${sec ? ' (' + sec + 's)' : ''}`, 'success', { duration: 3500, silent: true });
@@ -10927,20 +10900,15 @@ document.addEventListener('keydown', (e) => {
   }
 }, true);
 
-// ── Note @-mentions: link to another note, recipe, or repo ───────────────
+// ── Note @-mentions: link to another note or repo ────────────────────────
 // Typing "@" pops a grouped picker. Selecting an item inserts a markdown
 // reference like "[Note: my-note](note:my-note)". The AI can treat these
 // as explicit cross-document pointers without needing fuzzy matching.
 function _gatherMentionCandidates() {
-  const out = { notes: [], recipes: [], repos: [] };
+  const out = { notes: [], repos: [] };
   try {
     if (Array.isArray(window._notesListCache)) {
       out.notes = window._notesListCache.slice(0, 30).map(n => ({ key: 'note:' + n.name, label: n.name, category: 'Notes', icon: 'file-text', insert: '[Note: ' + n.name + '](note:' + encodeURIComponent(n.name) + ')' }));
-    }
-  } catch (_) {}
-  try {
-    if (Array.isArray(_recipesCache)) {
-      out.recipes = _recipesCache.slice(0, 30).map(r => ({ key: 'recipe:' + r.id, label: r.name, category: 'Recipes', icon: r.icon || 'book-open', insert: '[Recipe: ' + r.name + '](recipe:' + encodeURIComponent(r.id) + ')' }));
     }
   } catch (_) {}
   try {
@@ -10948,7 +10916,7 @@ function _gatherMentionCandidates() {
       out.repos = Object.keys(configData.Repos).slice(0, 20).map(name => ({ key: 'repo:' + name, label: name, category: 'Repos', icon: 'git-branch', insert: '[Repo: ' + name + '](repo:' + encodeURIComponent(name) + ')' }));
     }
   } catch (_) {}
-  return [...out.notes, ...out.recipes, ...out.repos];
+  return [...out.notes, ...out.repos];
 }
 
 function _maybeOpenNoteMentionMenu() {
@@ -11335,220 +11303,6 @@ async function duplicateNoteFromContext() {
     toast(`Duplicated as "${newName}"`, 'success');
   } catch (_) { toast('Failed to duplicate', 'error'); }
 }
-
-// ── Voice Sound Effects ─────────────────────────────────────────────────
-function playTone(freq, duration, type = 'sine', volume = 0.15) {
-  try {
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type;
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(volume, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + duration);
-    setTimeout(() => ctx.close(), (duration + 0.1) * 1000);
-  } catch (_) {}
-}
-
-function playStartSound() {
-  // Rising two-tone chime (voice activation)
-  playTone(600, 0.12, 'sine', 0.12);
-  setTimeout(() => playTone(900, 0.15, 'sine', 0.12), 80);
-}
-
-function playStopSound() {
-  // Falling single tone
-  playTone(700, 0.15, 'sine', 0.1);
-}
-
-// ── Voice Recording (Ctrl+Shift hold) ───────────────────────────────────
-// Records raw PCM at 16kHz directly via Web Audio API — no webm conversion needed.
-let voiceRecording = false;
-let voiceStream = null;
-let voiceAudioCtx = null;
-let voiceProcessor = null;
-let voiceSamples = [];
-
-async function startVoiceRecording() {
-  if (voiceRecording) return;
-  try {
-    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-    voiceAudioCtx = new AudioContext({ sampleRate: 16000 });
-    const source = voiceAudioCtx.createMediaStreamSource(voiceStream);
-
-    // Use ScriptProcessor to capture raw PCM samples
-    voiceProcessor = voiceAudioCtx.createScriptProcessor(4096, 1, 1);
-    voiceSamples = [];
-
-    voiceProcessor.onaudioprocess = (e) => {
-      const data = e.inputBuffer.getChannelData(0);
-      voiceSamples.push(new Float32Array(data));
-    };
-
-    source.connect(voiceProcessor);
-    voiceProcessor.connect(voiceAudioCtx.destination);
-
-    voiceRecording = true;
-    document.getElementById('voiceIndicator').classList.add('recording');
-    playStartSound();
-  } catch (e) {
-    toast('Microphone access denied', 'error');
-  }
-}
-
-async function stopVoiceRecording() {
-  if (!voiceRecording) return '';
-  document.getElementById('voiceIndicator').classList.remove('recording');
-  voiceRecording = false;
-  playStopSound();
-
-  // Stop recording
-  if (voiceProcessor) { voiceProcessor.disconnect(); voiceProcessor = null; }
-  if (voiceStream) { voiceStream.getTracks().forEach(t => t.stop()); voiceStream = null; }
-  const sampleRate = voiceAudioCtx ? voiceAudioCtx.sampleRate : 16000;
-  if (voiceAudioCtx) { voiceAudioCtx.close(); voiceAudioCtx = null; }
-
-  if (voiceSamples.length === 0) return '';
-
-  // Merge all sample chunks
-  const totalLength = voiceSamples.reduce((sum, chunk) => sum + chunk.length, 0);
-  const merged = new Float32Array(totalLength);
-  let offset = 0;
-  for (const chunk of voiceSamples) { merged.set(chunk, offset); offset += chunk.length; }
-  voiceSamples = [];
-
-  // Encode to 16-bit PCM WAV
-  const wavBuffer = float32ToWav(merged, sampleRate);
-
-  // Convert to base64 in chunks (avoid call stack overflow)
-  const bytes = new Uint8Array(wavBuffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 8192) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-  }
-  const base64 = btoa(binary);
-
-  // Show transcribing state
-  document.getElementById('voiceIndicator').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;"></div> <span>Transcribing...</span>';
-  document.getElementById('voiceIndicator').classList.add('recording');
-
-  try {
-    const res = await fetch('/api/voice/transcribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio: base64 }),
-    });
-    const data = await res.json();
-
-    document.getElementById('voiceIndicator').classList.remove('recording');
-    document.getElementById('voiceIndicator').innerHTML = '<div class="voice-dot"></div> <span>Recording... Release to send</span>';
-
-    if (data.error) { toast(data.error, 'error'); return ''; }
-    return data.text || '';
-  } catch (e) {
-    document.getElementById('voiceIndicator').classList.remove('recording');
-    document.getElementById('voiceIndicator').innerHTML = '<div class="voice-dot"></div> <span>Recording... Release to send</span>';
-    toast('Transcription failed', 'error');
-    return '';
-  }
-}
-
-// Encode Float32 PCM samples to a WAV ArrayBuffer
-function float32ToWav(samples, sampleRate) {
-  const numChannels = 1;
-  const bitsPerSample = 16;
-  const bytesPerSample = 2;
-  const dataSize = samples.length * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  // RIFF header
-  const w = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
-  w(0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
-  w(8, 'WAVE');
-  w(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * bytesPerSample, true);
-  view.setUint16(32, bytesPerSample, true);
-  view.setUint16(34, bitsPerSample, true);
-  w(36, 'data');
-  view.setUint32(40, dataSize, true);
-
-  // PCM samples
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-  }
-  return buffer;
-}
-
-// Ctrl+Shift: hold both to record, release either to stop and transcribe
-let ctrlDown = false;
-let shiftDown = false;
-let _voiceFocusTarget = null; // element that was focused when recording started
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Control') ctrlDown = true;
-  if (e.key === 'Shift') shiftDown = true;
-
-  // Start recording when both Ctrl+Shift are held
-  if (ctrlDown && shiftDown && !voiceRecording) {
-    e.preventDefault();
-    _voiceFocusTarget = document.activeElement; // capture before recording
-    startVoiceRecording();
-  }
-});
-
-document.addEventListener('keyup', async (e) => {
-  if (e.key === 'Control') ctrlDown = false;
-  if (e.key === 'Shift') shiftDown = false;
-
-  // Stop recording when either key is released
-  if (voiceRecording && (!ctrlDown || !shiftDown)) {
-    e.preventDefault();
-    // Remember what was focused before transcription (indicator may steal focus)
-    const target = _voiceFocusTarget;
-    const text = await stopVoiceRecording();
-    if (text) {
-      const tag = target?.tagName;
-      const isTerminal = !!target?.closest('.xterm');
-      const isInput = !isTerminal && (tag === 'INPUT' || tag === 'TEXTAREA');
-      const isMonaco = target?.closest('.monaco-editor');
-
-      if (isInput) {
-        // Insert at cursor position in input/textarea
-        const start = target.selectionStart || 0;
-        const end = target.selectionEnd || 0;
-        const before = target.value.slice(0, start);
-        const after = target.value.slice(end);
-        target.value = before + text + after;
-        target.selectionStart = target.selectionEnd = start + text.length;
-        target.focus();
-        target.dispatchEvent(new Event('input', { bubbles: true }));
-      } else if (isMonaco && monacoEditor) {
-        // Insert into Monaco editor at cursor
-        const pos = monacoEditor.getPosition();
-        monacoEditor.executeEdits('voice', [{
-          range: new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
-          text: text,
-        }]);
-        monacoEditor.focus();
-      } else {
-        // Default: send to terminal (just the text, never auto-launch AI)
-        sendCommand(text);
-        switchTab('terminal');
-      }
-    }
-  }
-});
 
 // ── Orchestrator ────────────────────────────────────────────────────────
 let orchTasks = [];
@@ -12289,22 +12043,6 @@ function setOrchestrationMode(active) {
 }
 
 // ── Bottom Hints Visibility ─────────────────────────────────────────────
-function updateVoiceHint() {
-  const hint = document.getElementById('voiceHint');
-  if (hint) {
-    const active = !!(configData.WhisperKey);
-    hint.classList.toggle('active', active);
-    const label = hint.querySelector('.voice-status-text');
-    if (label) {
-      label.innerHTML = active
-        ? 'Hold <kbd>Ctrl</kbd>+<kbd>Shift</kbd> to talk'
-        : 'Add a key to enable voice input';
-    }
-    try { lucide.createIcons({ nodes: [hint] }); } catch (_) {}
-  }
-  updateScreenHint();
-}
-
 async function updateScreenHint() {
   const hint = document.getElementById('switchScreenHint');
   if (!hint) return;
@@ -12325,13 +12063,8 @@ async function switchScreen() {
   } catch (_) {}
 }
 
-// Ctrl+S to save note
-document.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's' && currentNote && document.activeElement === document.getElementById('noteTextarea')) {
-    e.preventDefault();
-    saveCurrentNote();
-  }
-});
+// Ctrl+S (save note) is now the 'save-note' entry in HOTKEY_ACTIONS, dispatched
+// by the central keyboard hub so it is viewable/rebindable in Settings > Hotkeys.
 
 // ── Open external links in system browser ───────────────────────────────
 function openExternal(url) {
@@ -12650,8 +12383,6 @@ function launchAiWith(cli) {
     document.getElementById('resumeBtn').style.display = 'none';
     syncAiControls();
     if (typeof orchRefreshAgents === 'function') orchRefreshAgents();
-    // Refresh the Recipes panel so newly-available recipes show up without a manual rescan.
-    if (typeof refreshRecipesPanel === 'function') { try { refreshRecipesPanel(); } catch (_) {} }
   }
 
   if (_shellReadyResolve) {
@@ -13024,6 +12755,7 @@ async function loadConfig(autoSelectSprint) {
   try {
     const res = await fetch('/api/config');
     configData = await res.json();
+    try { loadHotkeys(); } catch (_) {}
     try { applyInappBrowserAppearance(); } catch (_) {}
     document.getElementById('projectLabel').textContent = 'Settings';
     // Plugin presence drives shell visibility. Config keys are owned by plugins
@@ -13063,7 +12795,7 @@ async function loadConfig(autoSelectSprint) {
       switchCli(configData.DefaultCli);
       _configLoaded = true;
     }
-    updateVoiceHint();
+    updateScreenHint();
   } catch (_) {}
 }
 
@@ -14451,22 +14183,6 @@ const SLASH_COMMANDS = [
     run: (input) => {
       input.value = '';
       if (typeof switchTab === 'function') switchTab('notes');
-    },
-  },
-  {
-    slug: 'recipe',
-    label: 'Run recipe',
-    desc: 'Open the command palette seeded with a recipe search',
-    hint: 'Recipe',
-    run: (input) => {
-      input.value = '';
-      if (typeof openCmdPalette === 'function') {
-        openCmdPalette();
-        setTimeout(() => {
-          const i = document.getElementById('cmdPaletteInput');
-          if (i) { i.value = 'recipe '; i.dispatchEvent(new Event('input')); i.focus(); }
-        }, 60);
-      }
     },
   },
   {
@@ -22533,6 +22249,7 @@ function switchSettingsTab(tabId, btn) {
   // Trigger AI detection when switching to AI tab
   if (tabId === 'ai') detectAiTools();
   if (tabId === 'theme') renderThemeList();
+  if (tabId === 'hotkeys') { try { renderHotkeys(); } catch (_) {} }
   if (tabId === 'repos') { try { renderSettingsSpaces(); } catch (_) {} }
   // Semi-transparent overlay on theme tab so user can preview live
   const modal = document.getElementById('settingsModal');
@@ -22543,7 +22260,6 @@ function openSettings(tab) {
   document.getElementById('settingsOrg').value = configData.AzureDevOpsOrg || '';
   document.getElementById('settingsPAT').value = configData.AzureDevOpsPAT || '';
   document.getElementById('settingsUser').value = configData.DefaultUser || '';
-  document.getElementById('settingsWispr').value = configData.WhisperKey || '';
   document.getElementById('settingsGitHubPAT').value = configData.GitHubPAT || '';
   const continuousEl = document.getElementById('settingsEnableContinuousLearning');
   if (continuousEl) continuousEl.checked = configData.EnableContinuousLearning === true;
@@ -23057,7 +22773,6 @@ async function saveSettings() {
       DefaultTeam: _txt('settingsTeam'),
       DefaultUser: _txt('settingsUser'),
       GitHubPAT: _txt('settingsGitHubPAT'),
-      WhisperKey: _txt('settingsWispr'),
       OrchestrateCliList: Array.from(document.querySelectorAll('.orch-cli-cb:checked')).map(function(cb) { return cb.value; }),
       EnableContinuousLearning: _chk('settingsEnableContinuousLearning'),
       AiApiKeys: {
@@ -23742,8 +23457,15 @@ function hideLoading() {
 
 // ── Boot loading overlay ────────────────────────────────────────────────────
 // Covers the initial dashboard render with cycling Mind-generated quotes
-// (continuous with splash.html), then hides once the window has fully loaded.
+// (continuous with splash.html). It stays up until the heavy startup work the
+// user actually waits for is DONE -- the Mind incremental refresh, which also
+// re-ingests the managed repos, signalled by the 'mind-startup-refresh' WS
+// message -- not merely until the page's own assets finished loading. The few
+// extra seconds are intentional so the dashboard is fully populated on reveal.
 let _bootOverlayDone = false;
+let _bootPageLoaded = false;   // window 'load' fired (dashboard assets in)
+let _bootMindReady = false;    // mind-startup-refresh reached a terminal phase
+let _bootMinRevealAt = 0;      // earliest time we allow the reveal
 function hideBootOverlay() {
   if (_bootOverlayDone) return;
   _bootOverlayDone = true;
@@ -23754,14 +23476,56 @@ function hideBootOverlay() {
   const ov = document.getElementById('loadingOverlay');
   if (ov) setTimeout(() => ov.classList.remove('boot'), 700);
 }
+// Reveal the dashboard only when BOTH the page assets are loaded AND the Mind /
+// repos startup refresh is done -- and never before the minimum dwell. The hard
+// cap in _initBootLoading guarantees the overlay can't get stuck if a readiness
+// signal never arrives.
+function _maybeRevealDashboard() {
+  if (_bootOverlayDone || !_bootPageLoaded || !_bootMindReady) return;
+  setTimeout(hideBootOverlay, Math.max(0, _bootMinRevealAt - Date.now()));
+}
+// Poll the server's authoritative startup-readiness flag. It flips true only
+// once the Mind refresh has run AND the graph build lock is free (so a 'skipped'
+// refresh -- where the watcher's build is the one actually running -- still
+// waits for that build). Polling (not a WS event) is immune to a completion
+// that fires before this page connected, and to the early 'skipped' signal that
+// previously released the overlay mid-build.
+async function _pollStartupReady() {
+  const deadline = Date.now() + 24000;
+  for (;;) {
+    try {
+      const r = await fetch('/api/startup/status', { cache: 'no-store' });
+      if (r.ok) { const d = await r.json(); if (d && d.ready) break; }
+    } catch (_) { /* keep polling */ }
+    if (Date.now() > deadline) break;
+    await new Promise(res => setTimeout(res, 400));
+  }
+  _bootMindReady = true;
+  _maybeRevealDashboard();
+}
 async function _initBootLoading() {
   const ov = document.getElementById('loadingOverlay');
   if (!ov) return;
-  // Hard safety cap registered FIRST so the overlay can never get stuck even if
-  // something below throws.
-  setTimeout(hideBootOverlay, 12000);
-  // Pull personal quotes from the Mind; fall back to the built-in set. Mutate
-  // the existing array in place so _showRandomQuote keeps using it.
+  ov.classList.add('boot');
+  ov.classList.add('visible');
+  // Show a quote IMMEDIATELY so there is no empty gap after the splash->dashboard
+  // navigation (the old code awaited the quotes fetch before the first quote,
+  // which is why a quote appeared, vanished, then a second one rolled in). The
+  // Mind quotes are swapped into the SAME array below, so the next cycle picks
+  // them up seamlessly with no reset.
+  _showRandomQuote();
+  const MIN_REVEAL = 2500;
+  _bootMinRevealAt = Date.now() + MIN_REVEAL;
+  // Hard safety cap so the overlay can never get stuck even if a readiness
+  // signal never arrives (headless server, missed broadcast, very slow build).
+  setTimeout(hideBootOverlay, 25000);
+  // Gate 1: page assets loaded.
+  const onLoaded = () => { _bootPageLoaded = true; _maybeRevealDashboard(); };
+  if (document.readyState === 'complete') onLoaded();
+  else window.addEventListener('load', onLoaded, { once: true });
+  // Gate 2: server reports startup work settled (Mind refreshed + repos ingested).
+  _pollStartupReady();
+  // Swap in personal Mind quotes (best-effort) without resetting the cycle.
   try {
     const r = await fetch('/api/splash/quotes');
     if (r.ok) {
@@ -23772,18 +23536,6 @@ async function _initBootLoading() {
       }
     }
   } catch (_) {}
-  ov.classList.add('boot');
-  ov.classList.add('visible');
-  _showRandomQuote();
-  // Hide once the page has fully loaded, with a comfortable minimum dwell so the
-  // splash reads as intentional (logo + a quote you can actually finish reading)
-  // even when the app is fully cached and would otherwise flash by. (Hard cap
-  // already registered at the top of this fn.)
-  const MIN_REVEAL = 2500;
-  const start = Date.now();
-  const finish = () => setTimeout(hideBootOverlay, Math.max(0, MIN_REVEAL - (Date.now() - start)));
-  if (document.readyState === 'complete') finish();
-  else window.addEventListener('load', finish, { once: true });
 }
 _initBootLoading();
 async function refreshAll() {
@@ -23808,7 +23560,7 @@ function esc(str) {
 
 // ── Onboarding Wizard ───────────────────────────────────────────────────
 let _obStep = 0;
-let _obData = { displayName: '', org: '', project: '', pat: '', team: '', ghPat: '', whisperKey: '', defaultCli: 'claude', repos: {}, theme: 'industrial-blue' };
+let _obData = { displayName: '', org: '', project: '', pat: '', team: '', ghPat: '', defaultCli: 'claude', repos: {}, theme: 'industrial-blue' };
 let _obAiStatus = {};
 
 function obPickTheme(themeId) {
@@ -23819,6 +23571,50 @@ function obPickTheme(themeId) {
     el.classList.toggle('selected', isSel);
     el.style.borderColor = isSel ? 'var(--accent)' : 'var(--surface2)';
   });
+}
+
+// Short usage guides shown on the final onboarding screen. Thumbnails are
+// placeholders (icon tiles) until real clips are added under public/guides/.
+const OB_GUIDE_VIDEOS = [
+  { icon: 'terminal', title: 'Launch an AI', desc: 'Pick a CLI and start talking in the terminal.' },
+  { icon: 'search', title: 'Command palette', desc: 'Jump anywhere, run actions, or ask a quick question.' },
+  { icon: 'git-compare', title: 'Review & commit', desc: 'See diffs and commit with AI-written messages.' },
+  { icon: 'brain', title: 'Your Mind', desc: 'Symphonee remembers context across sessions and CLIs.' },
+  { icon: 'package', title: 'Share knowledge (KIT)', desc: 'Export a topic and hand it to anyone.' },
+  { icon: 'puzzle', title: 'Plugins', desc: 'Add integrations per project from Settings.' },
+];
+let _obNeedsRestart = false; // set when a step did something that needs a relaunch
+
+async function obCheckBrain() {
+  const status = document.getElementById('obBrainStatus');
+  const actions = document.getElementById('obBrainActions');
+  if (!status) return;
+  try {
+    const r = await fetch('/api/symphonee/setup/check');
+    const d = await r.json();
+    if (d.ready) {
+      status.innerHTML = '<span style="color:var(--green);">Local AI is ready.</span> The Mind and instant local answers are enabled.';
+      if (actions) actions.innerHTML = '';
+    } else if (!d.ollamaInstalled) {
+      status.innerHTML = 'Ollama is not installed. Install it to enable local AI (the Mind and instant local question answers).';
+      if (actions) actions.innerHTML = '<button class="onboarding-btn onboarding-btn-primary" onclick="openExternal(\'https://ollama.com/download\')" style="font-size:11px;padding:6px 16px;">Get Ollama</button><button class="onboarding-btn onboarding-btn-secondary" onclick="obCheckBrain()" style="font-size:11px;padding:6px 16px;">Re-check</button>';
+    } else {
+      status.innerHTML = 'Ollama is installed. Pull the local model to enable the Mind + instant answers (one-time download).';
+      if (actions) actions.innerHTML = '<button class="onboarding-btn onboarding-btn-primary" onclick="obPullBrain(this)" style="font-size:11px;padding:6px 16px;">Enable local AI</button>';
+    }
+  } catch (_) {
+    status.innerHTML = 'Could not check local AI status. You can set this up later from Settings.';
+  }
+  try { lucide.createIcons(); } catch (_) {}
+}
+async function obPullBrain(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting download...'; }
+  _obNeedsRestart = true;
+  try {
+    await fetch('/api/symphonee/setup/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const status = document.getElementById('obBrainStatus');
+    if (status) status.innerHTML = 'Downloading the local model in the background - it keeps going after setup. Symphonee will relaunch when you finish so it activates.';
+  } catch (_) {}
 }
 
 const OB_STEPS = [
@@ -23938,19 +23734,17 @@ const OB_STEPS = [
       </div>`,
     onEnter: () => { obRenderRepos(); renderCloneSourceButtons('obRepoAddBtns','ob','onboarding-btn onboarding-btn-primary'); },
   }),
-  // 7: GitHub PAT + Whisper. GitHub section renders only when the github
-  // plugin is installed - plugin-absent installs see only Whisper here.
-  // Whisper is a core (non-plugin) capability and always shown.
+  // 7: GitHub PAT (optional). Renders only when the github plugin is installed.
   () => ({
     title: (function(){
       const hasGh = !!((window._loadedPluginsRaw || []).some(p => p.id === 'github'));
-      return hasGh ? 'GitHub & Voice (optional)' : 'Voice Input (optional)';
+      return hasGh ? 'GitHub (optional)' : 'Optional integrations';
     })(),
     subtitle: (function(){
       const hasGh = !!((window._loadedPluginsRaw || []).some(p => p.id === 'github'));
       return hasGh
-        ? 'GitHub unlocks the Pull Requests tab, git log, and clone-from-GitHub. Whisper enables hold-to-talk voice input. Both are optional; skip either by leaving the field blank.'
-        : 'Whisper enables hold-to-talk voice input. Optional - leave blank to skip.';
+        ? 'GitHub unlocks the Pull Requests tab, git log, and clone-from-GitHub. Optional - leave blank to skip.'
+        : 'Nothing to configure here - you are all set.';
     })(),
     html: (function(){
       const hasGh = !!((window._loadedPluginsRaw || []).some(p => p.id === 'github'));
@@ -23964,9 +23758,7 @@ const OB_STEPS = [
           4. Click Generate and copy the <code>ghp_...</code> token<br>
           5. If your org uses SAML/SSO, click <strong>Configure SSO</strong> next to the token and authorize it
         </div>` : '';
-      return ghBlock + `<div class="onboarding-section-title">Voice Input (OpenAI Whisper)</div>
-        <div class="onboarding-field"><label>OpenAI API Key (optional)</label><input id="obWispr" type="password" placeholder="sk-..." value="${esc(_obData.whisperKey)}" oninput="_obData.whisperKey=this.value"></div>
-        <div style="font-size:10px;color:var(--subtext0);margin-top:3px;">Hold Ctrl+Shift to talk, release to transcribe. Uses OpenAI Whisper ($0.006/min).</div>`;
+      return ghBlock;
     })(),
   }),
   // 8: Overview
@@ -23977,14 +23769,38 @@ const OB_STEPS = [
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="terminal" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>AI Terminal</strong><span>Launch Claude, Gemini, Copilot, Codex, Grok, or Qwen inline; orchestrate across them</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="file-code" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Files & Diffs</strong><span>Browse code, view diffs, commit with AI-generated messages</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="file-text" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Notes</strong><span>Markdown scratchpad; export individually or bundled</span></div></div>
-      <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="book-open" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Recipes</strong><span>Reusable AI workflows; import, export, and share</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="puzzle" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Plugins</strong><span>Azure DevOps, GitHub, Jira, Wrike, Builder.io, Sanity, WordPress - opt in per project</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="search" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Command Palette</strong><span>Press <code style="background:var(--surface0);padding:1px 4px;border-radius:2px;font-size:10px;">Ctrl+K</code> to jump anywhere</span></div></div>
     </div>
     <div style="margin-top:16px;padding:10px 12px;background:var(--surface0);border-radius:var(--radius);font-size:11px;color:var(--subtext0);border-left:2px solid var(--accent);">
       Manage everything from the <strong style="color:var(--text);">settings button</strong> at the bottom left. Plugin tabs show up automatically when you install them.
     </div>`,
-    nextLabel: 'Get Started',
+    nextLabel: 'Next',
+  }),
+  // 9: Local AI (Ollama) -- optional. Powers the Mind and instant local answers.
+  () => ({
+    title: 'Local AI (optional)',
+    subtitle: 'Symphonee can power its Mind and answer quick questions locally with Ollama - no cloud, no API keys. Optional; enable it later from Settings any time.',
+    html: `<div id="obBrainStatus" style="margin-top:8px;font-size:12px;color:var(--subtext0);line-height:1.5;">Checking local AI...</div>
+      <div id="obBrainActions" style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;"></div>`,
+    onEnter: () => obCheckBrain(),
+    nextLabel: 'Next',
+  }),
+  // 10: Final -- how to use Symphonee, with short video guides.
+  () => ({
+    title: "You're all set!",
+    subtitle: 'A few short guides to get you going. Reopen them any time from the command palette.',
+    html: `<div class="ob-video-grid">
+        ${OB_GUIDE_VIDEOS.map(v => `<div class="ob-video-card" title="Guide clips coming soon">
+          <div class="ob-video-thumb"><i data-lucide="${v.icon}" style="width:22px;height:22px;"></i><span class="ob-video-play"><i data-lucide="play" style="width:13px;height:13px;"></i></span></div>
+          <div class="ob-video-title">${esc(v.title)}</div>
+          <div class="ob-video-desc">${esc(v.desc)}</div>
+        </div>`).join('')}
+      </div>
+      <div style="margin-top:14px;padding:10px 12px;background:var(--surface0);border-radius:var(--radius);font-size:11px;color:var(--subtext0);border-left:2px solid var(--accent);">
+        Tip: the command palette is your fastest path - jump anywhere, ask a quick question for an instant local answer, or run an action.
+      </div>`,
+    nextLabel: 'Restart & Start',
   }),
 ];
 
@@ -24008,12 +23824,23 @@ function _obHasPlugin(id) { return _obInstalledPluginIds.has(id); }
 
 async function startOnboarding() {
   _obStep = 0;
-  _obData = { displayName: '', org: '', project: '', pat: '', team: '', ghPat: '', whisperKey: '', defaultCli: 'claude', repos: {}, theme: (localStorage.getItem(ACTIVE_THEME_KEY) || '').replace('__builtin_', '') || 'industrial-blue' };
+  _obData = { displayName: '', org: '', project: '', pat: '', team: '', ghPat: '', defaultCli: 'claude', repos: {}, theme: (localStorage.getItem(ACTIVE_THEME_KEY) || '').replace('__builtin_', '') || 'industrial-blue' };
   await _obRefreshInstalledPlugins();
   window._loadedPluginsRaw = Array.from(_obInstalledPluginIds).map(id => ({ id }));
   document.getElementById('onboarding').classList.add('visible');
   obRender();
 }
+
+// Keyboard control: Enter advances (textareas keep their newline; modifier combos ignored).
+document.addEventListener('keydown', (e) => {
+  const ob = document.getElementById('onboarding');
+  if (!ob || !ob.classList.contains('visible')) return;
+  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.target && e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+    obNav(1);
+  }
+});
 
 function obSkipToEnd() {
   _obStep = OB_STEPS.length - 1;
@@ -24050,17 +23877,24 @@ function obRender() {
   const step = OB_STEPS[_obStep]();
   const body = document.getElementById('onboardingBody');
   body.innerHTML = `<div class="onboarding-title">${step.title}</div><div class="onboarding-subtitle">${step.subtitle}</div>${step.html}`;
+  // Re-trigger the step-in animation on every render (typeform-style transition).
+  body.classList.remove('ob-step-in'); void body.offsetWidth; body.classList.add('ob-step-in');
   // Dots
   const dots = document.getElementById('onboardingDots');
   const applicable = OB_STEPS.map((_, i) => _obStepIsApplicable(i) ? i : -1).filter(i => i >= 0);
   const dotActiveIdx = applicable.indexOf(_obStep);
   dots.innerHTML = applicable.map((_, visI) => `<div class="onboarding-dot${visI === dotActiveIdx ? ' active' : visI < dotActiveIdx ? ' done' : ''}"></div>`).join('');
+  const _pf = document.getElementById('obProgressFill');
+  if (_pf) _pf.style.width = (applicable.length ? Math.round(((dotActiveIdx + 1) / applicable.length) * 100) : 0) + '%';
   // Buttons
   document.getElementById('obBack').style.display = _obStep === 0 ? 'none' : '';
   const nextBtn = document.getElementById('obNext');
   nextBtn.textContent = step.nextLabel || (_obStep === OB_STEPS.length - 1 ? 'Get Started' : 'Next');
   try { lucide.createIcons(); } catch (_) {}
   if (step.onEnter) step.onEnter();
+  // Keyboard-first: focus the first field so the user can just type.
+  const _fi = body.querySelector('input, select, textarea');
+  if (_fi) setTimeout(() => { try { _fi.focus(); } catch (_) {} }, 60);
 }
 
 async function obNav(dir) {
@@ -24086,7 +23920,6 @@ async function obFinish() {
     DefaultUser: _obData.displayName.trim(),
     DefaultCli: _obData.defaultCli,
     GitHubPAT: _obData.ghPat.trim(),
-    WhisperKey: _obData.whisperKey.trim(),
     Repos: _obData.repos,
   };
   try {
@@ -24108,6 +23941,12 @@ async function obFinish() {
       return;
     }
   } catch (_) {}
+  if (_obNeedsRestart) {
+    await minWait; hideLoading();
+    toast('Finishing setup - restarting...', 'success');
+    setTimeout(() => restartApp(), 500);
+    return;
+  }
   await loadConfig(true);
   loadVelocity();
   if (_obData.defaultCli) switchCli(_obData.defaultCli);
@@ -24721,24 +24560,93 @@ function _runSeqKey(key) {
       if (btn && btn.style.display !== 'none') switchTab('backlog');
       else toast('Backlog requires a work-item plugin', 'warning');
     },
-    r: () => {
-      const btn = document.getElementById('recipeEditorTabBtn');
-      if (btn && btn.style.display !== 'none') switchTab('recipe-editor');
-      else { document.getElementById('cmdPaletteInput'); openCmdPalette(); setTimeout(() => { const i = document.getElementById('cmdPaletteInput'); if (i) { i.value = 'recipe'; filterCmdPalette(); } }, 60); }
-    },
   };
   const fn = map[key];
   if (fn) { try { fn(); } catch (_) {} }
 }
 
-// ── Keyboard shortcut: Escape closes modals ─────────────────────────────
+// ── Hotkeys: configurable keyboard shortcuts ────────────────────────────────
+// Single source of truth for the BINDABLE app shortcuts. run()/when() live in
+// code; only the COMBO is user-editable (stored as overrides in
+// configData.Hotkeys = { version, bindings: {actionId: combo}, disabled: [] }).
+// Menu navigation keys (Enter/Arrow/Escape inside dropdowns), the `g` sequence,
+// and the OS panic key are intentionally NOT here.
+function _hasWorkItemProvider() { return !!((_loadedPlugins || []).some(p => p.contributions && p.contributions.workItemProvider)); }
+const HOTKEY_ACTIONS = [
+  { id: 'command-palette',     group: 'Core',       label: 'Command palette',          def: 'Ctrl+K', allowInInput: true, run: () => openCmdPalette() },
+  { id: 'command-palette-alt', group: 'Core',       label: 'Command palette (alt)',    def: 'Ctrl+J', allowInInput: true, run: () => openCmdPalette() },
+  { id: 'ai-focus',            group: 'Core',       label: 'Ask AI about selection',   def: 'Ctrl+I', allowInInput: true, run: () => openAIFocusPalette() },
+  { id: 'shortcut-help',       group: 'Core',       label: 'Keyboard shortcuts help',  def: 'Ctrl+/', allowInInput: true, run: () => openShortcutHelp() },
+  { id: 'rerun-ai',            group: 'AI',         label: 'Re-run last AI prompt',    def: 'Ctrl+.', allowInInput: true, run: () => { const h = _readAiHistory(); if (h.length) askAIFromPalette(h[0].prompt, { forceDispatch: true }); else toast('No AI history yet', 'info'); } },
+  { id: 'go-terminal',         group: 'Navigate',   label: 'Go to Terminal',           def: 'Ctrl+T', run: () => switchTab('terminal') },
+  { id: 'go-backlog',          group: 'Navigate',   label: 'Go to Backlog',            def: 'Ctrl+B', when: _hasWorkItemProvider, run: () => switchTab('backlog') },
+  { id: 'go-diffview',         group: 'Navigate',   label: 'Go to Diff viewer',        def: 'Ctrl+D', when: () => { const b = document.getElementById('diffviewTabBtn'); return b && b.style.display !== 'none'; }, run: () => switchTab('diffview') },
+  { id: 'refresh-items',       group: 'Work items', label: 'Refresh work items',       def: 'Ctrl+R', when: _hasWorkItemProvider, run: () => { loadWorkItems(true); toast('Refreshed', 'success'); } },
+  { id: 'new-item',            group: 'Work items', label: 'New work item',            def: 'Ctrl+Shift+N', allowInInput: true, when: _hasWorkItemProvider, run: () => openCreateModal() },
+  { id: 'find-items',          group: 'Work items', label: 'Find work items',          def: 'Ctrl+Shift+F', when: _hasWorkItemProvider, run: () => { switchTab('backlog'); setTimeout(() => document.getElementById('backlogSearch')?.focus(), 100); } },
+  { id: 'save-note',           group: 'Notes',      label: 'Save note',                def: 'Ctrl+S', allowInInput: true, when: () => currentNote && document.activeElement === document.getElementById('noteTextarea'), run: () => saveCurrentNote() },
+  { id: 'find-in-note',        group: 'Notes',      label: 'Find in note',             def: 'Ctrl+F', allowInInput: true, when: () => { const p = document.getElementById('panel-notes'); return p && p.classList.contains('active') && currentNote; }, run: () => openNoteFind() },
+];
+const RESERVED_COMBOS = new Set(['Ctrl+Alt+Shift+X']); // OS panic hotkey (electron-main globalShortcut)
+
+// Canonical combo string from a keydown event, e.g. "Ctrl+Shift+K". Modifier
+// order is fixed (Ctrl, Alt, Shift) so record and dispatch always agree. Meta
+// is folded into Ctrl. Returns null for a modifier-only press.
+function eventToCombo(e) {
+  const k = e.key;
+  if (k === 'Control' || k === 'Shift' || k === 'Alt' || k === 'Meta' || k === 'OS') return null;
+  const parts = [];
+  if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+  if (e.altKey) parts.push('Alt');
+  if (e.shiftKey) parts.push('Shift');
+  let key = k;
+  if (key === ' ') key = 'Space';
+  else if (key.length === 1) key = key.toUpperCase();
+  parts.push(key);
+  return parts.join('+');
+}
+function comboToDisplay(combo) { return combo; }
+
+function _hotkeyCfg() {
+  const h = (typeof configData !== 'undefined' && configData && configData.Hotkeys) || {};
+  return { bindings: h.bindings || {}, disabled: new Set(h.disabled || []) };
+}
+// Effective combo for an action: undefined binding -> default, '' -> unbound.
+function _effCombo(a, bindings) { return (bindings[a.id] !== undefined) ? bindings[a.id] : a.def; }
+
+let _hotkeyMap = new Map(); // combo -> action (effective, 1:1 via auto-unbind)
+function rebuildHotkeyMap() {
+  const { bindings, disabled } = _hotkeyCfg();
+  _hotkeyMap = new Map();
+  for (const a of HOTKEY_ACTIONS) {
+    if (disabled.has(a.id)) continue;
+    const combo = _effCombo(a, bindings);
+    if (combo) _hotkeyMap.set(combo, a); // last wins if somehow duplicated
+  }
+}
+// Keep the header command-palette trigger label in sync with the live binding
+// (it was a hardcoded "Ctrl+K" that went stale after a rebind).
+function syncPaletteShortcutLabel() {
+  const a = HOTKEY_ACTIONS.find(x => x.id === 'command-palette');
+  if (!a) return;
+  const { bindings, disabled } = _hotkeyCfg();
+  const combo = disabled.has(a.id) ? '' : _effCombo(a, bindings);
+  const kbd = document.getElementById('cmdTriggerKbd');
+  const trigger = document.getElementById('cmdTrigger');
+  if (kbd) { kbd.textContent = combo || ''; kbd.style.display = combo ? '' : 'none'; }
+  if (trigger) trigger.title = combo ? ('Command Palette (' + combo + ')') : 'Command Palette';
+}
+function loadHotkeys() { rebuildHotkeyMap(); try { syncPaletteShortcutLabel(); } catch (_) {} }
+rebuildHotkeyMap(); // defaults until loadConfig() applies overrides
+
+// ── Keyboard shortcut hub ───────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
     _clearSeq();
   }
 
-  // Don't intercept when typing in inputs/textareas (unless it's a specific shortcut)
+  // Don't intercept when typing in inputs/textareas (unless the action opts in)
   const inInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA' || document.activeElement?.tagName === 'SELECT';
 
   // Sequence: first "g" arms, a second key within 1.5s fires the nav.
@@ -24760,50 +24668,118 @@ document.addEventListener('keydown', (e) => {
     }
   }
 
-  // Work-item shortcuts are gated on a workItemProvider being installed.
-  // Without one, Ctrl+B / Ctrl+R / Ctrl+Shift+N / Ctrl+Shift+F are no-ops so
-  // core stays consistent with "just the terminal" installs.
-  const _hasWIProvider = !!((_loadedPlugins || []).some(p => p.contributions && p.contributions.workItemProvider));
-
-  if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
-    // Ctrl+K → Command Palette (works from anywhere, even inputs)
-    if (e.key === 'k') { e.preventDefault(); openCmdPalette(); return; }
-    // Ctrl+I → Focus AI on the current selection (or open palette blank)
-    if (e.key === 'i') { e.preventDefault(); openAIFocusPalette(); return; }
-    // Ctrl+/ → Keyboard shortcut cheatsheet
-    if (e.key === '/') { e.preventDefault(); openShortcutHelp(); return; }
-    // Ctrl+. → Re-run the most recent AI prompt against the active CLI
-    if (e.key === '.') {
-      e.preventDefault();
-      const hist = _readAiHistory();
-      if (hist.length) askAIFromPalette(hist[0].prompt);
-      else toast('No AI history yet', 'info');
-      return;
+  // Configurable hotkeys: look the pressed combo up in the registry dispatch
+  // map. Replaces the old hardcoded Ctrl+K/T/B/D/R/... if-chain. Work-item
+  // actions gate themselves via their when() (workItemProvider installed).
+  const combo = eventToCombo(e);
+  if (combo) {
+    const action = _hotkeyMap.get(combo);
+    if (action && (action.allowInInput || !inInput)) {
+      let ok = true;
+      try { ok = action.when ? !!action.when() : true; } catch (_) { ok = false; }
+      if (ok) { e.preventDefault(); try { action.run(); } catch (_) {} return; }
     }
-    // Ctrl+B → Board (requires workItemProvider)
-    if (e.key === 'b' && !inInput && _hasWIProvider) { e.preventDefault(); switchTab('backlog'); }
-    // Ctrl+T → Terminal
-    if (e.key === 't' && !inInput) { e.preventDefault(); switchTab('terminal'); }
-    // Ctrl+D → Diff viewer (if visible)
-    if (e.key === 'd' && !inInput) {
-      if (document.getElementById('diffviewTabBtn').style.display !== 'none') {
-        e.preventDefault(); switchTab('diffview');
-      }
-    }
-    // Ctrl+R → Refresh work items (requires workItemProvider)
-    if (e.key === 'r' && !inInput && _hasWIProvider) { e.preventDefault(); loadWorkItems(true); toast('Refreshed', 'success'); }
-  }
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-    // Ctrl+Shift+N → Create new work item (requires workItemProvider)
-    if (e.key === 'N' && _hasWIProvider) { e.preventDefault(); openCreateModal(); }
-    // Ctrl+Shift+F → Find work items (requires workItemProvider)
-    if (e.key === 'F' && !inInput && _hasWIProvider) { e.preventDefault(); switchTab('backlog'); setTimeout(() => document.getElementById('backlogSearch')?.focus(), 100); }
   }
 });
+
+// ── Hotkeys editor (Settings > Hotkeys) ─────────────────────────────────────
+let _hkRecording = null; // actionId currently capturing a new combo
+async function saveHotkeys() {
+  rebuildHotkeyMap();
+  try { syncPaletteShortcutLabel(); } catch (_) {}
+  try { renderHotkeys(); } catch (_) {}
+  try {
+    await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ Hotkeys: configData.Hotkeys }) });
+  } catch (_) {}
+}
+function _ensureHotkeysCfg() {
+  configData.Hotkeys = configData.Hotkeys || { version: 1, bindings: {}, disabled: [] };
+  configData.Hotkeys.bindings = configData.Hotkeys.bindings || {};
+  if (!Array.isArray(configData.Hotkeys.disabled)) configData.Hotkeys.disabled = [];
+  return configData.Hotkeys;
+}
+function applyHotkeyBinding(actionId, combo) {
+  const h = _ensureHotkeysCfg();
+  // Auto-unbind: any OTHER action effectively using this combo loses it.
+  for (const a of HOTKEY_ACTIONS) {
+    if (a.id === actionId) continue;
+    if (_effCombo(a, h.bindings) === combo) {
+      h.bindings[a.id] = ''; // '' = explicitly unbound
+      toast('Unbound "' + a.label + '" from ' + comboToDisplay(combo), 'info');
+    }
+  }
+  h.bindings[actionId] = combo;
+  h.disabled = h.disabled.filter(x => x !== actionId); // rebinding re-enables
+  saveHotkeys();
+}
+function startHotkeyRecord(actionId) {
+  _hkRecording = actionId;
+  try { renderHotkeys(); } catch (_) {}
+  const onKey = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Escape') { _hkRecording = null; cleanup(); renderHotkeys(); return; }
+    const combo = eventToCombo(e);
+    if (!combo) return; // modifier-only; keep waiting for the real key
+    cleanup();
+    _hkRecording = null;
+    if (RESERVED_COMBOS.has(combo)) { toast(comboToDisplay(combo) + ' is reserved', 'error'); renderHotkeys(); return; }
+    applyHotkeyBinding(actionId, combo);
+  };
+  function cleanup() { document.removeEventListener('keydown', onKey, true); }
+  document.addEventListener('keydown', onKey, true); // capture: fire before the hub
+}
+function resetHotkey(actionId) {
+  const h = _ensureHotkeysCfg();
+  delete h.bindings[actionId];
+  h.disabled = h.disabled.filter(x => x !== actionId);
+  saveHotkeys();
+}
+function toggleHotkeyDisabled(actionId) {
+  const h = _ensureHotkeysCfg();
+  if (h.disabled.includes(actionId)) h.disabled = h.disabled.filter(x => x !== actionId);
+  else h.disabled.push(actionId);
+  saveHotkeys();
+}
+function resetAllHotkeys() {
+  configData.Hotkeys = { version: 1, bindings: {}, disabled: [] };
+  saveHotkeys();
+}
+function renderHotkeys() {
+  const c = document.getElementById('hotkeysList');
+  if (!c) return;
+  const { bindings, disabled } = _hotkeyCfg();
+  const groups = {};
+  for (const a of HOTKEY_ACTIONS) { (groups[a.group] = groups[a.group] || []).push(a); }
+  let html = '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button class="hotkey-mini" onclick="resetAllHotkeys()" title="Reset every shortcut to its default">Reset all</button></div>';
+  for (const g of Object.keys(groups)) {
+    html += `<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--subtext0);margin:10px 0 2px;">${esc(g)}</div>`;
+    for (const a of groups[g]) {
+      const combo = _effCombo(a, bindings);
+      const isOverridden = bindings[a.id] !== undefined;
+      const isDisabled = disabled.has(a.id);
+      const recording = _hkRecording === a.id;
+      const chipText = recording ? 'Press keys...' : (isDisabled ? '(disabled)' : (combo ? esc(comboToDisplay(combo)) : '(unbound)'));
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid var(--surface0);">
+        <div style="flex:1;font-size:12px;color:${isDisabled ? 'var(--overlay1)' : 'var(--text)'};">${esc(a.label)}</div>
+        <button class="sy-kbd" onclick="startHotkeyRecord('${a.id}')" title="Click, then press a key combo (Esc to cancel)" style="min-width:96px;cursor:pointer;${recording ? 'box-shadow:0 0 0 2px var(--accent);' : ''}">${chipText}</button>
+        ${isOverridden ? `<button class="hotkey-mini" onclick="resetHotkey('${a.id}')" title="Reset to default (${esc(a.def)})">Reset</button>` : ''}
+        <button class="hotkey-mini" onclick="toggleHotkeyDisabled('${a.id}')" title="${isDisabled ? 'Enable' : 'Disable'}">${isDisabled ? 'Enable' : 'Disable'}</button>
+      </div>`;
+    }
+  }
+  c.innerHTML = html;
+}
 
 // ── Command Palette ─────────────────────────────────────────────────────
 let _cmdSelectedIdx = 0;
 let _cmdFiltered = [];
+
+// ── Knowledge Specs (KIT): open the Mind tab Specs view ─────────────────────
+function openMindSpecs() {
+  try { closeCmdPalette(); } catch (_) {}
+  try { switchTab("mind"); } catch (_) {}
+  setTimeout(() => { try { if (window.MindUI) MindUI.setView("specs"); } catch (_) {} }, 80);
+}
 
 function getCmdActions() {
   const repos = configData.Repos ? _repoNamesForSpace(configData.Repos, window._spacesCache || {}, activeSpace) : [];
@@ -24821,6 +24797,8 @@ function getCmdActions() {
     { label: 'Generate Repo Map', icon: 'map', action: () => openRepoMapModal(), category: 'Action', hint: 'Symbol map of the active repo' },
     { label: 'Analyze Repo', icon: 'brain', action: () => analyzeActiveRepo(), category: 'AI', hint: 'Generate a repo map and send it to the AI' },
     { label: 'Search Notes + Learnings', icon: 'search', action: () => { document.getElementById('cmdPaletteInput').value = 'find '; filterCmdPalette(); }, category: 'Action', hint: 'find <query>' },
+    { label: 'Knowledge Specs (KIT)', icon: 'package', action: () => openMindSpecs(), category: 'Mind', hint: 'Search your knowledge, view a spec, export/import as a KIT' },
+    { label: 'Skills', icon: 'list-checks', action: () => openMindSkills(), category: 'Mind', hint: 'Procedures every CLI follows; browse, author, review proposed skills' },
     // Git (local ops always work; remote pull/push still listed but fail gracefully without auth)
     { label: 'Switch Branch', icon: 'git-branch', action: () => openGitModal('branches'), category: 'Git', hint: 'Check out a different branch' },
     { label: 'Commit Changes', icon: 'git-commit', action: () => openGitModal('commit'), category: 'Git', hint: 'Stage and commit working changes' },
@@ -24831,6 +24809,7 @@ function getCmdActions() {
     { label: 'Resume Session', icon: 'rotate-ccw', action: () => { resumeAiSession(); switchTab('terminal'); }, category: 'AI', hint: 'Resume the last AI session' },
     // Settings
     { label: 'Open Settings', icon: 'settings', action: () => openSettings(), category: 'Settings', hint: 'Repos, plugins, and AI keys' },
+    { label: 'Run Setup (Onboarding)', icon: 'sparkles', action: () => startOnboarding(), category: 'Settings', hint: 'Re-run the welcome / setup wizard' },
     // Scheduled jobs (recurring prompts to any CLI)
     { label: 'Scheduled Jobs', icon: 'calendar-clock', action: () => openJobsModal(), category: 'AI', hint: 'Run AI prompts on a schedule' },
     { label: 'Create Scheduled Job', icon: 'plus', action: () => openJobEditor(), category: 'AI', hint: 'Schedule a recurring AI prompt' },
@@ -24890,17 +24869,6 @@ function getCmdActions() {
     actions.push({ label: `Switch to ${name}`, icon: 'git-branch', action: () => selectRepo(name), category: 'Repo' });
   }
   // Recipes (project-local + user-global). Loaded synchronously from cache.
-  if (_recipesCache && _recipesCache.length) {
-    for (const r of _recipesCache) {
-      actions.push({
-        label: r.name,
-        icon: r.icon || 'play',
-        action: () => openRecipeRunModal(r.id),
-        category: 'Recipe',
-        hint: r.description || '',
-      });
-    }
-  }
   // Work items (top 20 recent)
   const recentWi = [...workItems].sort((a, b) => new Date(b.changedDate) - new Date(a.changedDate)).slice(0, 20);
   for (const wi of recentWi) {
@@ -25110,8 +25078,8 @@ function openAIFocusPalette() {
     if (!input) return;
     input.value = seed;
     filterCmdPalette();
-    // Bias selection to the "Ask AI" row (last AI-category entry).
-    const aiIdx = _cmdFiltered.findIndex(a => a.category === 'AI' && a.label.startsWith('Ask AI:'));
+    // Bias selection to the AI fallback row (ask-locally / send-to-CLI).
+    const aiIdx = _cmdFiltered.findIndex(a => a._aiFallback);
     if (aiIdx >= 0) { _cmdSelectedIdx = aiIdx; renderCmdPalette(); }
     input.setSelectionRange(input.value.length, input.value.length);
   }, 60);
@@ -25126,6 +25094,13 @@ function openShortcutHelp() {
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:4500;display:flex;align-items:center;justify-content:center;font-family:var(--font-ui);';
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   const row = (k, label) => '<div style="display:flex;align-items:center;gap:12px;padding:5px 0;"><span class="sy-kbd" style="min-width:74px;">' + k + '</span><span style="color:var(--subtext1);font-size:12px;">' + label + '</span></div>';
+  // Generate the shortcut rows from the live hotkey registry so the cheatsheet
+  // always reflects the user's current (possibly rebound) bindings.
+  const _hkc = _hotkeyCfg();
+  const coreRows = HOTKEY_ACTIONS
+    .filter(a => !_hkc.disabled.has(a.id))
+    .map(a => { const c = _effCombo(a, _hkc.bindings); return c ? row(comboToDisplay(c), a.label) : ''; })
+    .join('') + row('Esc', 'Close modals');
   overlay.innerHTML =
     '<div style="background:var(--surface0);border:1px solid var(--surface2);border-radius:10px;padding:18px 22px;width:560px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,0.5);">' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">' +
@@ -25136,14 +25111,8 @@ function openShortcutHelp() {
       '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 28px;">' +
         '<div>' +
-          '<div style="font-size:10px;color:var(--overlay1);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px;">Core</div>' +
-          row('Ctrl+K', 'Command palette') +
-          row('Ctrl+I', 'Ask AI about selection') +
-          row('Ctrl+J', 'Command palette (alt)') +
-          row('Ctrl+.', 'Re-run last AI prompt') +
-          row('Ctrl+/', 'This help') +
-          row('Ctrl+T', 'Go to Terminal') +
-          row('Esc',    'Close modals') +
+          '<div style="font-size:10px;color:var(--overlay1);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px;">Shortcuts</div>' +
+          coreRows +
         '</div>' +
         '<div>' +
           '<div style="font-size:10px;color:var(--overlay1);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px;">Go to (press g, then...)</div>' +
@@ -25234,6 +25203,77 @@ function _deleteAiHistoryEntry(prompt, fromSpace) {
   } catch (_) {}
 }
 
+// Heuristic: is this free-text an informational QUESTION (answer locally) vs a
+// TASK to dispatch to an agent? Conservative -- the answer modal has a "send to
+// agent" escape hatch for the misfires.
+function _looksLikeQuestion(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  if (t.endsWith('?')) return true;
+  const first = (t.split(/\s+/)[0] || '').replace(/[^a-z']/g, '');
+  const QWORDS = new Set(['how','what',"what's",'whats','why','when','where','who','which','whose','whom','is','are','am','was','were','can','could','should','would','do','does','did','will','explain','define']);
+  return QWORDS.has(first);
+}
+
+let _localAnswerPending = null;
+// Answer a question locally via Gemma (Mind-grounded) in a modal, instead of
+// dispatching an agent. Falls back to dispatch if no local model / on error.
+async function answerLocally(question, opts) {
+  opts = opts || {};
+  const cli = opts.cli || activeCli || 'claude';
+  const cliLabel = (CLI_CONFIG[cli] && CLI_CONFIG[cli].label) || cli;
+  _localAnswerPending = { question, cli };
+  let overlay = document.getElementById('localAnswerOverlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'localAnswerOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:4600;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;font-family:var(--font-ui);';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML =
+    '<div style="background:var(--surface0);border:1px solid var(--surface2);border-radius:12px;width:680px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 16px 50px rgba(0,0,0,0.55);">' +
+      '<div style="display:flex;align-items:center;gap:8px;padding:13px 18px;border-bottom:1px solid var(--surface1);">' +
+        '<i data-lucide="sparkles" style="width:16px;height:16px;color:var(--accent);"></i>' +
+        '<strong style="font-size:13px;">Quick answer</strong>' +
+        '<span id="localAnswerModel" style="font-size:10px;color:var(--overlay1);">local</span>' +
+        '<div style="flex:1;"></div>' +
+        '<button onclick="document.getElementById(\'localAnswerOverlay\').remove()" style="background:transparent;border:none;color:var(--subtext0);cursor:pointer;"><i data-lucide="x" style="width:14px;height:14px;"></i></button>' +
+      '</div>' +
+      '<div style="padding:12px 18px;color:var(--subtext1);font-size:12px;border-bottom:1px solid var(--surface1);">' + esc(question) + '</div>' +
+      '<div id="localAnswerBody" style="padding:16px 18px;overflow:auto;font-size:13px;line-height:1.6;color:var(--text);"><span style="color:var(--subtext0);">Thinking locally...</span></div>' +
+      '<div style="display:flex;align-items:center;gap:10px;padding:11px 18px;border-top:1px solid var(--surface1);">' +
+        '<span style="font-size:11px;color:var(--overlay1);">Answered locally from your Mind.</span>' +
+        '<div style="flex:1;"></div>' +
+        '<button class="hotkey-mini" onclick="_dispatchFromLocalAnswer()">Send to ' + esc(cliLabel) + ' instead</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  try { lucide.createIcons({ nodes: [overlay] }); } catch (_) {}
+  try {
+    const r = await fetch('/api/mind/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question }) });
+    const d = await r.json().catch(() => ({}));
+    const bodyEl = document.getElementById('localAnswerBody');
+    if (!bodyEl) return; // modal was closed
+    if (d && d.ok && d.answer) {
+      bodyEl.innerHTML = (typeof renderMarkdownToHtml === 'function') ? renderMarkdownToHtml(d.answer) : esc(d.answer).replace(/\n/g, '<br>');
+      const me = document.getElementById('localAnswerModel');
+      if (me && d.model) me.textContent = d.model + (d.grounded ? ' · grounded' : '');
+    } else {
+      overlay.remove();
+      toast(d && d.reason === 'no-local-model' ? 'No local model installed - sending to agent' : 'Local answer unavailable - sending to agent', 'info');
+      askAIFromPalette(question, { forceDispatch: true });
+    }
+  } catch (_) {
+    if (overlay) overlay.remove();
+    toast('Local answer failed - sending to agent', 'info');
+    askAIFromPalette(question, { forceDispatch: true });
+  }
+}
+function _dispatchFromLocalAnswer() {
+  const p = _localAnswerPending;
+  const ov = document.getElementById('localAnswerOverlay'); if (ov) ov.remove();
+  if (p) askAIFromPalette(p.question, { forceDispatch: true });
+}
+
 async function askAIFromPalette(query, opts) {
   opts = opts || {};
   if (!query || !query.trim()) { closeCmdPalette(); return; }
@@ -25264,6 +25304,13 @@ async function askAIFromPalette(query, opts) {
     } catch (err) {
       toast('Follow-up failed: ' + (err.message || err), 'error');
     }
+    return;
+  }
+  // Informational questions get a quick local (Gemma, Mind-grounded) answer in a
+  // modal instead of spawning an agent. forceDispatch (the modal's escape hatch,
+  // and the Re-run action) skips this.
+  if (!opts.forceDispatch && _looksLikeQuestion(query)) {
+    answerLocally(query.trim(), { cli });
     return;
   }
   try {
@@ -25394,16 +25441,20 @@ function filterCmdPalette() {
   // there are a few matches, or as the sole option when nothing matches - so
   // a question like "what's in my inbox" still resolves to a useful action.
   if (q && q.length >= 2 && !findMatch) {
-    const aiLabel = 'Ask AI: ' + raw.trim();
-    const already = _cmdFiltered.some(a => a.label === aiLabel);
+    const queryText = raw.trim();
+    // A question gets a quick LOCAL answer (Gemma, grounded in your Mind); a
+    // task is dispatched to the active CLI. Label/hint reflect which will happen.
+    const isQ = _looksLikeQuestion(queryText);
+    const cliLabel = (CLI_CONFIG[activeCli] && CLI_CONFIG[activeCli].label) || activeCli;
+    const already = _cmdFiltered.some(a => a._aiFallback);
     if (!already) {
-      const cliLabel = (CLI_CONFIG[activeCli] && CLI_CONFIG[activeCli].label) || activeCli;
       const aiRow = {
-        label: aiLabel,
-        icon: 'sparkles',
-        action: () => askAIFromPalette(raw.trim()),
+        label: (isQ ? 'Answer locally: ' : 'Ask AI: ') + queryText,
+        icon: isQ ? 'cpu' : 'sparkles',
+        action: () => askAIFromPalette(queryText),
         category: 'AI',
-        hint: 'Send to ' + cliLabel,
+        hint: isQ ? 'Local answer, grounded in your Mind' : ('Send to ' + cliLabel),
+        _aiFallback: true,
       };
       if (_cmdFiltered.length === 0) _cmdFiltered = [aiRow];
       else _cmdFiltered.push(aiRow);
@@ -25531,6 +25582,14 @@ async function openRepoMapModal() {
 function closeRepoMapModal() {
   if (_repoMapEditor) { try { _repoMapEditor.dispose(); } catch (_) {} _repoMapEditor = null; }
   const o = document.getElementById('repoMapOverlay'); if (o) o.remove();
+}
+
+// Open the Skills view (a Mind sub-tab). Skills are part of the brain, so they
+// live under Mind as a proper view, not a pop-up modal.
+function openMindSkills() {
+  if (typeof closeCmdPalette === 'function') closeCmdPalette();
+  switchTab('mind');
+  setTimeout(() => { try { if (window.MindUI) MindUI.setView('skills'); } catch (_) {} }, 80);
 }
 
 function setRepoMapView(view) {
@@ -26617,7 +26676,6 @@ function applyPluginPinnedTabs(opts) {
       _intelFallbackToRecipes = first.dataset.itab === 'recipes';
       try {
         switchIntelTab(first.dataset.itab);
-        if (first.dataset.itab === 'recipes' && typeof refreshRecipesPanel === 'function') refreshRecipesPanel();
       } catch (_) {}
     }
   } else {
@@ -27949,197 +28007,7 @@ async function removeMcp(nameEnc) {
 
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])); }
 
-// ═══ Recipes ═══════════════════════════════════════════════════════════════
-let _recipesCache = [];
-async function refreshRecipes() {
-  try {
-    const r = await fetch('/api/recipes');
-    const list = await r.json();
-    _recipesCache = Array.isArray(list) ? list : [];
-  } catch (_) { _recipesCache = []; }
-}
 
-async function openRecipeRunModal(recipeId) {
-  let recipe;
-  try {
-    const r = await fetch('/api/recipes/' + encodeURIComponent(recipeId));
-    if (!r.ok) throw new Error('fetch failed');
-    recipe = await r.json();
-  } catch (e) { toast('Could not load recipe: ' + recipeId, 'error'); return; }
-
-  const wantsDispatch = recipe.meta && recipe.meta.dispatch === true;
-  const aiState = (typeof termAiState !== 'undefined') ? termAiState.get(activeTermId) : null;
-  const aiReady = aiState && aiState.launched && aiState.cli;
-  if (!wantsDispatch && !aiReady) {
-    toast('Launch an AI in your active terminal first (Ctrl+L or click an AI in the picker).', 'error');
-    return;
-  }
-
-  // Fetch live data the smart selectors will need
-  const pf = window.Symphonee?.contributions?.providerFetch;
-  const [reposObj, iterations, ctx] = await Promise.all([
-    fetch('/api/repos').then(r => r.json()).catch(() => ({})),
-    (pf ? pf('workItem', 'iterationsRoute', {}) : Promise.resolve(null)).then(r => r ? r.json() : []).catch(() => []),
-    fetch('/api/ui/context').then(r => r.json()).catch(() => ({})),
-  ]);
-  const repoNames = Object.keys(reposObj || {});
-  const iterationNames = Array.isArray(iterations) ? iterations.map(i => i.name || i.path) : [];
-
-  let overlay = document.getElementById('recipeRunOverlay');
-  if (overlay) overlay.remove();
-  overlay = document.createElement('div');
-  overlay.id = 'recipeRunOverlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:3000;display:flex;align-items:center;justify-content:center;font-family:var(--font-ui);';
-
-  const inputsHtml = (recipe.inputs || []).map(i => {
-    const def = i.default == null ? '' : String(i.default);
-    const req = i.required ? ' <span style="color:var(--accent);">*</span>' : '';
-    const label = `<label style="display:block;font-size:11px;color:var(--subtext0);margin-bottom:4px;">${escapeHtml(i.name)}${req}${i.description ? ' <span style="opacity:0.7;">- '+escapeHtml(i.description)+'</span>' : ''}</label>`;
-    if (i.type === 'boolean') {
-      return `<div style="margin-bottom:10px;"><label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);"><input type="checkbox" data-recipe-input="${escapeHtml(i.name)}" ${def==='true'?'checked':''}> ${escapeHtml(i.name)}${req}</label></div>`;
-    }
-    if (i.type === 'repo') {
-      const initial = def || ctx.activeRepo || '';
-      const opts = repoNames.map(n => `<option value="${escapeHtml(n)}" ${n===initial?'selected':''}>${escapeHtml(n)}${n===ctx.activeRepo?' (active)':''}</option>`).join('');
-      return `<div style="margin-bottom:10px;">${label}<select data-recipe-input="${escapeHtml(i.name)}" style="width:100%;padding:6px 8px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:12px var(--font-ui);outline:none;">${opts}</select></div>`;
-    }
-    if (i.type === 'iteration') {
-      const initial = def || ctx.selectedIterationName || '';
-      const opts = iterationNames.map(n => `<option value="${escapeHtml(n)}" ${n===initial?'selected':''}>${escapeHtml(n)}${n===ctx.selectedIterationName?' (active)':''}</option>`).join('');
-      return `<div style="margin-bottom:10px;">${label}<select data-recipe-input="${escapeHtml(i.name)}" style="width:100%;padding:6px 8px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:12px var(--font-ui);outline:none;">${opts}</select></div>`;
-    }
-    if (i.type === 'select' && Array.isArray(i.choices)) {
-      const opts = i.choices.map(c => `<option value="${escapeHtml(c)}" ${String(c)===def?'selected':''}>${escapeHtml(c)}</option>`).join('');
-      return `<div style="margin-bottom:10px;">${label}<select data-recipe-input="${escapeHtml(i.name)}" style="width:100%;padding:6px 8px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:12px var(--font-ui);outline:none;">${opts}</select></div>`;
-    }
-    const inputType = i.type === 'number' ? 'number' : 'text';
-    return `<div style="margin-bottom:10px;">${label}<input type="${inputType}" data-recipe-input="${escapeHtml(i.name)}" value="${escapeHtml(def)}" style="width:100%;padding:6px 8px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;color:var(--text);font:12px var(--font-ui);outline:none;"></div>`;
-  }).join('');
-
-  // Always show the active context the recipe body will see
-  const contextHtml = `
-    <div style="background:var(--surface1);border:1px solid var(--surface2);border-radius:var(--radius);padding:8px 10px;margin-bottom:14px;font-size:11px;color:var(--text);line-height:1.6;">
-      <div style="font-size:9px;color:var(--subtext0);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Will run with</div>
-      <div><strong>Repo:</strong> ${escapeHtml(ctx.activeRepo || '(none selected)')}${ctx.activeRepoPath ? ' <span style="color:var(--subtext0);font-size:10px;">at '+escapeHtml(ctx.activeRepoPath)+'</span>' : ''}</div>
-      ${ctx.selectedIterationName ? `<div><strong>Iteration:</strong> ${escapeHtml(ctx.selectedIterationName)}</div>` : ''}
-      <div><strong>AI:</strong> ${aiReady ? escapeHtml(aiState.cli) + ' (in your active terminal)' : (wantsDispatch ? 'fresh worker via orchestrator' : 'none')}</div>
-    </div>`;
-
-  overlay.innerHTML = `
-    <div style="background:var(--surface0);border:1px solid var(--surface2);border-radius:var(--radius);padding:20px;min-width:460px;max-width:620px;box-shadow:0 8px 24px rgba(0,0,0,0.4);">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;color:var(--accent);font-weight:600;font-size:13px;">
-        <i data-lucide="${escapeHtml(recipe.icon || 'play')}" style="width:16px;height:16px;"></i>
-        <span>${escapeHtml(recipe.name)}</span>
-      </div>
-      <div style="font-size:11px;color:var(--subtext0);margin-bottom:14px;">${escapeHtml(recipe.description)}</div>
-      ${contextHtml}
-      ${inputsHtml || '<div style="font-size:11px;color:var(--subtext0);margin-bottom:8px;font-style:italic;">No inputs needed - this recipe runs on the context shown above.</div>'}
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
-        <button onclick="document.getElementById('recipeRunOverlay').remove()" style="padding:6px 14px;background:var(--surface1);border:1px solid var(--surface2);border-radius:4px;color:var(--text);cursor:pointer;font-size:11px;">Cancel</button>
-        <button onclick="submitRecipeRun('${encodeURIComponent(recipe.id)}')" style="padding:6px 14px;background:var(--accent);border:none;border-radius:4px;color:#000;cursor:pointer;font-size:11px;font-weight:600;">Run</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
-}
-
-async function submitRecipeRun(recipeIdEnc) {
-  const recipeId = decodeURIComponent(recipeIdEnc);
-  // Re-check AI readiness right before running (could have changed since modal opened)
-  const recipeMeta = (_recipesCache || []).find(r => r.id === recipeId) || {};
-  const wantsDispatch = recipeMeta && recipeMeta.meta && recipeMeta.meta.dispatch === true;
-  const aiState = (typeof termAiState !== 'undefined') ? termAiState.get(activeTermId) : null;
-  const aiReady = aiState && aiState.launched && aiState.cli;
-  if (!wantsDispatch && !aiReady) {
-    toast('Launch an AI in your active terminal first.', 'error');
-    return;
-  }
-  const inputs = {};
-  document.querySelectorAll('[data-recipe-input]').forEach(el => {
-    const name = el.getAttribute('data-recipe-input');
-    if (el.type === 'checkbox') inputs[name] = el.checked;
-    else if (el.type === 'number') inputs[name] = el.value === '' ? null : Number(el.value);
-    else inputs[name] = el.value;
-  });
-  document.getElementById('recipeRunOverlay').remove();
-  try {
-    const r = await fetch('/api/recipes/run', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: recipeId, inputs, originTermId: activeTermId || null }),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || r.statusText);
-    if (data.mode === 'dispatch') {
-      toast(`Recipe '${recipeId}' dispatched to ${data.cli} (task ${data.taskId.slice(0,8)})`, 'success');
-    } else {
-      toast(`Recipe '${recipeId}' sent to your active terminal`, 'success');
-      switchTab('terminal');
-    }
-  } catch (e) { toast('Recipe failed: ' + e.message, 'error'); }
-}
-
-async function refreshRecipesPanel() {
-  await refreshRecipes();
-  const host = document.getElementById('recipesPanelList');
-  if (!host) return;
-  if (!_recipesCache.length) {
-    host.innerHTML = '<div style="color:var(--subtext0);padding:12px;">No recipes found. Add a markdown file to <code>recipes/</code>.</div>';
-    return;
-  }
-  const aiState = (typeof termAiState !== 'undefined') ? termAiState.get(activeTermId) : null;
-  const aiReady = aiState && aiState.launched && aiState.cli;
-  host.innerHTML = (!aiReady ? `<div style="padding:10px 12px;margin-bottom:10px;background:color-mix(in srgb, var(--yellow, #f5b800) 12%, var(--surface0));border:1px solid color-mix(in srgb, var(--yellow, #f5b800) 30%, transparent);border-radius:var(--radius);font-size:13px;color:var(--text);">No AI launched in your active terminal. Recipes that run in your terminal need one. <a href="#" onclick="event.preventDefault(); switchTab('terminal');" style="color:var(--accent);">Open the terminal</a> and launch an AI first.</div>` : '') + _recipesCache.map(r => {
-    const inputs = (r.inputs || []).map(i => escapeHtml(i.name) + (i.required ? '*' : '')).join(', ') || 'none';
-    const target = r.cli ? `cli: <code>${escapeHtml(r.cli)}</code>` : (r.intent ? `intent: <code>${escapeHtml(r.intent)}</code>` : '');
-    const wantsDispatch = r.meta && r.meta.dispatch === true;
-    const canRun = wantsDispatch || aiReady;
-    // Only show USER badge (project-local is the boring default)
-    const userBadge = r.scope === 'user'
-      ? '<span style="font-size:10px;padding:2px 6px;border-radius:3px;background:var(--surface2);color:var(--subtext0);margin-left:6px;" title="From your global recipes folder (~/.symphonee/recipes/)">USER</span>'
-      : '';
-    const modeBadge = wantsDispatch
-      ? '<span style="font-size:10px;padding:2px 6px;border-radius:3px;background:var(--surface2);color:var(--subtext0);margin-left:6px;" title="Spawns a fresh worker via orchestrator">DISPATCH</span>'
-      : '';
-    const runBtn = canRun
-      ? `<button onclick="openRecipeRunModal('${encodeURIComponent(r.id)}')" style="font-size:12px;padding:5px 14px;background:var(--accent);border:none;color:#000;border-radius:4px;cursor:pointer;font-weight:600;">Run</button>`
-      : `<button disabled title="Launch an AI in your active terminal first" style="font-size:12px;padding:5px 14px;background:var(--surface2);border:none;color:var(--subtext0);border-radius:4px;cursor:not-allowed;font-weight:600;">Run</button>`;
-    const iconBtn = (icon, fn, title) => `<button onclick="${fn}" title="${title}" style="background:transparent;border:none;color:var(--subtext0);cursor:pointer;padding:4px;display:flex;align-items:center;border-radius:3px;" onmouseenter="this.style.color='var(--text)'" onmouseleave="this.style.color='var(--subtext0)'"><i data-lucide="${icon}" style="width:14px;height:14px;"></i></button>`;
-    return `
-      <div style="border:1px solid var(--surface2);border-radius:var(--radius);padding:12px 14px;background:var(--surface0);${canRun?'':'opacity:0.6;'}">
-        <div style="display:flex;align-items:center;gap:6px;">
-          <i data-lucide="${escapeHtml(r.icon || 'play')}" style="width:16px;height:16px;color:var(--accent);"></i>
-          <strong style="font-size:14px;">${escapeHtml(r.name)}</strong>
-          ${userBadge}${modeBadge}
-          <div style="flex:1;"></div>
-          ${iconBtn('pencil', `openRecipeEditor('${encodeURIComponent(r.id)}', 'edit')`, 'Edit')}
-          ${iconBtn('copy', `openRecipeEditor('${encodeURIComponent(r.id)}', 'duplicate')`, 'Duplicate')}
-          ${iconBtn('trash-2', `deleteRecipe('${encodeURIComponent(r.id)}', '${escapeHtml(r.name)}')`, 'Delete')}
-          ${runBtn}
-        </div>
-        <div style="color:var(--subtext0);font-size:13px;margin-top:6px;line-height:1.4;">${escapeHtml(r.description || '(no description)')}</div>
-        <div style="color:var(--subtext0);font-size:11px;font-family:var(--font-mono);margin-top:8px;">id: ${escapeHtml(r.id)} &nbsp; ${target} &nbsp; inputs: ${inputs}</div>
-      </div>`;
-  }).join('');
-  if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
-}
-
-async function openRecipesFolder() {
-  // User-authored and imported recipes live in ~/.symphonee/recipes/. The
-  // in-repo `recipes/` folder holds only shipped defaults, which is rarely what
-  // the user wants to inspect after importing settings.
-  try {
-    await fetch('/api/ui/open-path', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope: 'home', path: '.symphonee/recipes' }),
-    });
-  } catch (_) { toast('Could not open folder', 'error'); }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  refreshRecipes();
-  setInterval(refreshRecipes, 60000);
-});
 
 // ═══ Notes search (uses /api/search) ════════════════════════════════════
 let _notesSearchTimer = null;
@@ -28268,17 +28136,8 @@ function onNoteFindKeydown(e) {
   }
 }
 
-// Capture Ctrl+F when the notes panel is the active tab and focus is in the
-// note editor. Other tabs keep the browser-default behavior.
-document.addEventListener('keydown', (e) => {
-  const isFind = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f';
-  if (!isFind) return;
-  const notesPanel = document.getElementById('panel-notes');
-  if (!notesPanel || !notesPanel.classList.contains('active')) return;
-  if (!currentNote) return;
-  e.preventDefault();
-  openNoteFind();
-}, true);
+// Ctrl+F (find in note) is now the 'find-in-note' entry in HOTKEY_ACTIONS,
+// dispatched by the central keyboard hub (viewable/rebindable in Settings).
 
 async function runNotesSearch() {
   const q = document.getElementById('notesSearchInput').value.trim();
@@ -28342,21 +28201,6 @@ async function runNotesSearch() {
   }
 }
 
-// ═══ Recipe Editor ════════════════════════════════════════════════════════
-const RECIPE_ICONS = ['play','book-open','lightbulb','search-check','file-text','clipboard-list','users','sunrise','filter','git-pull-request','flag','flame','zap','sparkles','wand-2','hammer','wrench','bug','package','rocket','calendar','clock','check-square','list','layers','target','send','bell','mail','message-square','refresh-cw','terminal','code-2','database','server','brain','eye','settings','scale','gauge','book-plus','flask','beaker','telescope','compass','map'];
-let _recipeEditMode = 'create'; // 'create' | 'edit' | 'duplicate'
-let _recipeEditOriginalId = null;
-
-async function deleteRecipe(idEnc, name) {
-  if (!confirm(`Delete recipe "${name}"? This removes the file and cannot be undone.`)) return;
-  try {
-    const r = await fetch('/api/recipes/' + idEnc, { method: 'DELETE' });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || r.statusText);
-    toast('Recipe deleted', 'success');
-    refreshRecipesPanel();
-  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
-}
 
 // Each variable: human-readable label first, then the {{ token }} as secondary text.
 const RE_CONTEXT_VARS = [
@@ -28375,319 +28219,24 @@ const RE_SNIPPETS = [
   { label: 'Start a graph run', desc: 'Launch a multi-step durable workflow from a JSON definition', text: 'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "./scripts/Start-GraphRun.ps1" -File ".ai-workspace/my-graph.json"' },
 ];
 
-let recipeBodyEditor = null;
 
-async function openRecipeEditor(idEnc, mode) {
-  _recipeEditMode = mode || 'create';
-  _recipeEditOriginalId = null;
-  const recipeBtn = document.getElementById('recipeEditorTabBtn');
-  if (recipeBtn) {
-    _placeTabAtEnd(recipeBtn);
-    recipeBtn.style.display = '';
-  }
-  switchTab('recipe-editor');
-  resetRecipeEditor();
-  renderIconPicker();
-  renderRecipeEditorVars();
-  await refreshDispatchAvailability();
-  if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
-  // Mount Monaco for the body
-  try {
-    if (typeof loadMonaco === 'function') await loadMonaco();
-    const host = document.getElementById('recipeBodyEditor');
-    if (recipeBodyEditor) { try { recipeBodyEditor.dispose(); } catch (_) {} recipeBodyEditor = null; }
-    if (typeof monaco !== 'undefined') {
-      recipeBodyEditor = monaco.editor.create(host, {
-        value: '',
-        language: 'markdown',
-        theme: 'symphonee',
-        fontSize: 13,
-        fontFamily: "'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace",
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        wordWrap: 'on',
-        automaticLayout: true,
-        lineNumbers: 'off',
-        padding: { top: 10 },
-      });
-    } else {
-      host.innerHTML = '<textarea id="reBodyFallback" style="width:100%;height:100%;background:var(--surface0);border:none;color:var(--text);padding:10px;font:13px var(--font-mono);outline:none;resize:none;" placeholder="Write the prompt here. Click variables on the right to insert at the cursor."></textarea>';
-    }
-  } catch (e) { console.warn('recipe editor mount failed', e); }
 
-  // If editing or duplicating, hydrate from the existing recipe
-  if (idEnc && (mode === 'edit' || mode === 'duplicate')) {
-    try {
-      const r = await fetch('/api/recipes/' + idEnc);
-      if (!r.ok) throw new Error('fetch failed');
-      const recipe = await r.json();
-      hydrateRecipeEditor(recipe, mode);
-    } catch (e) { toast('Could not load recipe to ' + mode, 'error'); }
-  } else {
-    document.getElementById('recipeEditorTitle').textContent = 'New Recipe';
-  }
-}
 
-function hydrateRecipeEditor(recipe, mode) {
-  _recipeEditOriginalId = recipe.id;
-  document.getElementById('recipeEditorTitle').textContent = mode === 'edit' ? `Edit: ${recipe.name}` : `Duplicate: ${recipe.name}`;
-  document.getElementById('reFilename').value = mode === 'duplicate' ? recipe.id + '-copy' : recipe.id;
-  document.getElementById('reFilename').disabled = (mode === 'edit'); // can't rename in edit mode
-  document.getElementById('reName').value = mode === 'duplicate' ? recipe.name + ' (copy)' : recipe.name;
-  document.getElementById('reDescription').value = recipe.description || '';
-  setIconPickerValue(recipe.icon || 'play');
-  document.getElementById('reIntent').value = recipe.intent || 'deep-code';
-  document.getElementById('reMode').value = recipe.mode || 'edit';
-  document.getElementById('reDispatch').checked = !!(recipe.meta && recipe.meta.dispatch);
-  for (const inp of (recipe.inputs || [])) {
-    addRecipeInputRow(inp);
-  }
-  if (recipeBodyEditor) recipeBodyEditor.setValue(recipe.body || '');
-  else { const ta = document.getElementById('reBodyFallback'); if (ta) ta.value = recipe.body || ''; }
-  refreshRecipeEditorInputVars();
-}
 
-function renderIconPicker() {
-  const host = document.getElementById('reIconPicker');
-  if (!host) return;
-  host.innerHTML = RECIPE_ICONS.map(name => `<button type="button" data-icon="${name}" onclick="setIconPickerValue('${name}')" title="${name}" style="padding:6px;background:var(--surface0);border:1px solid var(--surface2);border-radius:4px;cursor:pointer;color:var(--text);display:flex;align-items:center;justify-content:center;"><i data-lucide="${name}" style="width:16px;height:16px;"></i></button>`).join('');
-  if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
-}
 
-function setIconPickerValue(name) {
-  document.getElementById('reIcon').value = name;
-  document.querySelectorAll('#reIconPicker button[data-icon]').forEach(b => {
-    b.style.borderColor = b.dataset.icon === name ? 'var(--accent)' : 'var(--surface2)';
-    b.style.background = b.dataset.icon === name ? 'color-mix(in srgb, var(--accent) 18%, var(--surface0))' : 'var(--surface0)';
-  });
-}
 
-async function refreshDispatchAvailability() {
-  const cb = document.getElementById('reDispatch');
-  const lbl = document.getElementById('reDispatchLabel');
-  if (!cb) return;
-  cb.disabled = false;
-  if (lbl) { lbl.style.opacity = '1'; lbl.title = ''; }
-}
 
-function closeRecipeEditor() {
-  document.getElementById('recipeEditorTabBtn').style.display = 'none';
-  switchTab('terminal');
-  if (recipeBodyEditor) { try { recipeBodyEditor.dispose(); } catch (_) {} recipeBodyEditor = null; }
-}
 
-function resetRecipeEditor() {
-  const f = document.getElementById('reFilename');
-  f.value = ''; f.disabled = false;
-  document.getElementById('reName').value = '';
-  document.getElementById('reDescription').value = '';
-  document.getElementById('reIcon').value = 'play';
-  document.getElementById('reIntent').value = 'deep-code';
-  document.getElementById('reMode').value = 'edit';
-  document.getElementById('reDispatch').checked = false;
-  document.getElementById('reInputsList').innerHTML = '';
-  if (recipeBodyEditor) { try { recipeBodyEditor.setValue(''); } catch (_) {} }
-  setIconPickerValue('play');
-}
 
-function renderRecipeEditorVars() {
-  const ctxHost = document.getElementById('reVarsContext');
-  ctxHost.innerHTML = RE_CONTEXT_VARS.map(v => varBtnLabeled(v.label, v.token, v.desc)).join('');
-  const snipHost = document.getElementById('reSnippets');
-  snipHost.innerHTML = RE_SNIPPETS.map(s => snippetBtn(s.label, s.text, s.desc)).join('');
-  refreshRecipeEditorInputVars();
-}
 
-function varBtnLabeled(label, token, desc) {
-  const insert = `{{ ${token} }}`;
-  return `<button onclick="insertIntoRecipeBody(${JSON.stringify(insert).replace(/"/g,'&quot;')})" title="${escapeHtml(desc || '')}" style="display:flex;flex-direction:column;align-items:flex-start;text-align:left;font-size:13px;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);color:var(--text);border-radius:4px;cursor:pointer;line-height:1.3;">
-    <span style="font-weight:600;">${escapeHtml(label)}</span>
-    <span style="color:var(--subtext0);font-family:var(--font-mono);font-size:10px;font-weight:400;margin-top:2px;">${escapeHtml(insert)}</span>
-  </button>`;
-}
 
-function snippetBtn(label, text, desc) {
-  return `<button onclick="insertIntoRecipeBody(${JSON.stringify(text).replace(/"/g,'&quot;')})" title="${escapeHtml(text)}" style="display:flex;flex-direction:column;align-items:flex-start;text-align:left;font-size:13px;padding:8px 10px;background:var(--surface0);border:1px solid var(--surface2);color:var(--text);border-radius:4px;cursor:pointer;line-height:1.3;">
-    <span style="font-weight:600;">${escapeHtml(label)}</span>
-    ${desc ? `<span style="color:var(--subtext0);font-size:11px;font-weight:400;margin-top:2px;">${escapeHtml(desc)}</span>` : ''}
-  </button>`;
-}
 
-function refreshRecipeEditorInputVars() {
-  const host = document.getElementById('reVarsInputs');
-  const rows = Array.from(document.querySelectorAll('#reInputsList > div'));
-  const items = rows.map(r => ({
-    name: r.querySelector('[data-recipe-input-name]').value.trim(),
-    desc: r.querySelector('[data-recipe-input-desc]')?.value?.trim() || '',
-  })).filter(x => x.name);
-  if (!items.length) { host.innerHTML = '<div style="font-size:12px;color:var(--subtext0);font-style:italic;">Add an input above first.</div>'; return; }
-  host.innerHTML = items.map(it => varBtnLabeled(it.name, `inputs.${it.name}`, it.desc || ('User input: ' + it.name))).join('');
-}
 
-function addRecipeInputRow(existing) {
-  const host = document.getElementById('reInputsList');
-  const row = document.createElement('div');
-  row.style.cssText = 'display:grid;grid-template-columns:140px 130px 1fr 1fr 90px 28px;gap:8px;align-items:center;';
-  const e = existing || {};
-  const name = e.name ? escapeHtml(e.name) : '';
-  const type = e.type || 'string';
-  const def = e.default != null ? escapeHtml(String(e.default)) : '';
-  const desc = e.description ? escapeHtml(e.description) : '';
-  const opt = (v, l) => `<option value="${v}" ${type===v?'selected':''}>${l}</option>`;
-  row.innerHTML = `
-    <input type="text" placeholder="name" value="${name}" data-recipe-input-name oninput="refreshRecipeEditorInputVars()" style="padding:7px 9px;background:var(--surface0);border:1px solid var(--surface2);border-radius:3px;color:var(--text);font:13px var(--font-mono);outline:none;">
-    <select data-recipe-input-type style="padding:7px 9px;background:var(--surface0);border:1px solid var(--surface2);border-radius:3px;color:var(--text);font:13px var(--font-ui);outline:none;">
-      ${opt('string','string')}${opt('number','number')}${opt('boolean','boolean')}${opt('repo','repo (dropdown)')}${opt('iteration','iteration (dropdown)')}
-    </select>
-    <input type="text" placeholder="description (shown to user)" value="${desc}" data-recipe-input-desc oninput="refreshRecipeEditorInputVars()" style="padding:7px 9px;background:var(--surface0);border:1px solid var(--surface2);border-radius:3px;color:var(--text);font:13px var(--font-ui);outline:none;">
-    <input type="text" placeholder="default value" value="${def}" data-recipe-input-default style="padding:7px 9px;background:var(--surface0);border:1px solid var(--surface2);border-radius:3px;color:var(--text);font:13px var(--font-mono);outline:none;">
-    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--subtext0);"><input type="checkbox" ${e.required?'checked':''} data-recipe-input-required style="width:14px;height:14px;cursor:pointer;"> required</label>
-    <button onclick="this.parentElement.remove();refreshRecipeEditorInputVars();" title="Remove input" style="background:transparent;border:none;color:var(--red);cursor:pointer;font-size:18px;">×</button>`;
-  host.appendChild(row);
-}
 
-function insertIntoRecipeBody(text) {
-  if (recipeBodyEditor) {
-    const sel = recipeBodyEditor.getSelection();
-    recipeBodyEditor.executeEdits('insert-var', [{ range: sel, text, forceMoveMarkers: true }]);
-    recipeBodyEditor.focus();
-    return;
-  }
-  // Fallback (textarea)
-  const ta = document.getElementById('reBodyFallback');
-  if (!ta) return;
-  const start = ta.selectionStart, end = ta.selectionEnd;
-  ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
-  ta.selectionStart = ta.selectionEnd = start + text.length;
-  ta.focus();
-}
 
-function getRecipeBody() {
-  if (recipeBodyEditor) return recipeBodyEditor.getValue();
-  const ta = document.getElementById('reBodyFallback');
-  return ta ? ta.value : '';
-}
 
-function buildRecipeFrontmatter() {
-  const inputs = [];
-  document.querySelectorAll('#reInputsList > div').forEach(row => {
-    let name = row.querySelector('[data-recipe-input-name]').value.trim();
-    if (!name) return;
-    // Identifier-safe: lowercase, alphanumeric + underscore + dash. Spaces and
-    // other chars break {{ inputs.<name> }} dotted-path lookups.
-    name = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const type = row.querySelector('[data-recipe-input-type]').value;
-    const desc = row.querySelector('[data-recipe-input-desc]')?.value?.trim() || '';
-    const def = row.querySelector('[data-recipe-input-default]').value;
-    const req = row.querySelector('[data-recipe-input-required]').checked;
-    const item = { name, type };
-    if (desc) item.description = desc;
-    if (def !== '') item.default = def;
-    if (req) item.required = true;
-    inputs.push(item);
-  });
-  const fm = {
-    name: document.getElementById('reName').value.trim(),
-    description: document.getElementById('reDescription').value.trim(),
-    icon: document.getElementById('reIcon').value.trim() || 'play',
-    intent: document.getElementById('reIntent').value,
-    mode: document.getElementById('reMode').value,
-    dispatch: document.getElementById('reDispatch').checked,
-    inputs,
-  };
-  if (!fm.mode) delete fm.mode;
-  if (!fm.dispatch) delete fm.dispatch;
-  if (!inputs.length) delete fm.inputs;
-  return fm;
-}
 
-async function saveRecipe(overwrite) {
-  const id = document.getElementById('reFilename').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-  if (!id) { toast('Filename is required', 'error'); return; }
-  const fm = buildRecipeFrontmatter();
-  if (!fm.name) { toast('Display name is required', 'error'); return; }
-  const body = getRecipeBody();
-  // In edit mode we always overwrite the original. In create/duplicate mode
-  // we let the server return 409 and ask the user to confirm.
-  const finalOverwrite = overwrite || (_recipeEditMode === 'edit' && id === _recipeEditOriginalId);
-  try {
-    const r = await fetch('/api/recipes/save', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, frontmatter: fm, body, overwrite: finalOverwrite }),
-    });
-    const data = await r.json();
-    if (r.status === 409 && data.exists) {
-      if (confirm(`A recipe named '${id}' already exists. Overwrite?`)) return saveRecipe(true);
-      return;
-    }
-    if (!r.ok) throw new Error(data.error || r.statusText);
-    toast(`Recipe '${id}' saved`, 'success');
-    closeRecipeEditor();
-    refreshRecipesPanel();
-  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
-}
 
-async function previewRecipe() {
-  const id = document.getElementById('reFilename').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-  const fm = buildRecipeFrontmatter();
-  const body = getRecipeBody();
-  // Build a transient preview by saving to a hidden tmp recipe and reading back.
-  // Simpler: send the body + inputs definitions inline to a render-only path.
-  // We use the existing /api/recipes/preview endpoint but it expects a saved
-  // recipe. For unsaved drafts, fall back to client-side render of a fake
-  // inputs object using each input's default.
-  const tmpInputs = {};
-  for (const i of (fm.inputs || [])) {
-    tmpInputs[i.name] = i.default != null ? i.default : '';
-  }
-  // Render client-side too so we don't need to save first
-  let rendered = body;
-  try {
-    const ctx = await fetch('/api/ui/context').then(r => r.json()).catch(() => ({}));
-    const resolveInputs = {};
-    for (const k of Object.keys(tmpInputs)) {
-      let v = tmpInputs[k];
-      if (typeof v === 'string' && v.includes('{{')) {
-        v = renderTpl(v, { context: ctx });
-      }
-      resolveInputs[k] = v;
-    }
-    rendered = renderTpl(body, { context: ctx, env: {}, inputs: resolveInputs });
-  } catch (_) {}
-  showRecipePreviewModal(id || '(unsaved)', fm, rendered.trim());
-}
-
-function renderTpl(tpl, vars) {
-  return String(tpl).replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, expr) => {
-    try {
-      const parts = String(expr).split('.').map(s => s.trim()).filter(Boolean);
-      let cur = vars;
-      for (const p of parts) { if (cur == null) return ''; cur = cur[p]; }
-      return String(cur ?? '');
-    } catch (_) { return ''; }
-  });
-}
-
-function showRecipePreviewModal(id, fm, prompt) {
-  let overlay = document.getElementById('recipePreviewOverlay');
-  if (overlay) overlay.remove();
-  overlay = document.createElement('div');
-  overlay.id = 'recipePreviewOverlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;font-family:var(--font-ui);';
-  overlay.innerHTML = `
-    <div style="background:var(--surface0);border:1px solid var(--surface2);border-radius:var(--radius);padding:20px;width:80vw;max-width:900px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 24px rgba(0,0,0,0.4);">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;color:var(--accent);font-weight:600;font-size:15px;">
-        <i data-lucide="eye" style="width:18px;height:18px;"></i>
-        <span>Preview: ${escapeHtml(fm.name || id)}</span>
-        <div style="flex:1;"></div>
-        <button onclick="document.getElementById('recipePreviewOverlay').remove()" style="font-size:13px;padding:6px 14px;background:var(--surface1);border:1px solid var(--surface2);border-radius:4px;color:var(--text);cursor:pointer;">Close</button>
-      </div>
-      <div style="font-size:12px;color:var(--subtext0);margin-bottom:10px;">This is the prompt that will be sent (defaults applied, context substituted). It is NOT being run.</div>
-      <pre style="flex:1;overflow:auto;background:var(--mantle);border:1px solid var(--surface2);border-radius:4px;padding:14px;color:var(--text);font:13px var(--font-mono);white-space:pre-wrap;line-height:1.5;margin:0;">${escapeHtml(prompt || '(empty)')}</pre>
-    </div>`;
-  document.body.appendChild(overlay);
-  if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
-}
 
 </script>
 <script src="/3d-force-graph.min.js"></script>

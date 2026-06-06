@@ -16,6 +16,7 @@ const store = require('./store');
 const { Manifest } = require('./manifest');
 const engine = require('./engine');
 const query = require('./query');
+const kit = require('./kit');
 const { cluster } = require('./cluster');
 const { analyze } = require('./analyze');
 const { composeWakeUp, DEFAULT_BUDGET_TOKENS } = require('./wakeup');
@@ -41,7 +42,7 @@ const viz = require('./viz');
 // In-memory job table for build/update progress. Jobs are ephemeral; the
 // canonical graph on disk is the system of record.
 const jobs = new Map();
-const DEFAULT_BUILD_SOURCES = ['notes', 'learnings', 'cli-memory', 'cli-skills', 'recipes', 'app-recipes', 'site-map', 'plugins', 'instructions', 'repo-code', 'cli-history', 'cli-drawers', 'context-artifacts', 'repos', 'entities'];
+const DEFAULT_BUILD_SOURCES = ['notes', 'learnings', 'cli-memory', 'cli-skills', 'app-recipes', 'site-map', 'plugins', 'instructions', 'repo-code', 'cli-history', 'cli-drawers', 'context-artifacts', 'repos', 'entities'];
 function makeJobId() { return 'mj_' + Math.random().toString(36).slice(2, 10); }
 
 function readBody(req) {
@@ -72,6 +73,11 @@ async function tryDenseSeeds(repoRoot, space, question, k = 50) {
 
 function mountMind(addRoute, json, ctx) {
   const { repoRoot, getUiContext, getLearnings, getPlugins, getNotesDir, broadcast, getAiApiKeys, getConfig } = ctx;
+  // Startup-settle tracking: the boot loading overlay waits on this so the
+  // dashboard is revealed only once the Mind refresh (+ repo re-ingest) has
+  // actually finished -- not merely when page assets loaded.
+  let _startupTriggered = false;
+  let _startupSettled = false;
   // Make the user's configured API keys available to the embedding layer so
   // it can pick a provider automatically (OpenAI > Google) instead of
   // defaulting to Ollama. Refreshes on every request so config edits take
@@ -959,6 +965,209 @@ function mountMind(addRoute, json, ctx) {
     });
     if (denseSeeds) result.denseSeedCount = denseSeeds.length;
     return json(res, result);
+  });
+
+  // ── Ask: a quick, Mind-grounded answer from the LOCAL chat model ──────────
+  // Powers the command palette's "informational question" path: instead of
+  // dispatching a heavyweight agent, answer the question locally with Gemma,
+  // grounded in the knowledge graph. Returns {ok:false, reason:'no-local-model'}
+  // so the client can fall back to an agent dispatch.
+  addRoute('POST', '/api/mind/ask', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const question = String(body.question || '').trim();
+    if (!question) return json(res, { error: 'question required' }, 400);
+    // When asking ABOUT a specific node (e.g. "Ask Mind about this" from the
+    // graph), ground directly on that node's own neighborhood -- far sharper than
+    // re-searching the label as free text, which produced vague answers.
+    const nodeId = body.nodeId ? String(body.nodeId) : null;
+    const explicitSeeds = Array.isArray(body.seedIds) ? body.seedIds.map(String) : null;
+
+    let model = null;
+    try { model = llm.pickChatModel(); } catch (_) {}
+    if (!model) return json(res, { ok: false, reason: 'no-local-model' }, 200);
+
+    // Gather grounding context from the graph (best-effort, never throws).
+    const space = getSpace();
+    const blocks = [];
+    const citedNodeIds = [];
+    try {
+      const g = store.loadGraph(repoRoot, space);
+      if (g) {
+        let seeds = [];
+        if (explicitSeeds && explicitSeeds.length) seeds = explicitSeeds.slice();
+        if (nodeId && !seeds.includes(nodeId)) seeds.unshift(nodeId);
+        // Only fall back to a text search when we were not handed a node/seeds.
+        if (!seeds.length) {
+          const dense = await tryDenseSeeds(repoRoot, space, question, 12).catch(() => null);
+          seeds = (dense && dense.length) ? query.bestSeedsHybrid(g, question, 5, { dense }) : [];
+          seeds = Array.isArray(seeds) ? seeds.slice() : [];
+        }
+        // For a free-text question, anchor on the active project so answers are
+        // grounded in what the user is working on RIGHT NOW by default -- quicker,
+        // more relevant retrieval without naming the repo. Skipped for a node ask,
+        // where we keep the focus tight on the clicked node.
+        if (!nodeId && !(explicitSeeds && explicitSeeds.length)) {
+          try {
+            const ui = getUiContext ? getUiContext() : {};
+            if (ui.activeRepo) {
+              for (const id of kit.resolveSeeds(g, ui.activeRepo).slice(0, 2)) {
+                if (!seeds.includes(id)) seeds.push(id);
+              }
+            }
+          } catch (_) {}
+        }
+        const result = query.runQuery(g, {
+          question, mode: 'bfs', budget: 1500,
+          seedIds: seeds.length ? seeds : null,
+        });
+        for (const n of ((result && result.nodes) || []).slice(0, 12)) {
+          const text = [n.label, n.body || n.answer || n.description].filter(Boolean).join(': ').replace(/\s+/g, ' ').slice(0, 400);
+          if (text) { blocks.push('- ' + text); citedNodeIds.push(n.id); }
+        }
+      }
+    } catch (_) { /* answer without grounding */ }
+
+    const sys = 'You are Symphonee, a concise developer assistant. Answer the question practically and directly. Use the CONTEXT from the user knowledge graph when it is relevant; if it does not cover the question, answer from general knowledge. Keep it tight - no preamble, no headers.';
+    const ctx = blocks.length ? ('CONTEXT from the knowledge graph:\n' + blocks.join('\n') + '\n\n') : '';
+    try {
+      // chatOllama returns a wrapper { ok, model, text } -- read .text, do NOT
+      // stringify the object (that yields "[object Object]").
+      const resp = await llm.chatOllama(
+        [{ role: 'system', content: sys }, { role: 'user', content: ctx + 'QUESTION: ' + question }],
+        { format: null, temperature: 0.3, numPredict: 700, timeoutMs: 60000 }
+      );
+      const answer = String((resp && (resp.text != null ? resp.text : resp)) || '').trim();
+      return json(res, { ok: true, answer, model: (resp && resp.model) || model, grounded: blocks.length, citedNodeIds });
+    } catch (e) {
+      return json(res, { ok: false, reason: 'llm-error', error: e.message || String(e) }, 200);
+    }
+  });
+
+  // ── KIT (Know It Too): portable, shareable knowledge ─────────────────────
+  // Export a topic + everything connected to it as a self-contained mind-graph;
+  // ingest a KIT by merging only the gaps (no duplicates) into the local graph.
+  addRoute('POST', '/api/mind/kit/export', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const space = getSpace();
+    const g = store.loadGraph(repoRoot, space);
+    if (!g) return json(res, { ok: false, reason: 'empty-graph', hint: 'build the mind first' }, 200);
+    const r = kit.exportKit(g, {
+      topic: body.topic || '',
+      seedIds: Array.isArray(body.seedIds) ? body.seedIds : null,
+      space,
+      maxNodes: Math.max(1, Math.min(Number(body.maxNodes) || 800, 5000)),
+      maxDepth: Math.max(1, Math.min(Number(body.maxDepth) || 4, 8)),
+    });
+    return json(res, r);
+  });
+  addRoute('POST', '/api/mind/kit/ingest', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const incoming = body && body.kit ? body.kit : body; // accept {kit:...} or a raw KIT
+    if (!incoming || !Array.isArray(incoming.nodes)) return json(res, { ok: false, reason: 'invalid-kit' }, 400);
+    const space = getSpace();
+    const g = store.loadGraph(repoRoot, space) || store.emptyGraph({ space });
+    const r = kit.ingestKit(g, incoming);
+    if (r.ok && (r.addedNodes || r.addedEdges)) {
+      try { store.saveGraph(repoRoot, space, g); } catch (e) { return json(res, { ok: false, reason: 'save-failed', error: e.message }, 500); }
+      try { broadcast({ type: 'mind-update', payload: { kind: 'kit-ingest', ...r } }); } catch (_) {}
+      try { notifyKnowledgeEvent({ kind: 'kit-ingest', reason: 'kit-ingest', nodeIds: [] }); } catch (_) {}
+    }
+    return json(res, r);
+  });
+
+  // ── Anchors: the searchable list for the Mind > Specs UI ─────────────────
+  // Every node as a light {id, label, kind, degree}, ranked by degree so the
+  // most connected anchors (entities / repos / hot tags) surface first. The
+  // client filters this list as the user types -- no free-text topic guessing.
+  // Consolidated SUBJECTS, not raw nodes. A subject is a meaningful "thing" the
+  // user works on -- a repo or an entity -- with its matching tag(s) folded in by
+  // normalized label, so "Bath Fitter" / "@bath-fitter" / the residential repo
+  // collapse into ONE searchable row instead of fragmenting across kinds. Each
+  // subject carries the seed ids needed to export everything connected to it
+  // (code + notes + conversations + concepts), plus a tally of what that is.
+  addRoute('GET', '/api/mind/anchors', (req, res) => {
+    const space = getSpace();
+    const g = store.loadGraph(repoRoot, space);
+    if (!g || !Array.isArray(g.nodes)) return json(res, { subjects: [], anchors: [], space });
+
+    const byId = new Map();
+    for (const n of g.nodes) if (n && n.id) byId.set(n.id, n);
+
+    const deg = new Map();
+    const adj = new Map();
+    for (const e of (g.edges || [])) {
+      if (!e) continue;
+      deg.set(e.source, (deg.get(e.source) || 0) + 1);
+      deg.set(e.target, (deg.get(e.target) || 0) + 1);
+      if (!adj.has(e.source)) adj.set(e.source, []);
+      if (!adj.has(e.target)) adj.set(e.target, []);
+      adj.get(e.source).push(e.target);
+      adj.get(e.target).push(e.source);
+    }
+
+    const norm = (s) => String(s == null ? '' : s).toLowerCase().replace(/^@+/, '').replace(/[_\s\-/]+/g, ' ').trim();
+    const rank = (k) => k === 'repo' ? 0 : k === 'entity' ? 1 : k === 'tag' ? 2 : 3;
+
+    // 1) Seed subjects from repos + entities; merge by normalized label.
+    const subjects = new Map();
+    function fold(node) {
+      const key = norm(node.label);
+      if (!key) return;
+      let s = subjects.get(key);
+      if (!s) { s = { key, label: node.label, kind: node.kind, primaryId: node.id, seedIds: [] }; subjects.set(key, s); }
+      if (rank(node.kind) < rank(s.kind)) { s.kind = node.kind; s.label = node.label; s.primaryId = node.id; }
+      if (!s.seedIds.includes(node.id)) s.seedIds.push(node.id);
+    }
+    for (const n of g.nodes) { if (n && n.label && (n.kind === 'repo' || n.kind === 'entity')) fold(n); }
+    // 2) Fold tags ONLY into subjects that already exist (an @cwd tag joins its
+    //    repo; a tag with no repo/entity does NOT become its own noisy row).
+    for (const n of g.nodes) { if (n && n.kind === 'tag' && n.label && subjects.has(norm(n.label))) fold(n); }
+
+    // 3) Tally the 1-hop neighborhood kinds so the UI shows what an export pulls.
+    function tally(seedIds) {
+      const seen = new Set(seedIds);
+      const counts = {};
+      for (const sid of seedIds) {
+        for (const nb of (adj.get(sid) || [])) {
+          if (seen.has(nb)) continue;
+          seen.add(nb);
+          const k = (byId.get(nb) || {}).kind || 'node';
+          counts[k] = (counts[k] || 0) + 1;
+        }
+      }
+      return { counts, reach: seen.size };
+    }
+
+    const subjectsOut = [];
+    for (const s of subjects.values()) {
+      const t = tally(s.seedIds);
+      const degree = s.seedIds.reduce((a, id) => a + (deg.get(id) || 0), 0);
+      subjectsOut.push({
+        id: s.primaryId,
+        label: String(s.label).slice(0, 120),
+        kind: s.kind,
+        seedIds: s.seedIds.slice(0, 16),
+        degree,
+        counts: t.counts,
+        reach: t.reach,
+      });
+    }
+    subjectsOut.sort((a, b) => b.degree - a.degree);
+
+    // `anchors` kept as an alias for any existing caller.
+    return json(res, { subjects: subjectsOut, anchors: subjectsOut, space, total: subjectsOut.length });
+  });
+
+  // Startup readiness for the boot loading overlay. `ready` flips true only once
+  // the deferred startup refresh has run AND the graph build lock is free (so a
+  // 'skipped' refresh -- where the watcher's auto-resume build is the one
+  // actually running -- still waits for that build to finish). `building`
+  // reflects the live lock so the overlay can show that work is in flight.
+  addRoute('GET', '/api/startup/status', (req, res) => {
+    const space = getSpace();
+    let building = false;
+    try { building = !!(lock.status(space, 'graph') || {}).locked; } catch (_) {}
+    return json(res, { ok: true, ready: _startupSettled, triggered: _startupTriggered, building, space });
   });
 
   // Dense-only semantic search (debug + UI smart-search). Returns ranked nodes
@@ -1949,14 +2158,35 @@ function mountMind(addRoute, json, ctx) {
       // read) and capped to ~600 tokens. CLIs that want depth use
       // /api/mind/query as before.
       let wakeup = null;
+      // Active repo's focused knowledge spec, bundled so EVERY CLI session --
+      // including a user talking to it directly -- opens already grounded in the
+      // current project, not just dispatched workers. Reuses the graph already
+      // loaded for the wake-up (no extra I/O) and is capped small (~300 tokens,
+      // grouped by kind) so it stays concrete and token-cheap. Only ships when
+      // the active repo actually has connected knowledge beyond its own node.
+      let spec = null;
       if (stats) {
         try {
           const g = store.loadGraph(repoRoot, space);
-          if (g) wakeup = composeWakeUp(g, {
-            activeRepo: ui.activeRepo, activeRepoPath: ui.activeRepoPath, space,
-            budgetTokens: 600,
-            repoRoot,
-          });
+          if (g) {
+            wakeup = composeWakeUp(g, {
+              activeRepo: ui.activeRepo, activeRepoPath: ui.activeRepoPath, space,
+              budgetTokens: 600,
+              repoRoot,
+            });
+            if (ui.activeRepo) {
+              try {
+                const ex = kit.exportKit(g, { topic: ui.activeRepo, maxNodes: 120, maxDepth: 2 });
+                if (ex.ok && ex.kit && ex.kit.stats && ex.kit.stats.nodes > 1) {
+                  spec = {
+                    anchor: ui.activeRepo,
+                    stats: ex.kit.stats,
+                    digest: kit.specDigest(ex.kit, { anchor: ui.activeRepo, maxChars: 1200, perKind: 6 }),
+                  };
+                }
+              } catch (_) { /* spec is best-effort; bootstrap still ships without it */ }
+            }
+          }
         } catch (_) { /* graph corrupt - skip wake-up, bootstrap still ships */ }
       }
       // Vector store presence: cheap (one filesystem stat) but skipped if
@@ -1980,6 +2210,7 @@ function mountMind(addRoute, json, ctx) {
         scope: { space, isGlobal: false },
         graphStats: stats || null,
         wakeup,
+        spec,
         vectors: vectorsField,
         instructionsUrl: '/api/mind/instructions',
         queryUrl: '/api/mind/query',
@@ -2093,6 +2324,29 @@ function mountMind(addRoute, json, ctx) {
       }
     },
 
+    // Run the startup refresh, then wait until the graph build lock is actually
+    // free before declaring startup settled. This is what the boot overlay gates
+    // on. The lock wait is the key: when kickoffStartupRefresh is 'skipped'
+    // (another build -- e.g. the watcher's auto-resume -- already holds the
+    // lock), we still wait for THAT build to finish, so the dashboard is not
+    // revealed mid-build. Capped so it can never hang the reveal forever.
+    async awaitStartupSettle() {
+      if (_startupTriggered) return { ok: true, already: true };
+      _startupTriggered = true;
+      const space = getSpace();
+      try { await this.kickoffStartupRefresh(); } catch (_) { /* settle regardless */ }
+      const deadline = Date.now() + 30000;
+      for (;;) {
+        let building = false;
+        try { building = !!(lock.status(space, 'graph') || {}).locked; } catch (_) {}
+        if (!building || Date.now() > deadline) break;
+        await new Promise(r => setTimeout(r, 300));
+      }
+      _startupSettled = true;
+      if (broadcast) broadcast({ type: 'mind-startup-refresh', payload: { phase: 'settled', space } });
+      return { ok: true };
+    },
+
     orchestratorHint(opts = {}) {
       const space = getSpace();
       const stats = store.statsFor(repoRoot, space);
@@ -2154,7 +2408,22 @@ function mountMind(addRoute, json, ctx) {
           question: opts.question || '',
           repoRoot,
         });
-        return `${stamp}${appsLine}\n\n${wake.text}`;
+        // Inline the active repo's focused spec digest so a dispatched worker
+        // starts already grounded in the current project's knowledge -- no
+        // round-trip, no need to know the repo's name. This is the "you'll know
+        // by default" path: the same bounded sub-graph the Specs UI shows,
+        // distilled to a compact, readable block.
+        let specLine = '';
+        try {
+          if (ui.activeRepo) {
+            const ex = kit.exportKit(g, { topic: ui.activeRepo, maxNodes: 120, maxDepth: 2 });
+            if (ex.ok) {
+              const digest = kit.specDigest(ex.kit, { anchor: ui.activeRepo, maxChars: 1400, perKind: 6 });
+              if (digest) specLine = `\n\n[spec: ${ui.activeRepo}] Focused knowledge for the active project (already grounded -- query Mind only for what is missing here):\n${digest}`;
+            }
+          }
+        } catch (_) {}
+        return `${stamp}${appsLine}\n\n${wake.text}${specLine}`;
       } catch (_) {
         return stamp + appsLine;
       }

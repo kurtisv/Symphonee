@@ -116,24 +116,9 @@ const graphRuns = new GraphRunsEngine({
   },
 });
 const modelRouter = require('./model-router');
-const recipes = require('./recipes');
 const { HybridSearchEngine } = require('./hybrid-search');
 const { buildRepoMap } = require('./repo-map');
 const hybridSearch = new HybridSearchEngine({ repoRoot });
-
-// Render input.default templates so the UI sees evaluated values
-// instead of raw {{ context.selectedIterationName }} placeholders.
-function withRenderedDefaults(recipe, ctx) {
-  if (!recipe || !Array.isArray(recipe.inputs)) return recipe;
-  const renderedInputs = recipe.inputs.map(i => {
-    if (typeof i.default !== 'string' || !i.default.includes('{{')) return i;
-    try {
-      const rendered = recipes.renderTemplate(i.default, { context: ctx });
-      return { ...i, default: rendered, defaultTemplate: i.default };
-    } catch (_) { return i; }
-  });
-  return { ...recipe, inputs: renderedInputs };
-}
 
 async function permGate(res, type, value, label) {
   return permissions.gate(res, { type, value }, { configPath, actionLabel: label });
@@ -212,118 +197,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, modelRouter.recommend({ ...body, configPath }));
     }
 
-    // ── Recipes ───────────────────────────────────────────────────────────
-    if (url.pathname === '/api/recipes' && req.method === 'GET') {
-      const ctx = getUiContextWithPath();
-      return json(res, recipes.listRecipes().map(r => withRenderedDefaults(r, ctx)));
-    }
-    const recipeMatch = url.pathname.match(/^\/api\/recipes\/([^/]+)$/);
-    if (recipeMatch && req.method === 'GET') {
-      const r = recipes.loadRecipe(decodeURIComponent(recipeMatch[1]));
-      if (!r) return json(res, { error: 'recipe not found' }, 404);
-      return json(res, withRenderedDefaults(r, getUiContextWithPath()));
-    }
-    if (url.pathname === '/api/recipes/save' && req.method === 'POST') {
-      const body = await readBody(req);
-      const id = String(body.id || '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
-      if (!id) return json(res, { error: 'id required' }, 400);
-      // User-authored recipes live in ~/.symphonee/recipes/ so they stay
-      // machine-local and never get committed alongside the shipped recipes.
-      const userRecipesDir = path.join(require('os').homedir(), '.symphonee', 'recipes');
-      const shippedFile = path.join(repoRoot, 'recipes', id + '.md');
-      const file = path.join(userRecipesDir, id + '.md');
-      const alreadyExists = fs.existsSync(file) || fs.existsSync(shippedFile);
-      if (alreadyExists && !body.overwrite) {
-        return json(res, { error: `A recipe with id '${id}' already exists. Pass overwrite:true to replace it.`, exists: true }, 409);
-      }
-      if (!await permGate(res, 'api', 'POST /api/recipes/save', `${body.overwrite ? 'Update' : 'Save'} recipe: ${id}`)) return;
-      try {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        const fm = body.frontmatter || {};
-        const lines = ['---'];
-        const order = ['name', 'description', 'icon', 'intent', 'cli', 'model', 'mode', 'dispatch', 'plugins', 'mcpServers', 'inputs'];
-        for (const k of order) {
-          if (fm[k] === undefined || fm[k] === null || fm[k] === '') continue;
-          if (Array.isArray(fm[k])) {
-            if (k === 'inputs') {
-              lines.push('inputs:');
-              for (const it of fm[k]) {
-                lines.push('  - name: ' + it.name);
-                if (it.type) lines.push('    type: ' + it.type);
-                if (it.description) lines.push('    description: ' + JSON.stringify(it.description));
-                if (it.default !== undefined && it.default !== '') lines.push('    default: ' + JSON.stringify(String(it.default)));
-                if (it.required) lines.push('    required: true');
-              }
-            } else {
-              lines.push(k + ': [' + fm[k].map(v => JSON.stringify(v)).join(', ') + ']');
-            }
-          } else if (typeof fm[k] === 'boolean') {
-            lines.push(k + ': ' + (fm[k] ? 'true' : 'false'));
-          } else {
-            lines.push(k + ': ' + (typeof fm[k] === 'string' && /[:#'"\\\[\]\{\}]/.test(fm[k]) ? JSON.stringify(fm[k]) : fm[k]));
-          }
-        }
-        lines.push('---');
-        const content = lines.join('\n') + '\n\n' + (body.body || '').replace(/\r\n/g, '\n');
-        fs.writeFileSync(file, content, 'utf8');
-        return json(res, { ok: true, id, path: file });
-      } catch (e) { return json(res, { error: e.message }, 500); }
-    }
-    if (url.pathname === '/api/recipes/preview' && req.method === 'POST') {
-      const body = await readBody(req);
-      const id = String(body.id || '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
-      if (!id) return json(res, { error: 'id required' }, 400);
-      const recipe = recipes.loadRecipe(id);
-      if (!recipe) return json(res, { error: 'recipe not found' }, 404);
-      try {
-        const ctx = getUiContextWithPath();
-        const finalInputs = {};
-        for (const def of (recipe.inputs || [])) {
-          let v = (body.inputs && Object.prototype.hasOwnProperty.call(body.inputs, def.name)) ? body.inputs[def.name] : undefined;
-          if (v === undefined && def.default !== undefined) v = def.default;
-          if (typeof v === 'string' && v.includes('{{')) {
-            v = recipes.renderTemplate(v, { context: ctx });
-          }
-          finalInputs[def.name] = v;
-        }
-        const rendered = recipes.renderTemplate(recipe.body, { context: ctx, env: process.env, inputs: finalInputs });
-        return json(res, { id, inputs: finalInputs, prompt: rendered.trim() });
-      } catch (e) { return json(res, { error: e.message }, 500); }
-    }
-    const recipeDelMatch = url.pathname.match(/^\/api\/recipes\/([^/]+)$/);
-    if (recipeDelMatch && req.method === 'DELETE') {
-      const id = decodeURIComponent(recipeDelMatch[1]).toLowerCase().replace(/[^a-z0-9_-]/g, '');
-      if (!id) return json(res, { error: 'id required' }, 400);
-      if (!await permGate(res, 'api', `DELETE /api/recipes/${id}`, `Delete recipe: ${id}`)) return;
-      try {
-        // Prefer the user-scoped file; only shipped recipes should be in the
-        // repo folder, and we refuse to delete those here.
-        const userFile = path.join(require('os').homedir(), '.symphonee', 'recipes', id + '.md');
-        const repoFile = path.join(repoRoot, 'recipes', id + '.md');
-        if (fs.existsSync(userFile)) {
-          fs.unlinkSync(userFile);
-          return json(res, { ok: true, id, scope: 'user' });
-        }
-        if (fs.existsSync(repoFile)) {
-          return json(res, { error: 'Shipped recipes cannot be deleted from the UI.' }, 403);
-        }
-        return json(res, { error: 'not found' }, 404);
-      } catch (e) { return json(res, { error: e.message }, 500); }
-    }
-    if (url.pathname === '/api/recipes/run' && req.method === 'POST') {
-      const body = await readBody(req);
-      if (!body.id) return json(res, { error: 'id required' }, 400);
-      if (!await permGate(res, 'api', 'POST /api/recipes/run', `Run recipe: ${body.id}`)) return;
-      try {
-        return json(res, await recipes.runRecipe({
-          ...body,
-          injectToTerminal: (termId, text) => {
-            const t = terminals.get(termId);
-            if (t && t.pty) try { t.pty.write(text); } catch (_) {}
-          },
-        }));
-      } catch (e) { return json(res, { error: e.message }, 400); }
-    }
     // ── Hybrid Search ─────────────────────────────────────────────────────
     if (url.pathname.startsWith('/api/search')) {
       if (url.pathname === '/api/search' && req.method === 'GET') {
@@ -593,8 +466,6 @@ const server = http.createServer(async (req, res) => {
     // ── Serve repo files (images, etc.) ────────────────────────────────────
     if (url.pathname === '/api/files/serve' && req.method === 'GET') return handleServeFile(url, res);
 
-    // ── Voice-to-Text (OpenAI Whisper) ────────────────────────────────────
-    if (url.pathname === '/api/voice/transcribe' && req.method === 'POST') return handleVoiceTranscribe(req, res);
 
     // ── Image Proxy (ADO images need auth) ─────────────────────────────────
     if (url.pathname === '/api/image-proxy' && req.method === 'GET') return handleImageProxy(url, res);
@@ -684,6 +555,10 @@ const server = http.createServer(async (req, res) => {
         // on session start regardless of which CLI it is.
         let mindField = null;
         try { mindField = mind && typeof mind.bootstrapField === 'function' ? mind.bootstrapField() : null; } catch (_) {}
+        // Skills: the procedural catalog -- every CLI sees which reusable
+        // procedures exist and fetches the body of the one it needs.
+        let skillsField = null;
+        try { skillsField = skills && typeof skills.bootstrapField === 'function' ? skills.bootstrapField() : null; } catch (_) {}
         // Append mind instructions to the main instructions blob so every CLI
         // is told how to query and contribute to the shared brain.
         try {
@@ -723,6 +598,7 @@ const server = http.createServer(async (req, res) => {
         const payload = {
           context, instructions, plugins, learnings, permissions: permissionsData,
           mind: mindField,
+          skills: skillsField,
           brain: brainField,
           instructionsAudit: auditField,
           loadedAt: new Date().toISOString(),
@@ -933,7 +809,7 @@ async function handleSaveConfig(req, res) {
 // Sensitive fields to strip from exports (PATs, API keys).
 // Core owns only its own shell-level secrets; plugins contribute their own via
 // contributions.sensitiveKeys. This keeps core zero-coupled from ADO/GH/etc.
-const CORE_SENSITIVE_KEYS = ['WhisperKey', 'AiApiKeys', 'BrowserCredentials'];
+const CORE_SENSITIVE_KEYS = ['AiApiKeys', 'BrowserCredentials'];
 function getSensitiveKeys() {
   const keys = new Set(CORE_SENSITIVE_KEYS);
   for (const p of (loadedPlugins || [])) {
@@ -1818,13 +1694,18 @@ function gitExec(repoPath, cmd, timeoutMs) {
   return gitSync(repoPath, cmd, timeoutMs);
 }
 
-function handleGitStatus(url, res) {
+async function handleGitStatus(url, res) {
   const repoName = url.searchParams.get('repo');
   const repoPath = getRepoPath(repoName);
   if (!repoPath) return json(res, { error: 'Repo not found' }, 400);
 
-  const branch = gitExec(repoPath, 'rev-parse --abbrev-ref HEAD');
-  const status = gitExec(repoPath, 'status --porcelain -u');
+  // Run git OFF the main event loop (gitAsync = spawn) so the 10s status poll
+  // does not freeze the whole UI. `git status -u` is slow on big / untracked-
+  // heavy repos, and the legacy gitExec/gitSync would block the Electron main
+  // process (server.js runs in it) for the duration -- the recurring freeze.
+  let branch = '', status = '';
+  try { branch = await gitAsync(repoPath, 'rev-parse --abbrev-ref HEAD'); } catch (_) {}
+  try { status = await gitAsync(repoPath, 'status --porcelain -u'); } catch (_) {}
   const statusMap = { 'M': 'modified', 'A': 'added', 'D': 'deleted', 'R': 'renamed', '?': 'new', 'U': 'conflict' };
   const statusLabel = { 'modified': 'M', 'added': 'A', 'deleted': 'D', 'renamed': 'R', 'new': 'N', 'conflict': 'U' };
   const files = status ? status.split('\n').filter(Boolean).map(line => {
@@ -1852,20 +1733,25 @@ function handleGitStatus(url, res) {
   json(res, { branch, files, clean: files.length === 0 });
 }
 
-function handleGitDiff(url, res) {
+async function handleGitDiff(url, res) {
   const repoName = url.searchParams.get('repo');
   const filePath = url.searchParams.get('path') || '';
   const repoPath = getRepoPath(repoName);
   if (!repoPath) return json(res, { error: 'Repo not found' }, 400);
 
+  // gitAsync (spawn) instead of the blocking gitExec so loading a large diff
+  // does not freeze the main process / whole UI. Returns '' on error to match
+  // the old gitExec-tolerant behavior.
+  const g = async (cmd) => { try { return await gitAsync(repoPath, cmd); } catch (_) { return ''; } };
+
   let diff = '';
   if (filePath) {
     // Try staged + unstaged diff against HEAD (ignore CRLF differences on Windows)
-    diff = gitExec(repoPath, `diff --ignore-cr-at-eol HEAD -- "${filePath}"`);
+    diff = await g(`diff --ignore-cr-at-eol HEAD -- "${filePath}"`);
     // Try unstaged only
-    if (!diff) diff = gitExec(repoPath, `diff --ignore-cr-at-eol -- "${filePath}"`);
+    if (!diff) diff = await g(`diff --ignore-cr-at-eol -- "${filePath}"`);
     // Try staged only
-    if (!diff) diff = gitExec(repoPath, `diff --ignore-cr-at-eol --cached -- "${filePath}"`);
+    if (!diff) diff = await g(`diff --ignore-cr-at-eol --cached -- "${filePath}"`);
     // For untracked/new files, show entire content as additions
     if (!diff) {
       const fullPath = path.join(repoPath, filePath);
@@ -1879,10 +1765,10 @@ function handleGitDiff(url, res) {
       }
     }
   } else {
-    diff = gitExec(repoPath, 'diff --ignore-cr-at-eol HEAD');
-    if (!diff) diff = gitExec(repoPath, 'diff --ignore-cr-at-eol');
+    diff = await g('diff --ignore-cr-at-eol HEAD');
+    if (!diff) diff = await g('diff --ignore-cr-at-eol');
     // Include untracked (new) files in the combined diff
-    const status = gitExec(repoPath, 'status --porcelain');
+    const status = await g('status --porcelain');
     if (status) {
       const untrackedFiles = status.split('\n').filter(Boolean)
         .filter(l => l.startsWith('??'))
@@ -1924,13 +1810,14 @@ async function handleGitBranches(url, res) {
   }
 }
 
-function handleGitLog(url, res) {
+async function handleGitLog(url, res) {
   const repoName = url.searchParams.get('repo');
   const count = url.searchParams.get('count') || '20';
   const repoPath = getRepoPath(repoName);
   if (!repoPath) return json(res, { error: 'Repo not found' }, 400);
 
-  const output = gitExec(repoPath, `log -${count} --pretty=format:"%h|%s|%an|%ar"`);
+  let output = '';
+  try { output = await gitAsync(repoPath, `log -${count} --pretty=format:"%h|%s|%an|%ar"`); } catch (_) {}
   const commits = output ? output.split('\n').filter(Boolean).map(line => {
     const [hash, subject, author, date] = line.replace(/^"|"$/g, '').split('|');
     return { hash, subject, author, date };
@@ -1939,7 +1826,7 @@ function handleGitLog(url, res) {
   json(res, { commits });
 }
 
-function handleCommitDiff(url, res) {
+async function handleCommitDiff(url, res) {
   const repoName = url.searchParams.get('repo');
   const hash = url.searchParams.get('hash');
   const filePath = url.searchParams.get('path') || '';
@@ -1948,9 +1835,10 @@ function handleCommitDiff(url, res) {
   if (!hash) return json(res, { error: 'hash required' }, 400);
 
   const pathArg = filePath ? ` -- "${filePath}"` : '';
-  const diff = gitExec(repoPath, `diff --ignore-cr-at-eol ${hash}~1 ${hash}${pathArg}`);
-  const stat = gitExec(repoPath, `diff --ignore-cr-at-eol --stat=999 ${hash}~1 ${hash}`);
-  const msg = gitExec(repoPath, `log -1 --pretty=format:"%s" ${hash}`);
+  const g = async (cmd) => { try { return await gitAsync(repoPath, cmd); } catch (_) { return ''; } };
+  const diff = await g(`diff --ignore-cr-at-eol ${hash}~1 ${hash}${pathArg}`);
+  const stat = await g(`diff --ignore-cr-at-eol --stat=999 ${hash}~1 ${hash}`);
+  const msg = await g(`log -1 --pretty=format:"%s" ${hash}`);
 
   json(res, { diff: diff || 'No changes', stat, message: msg, hash });
 }
@@ -2181,85 +2069,6 @@ function handleServeFile(url, res) {
   const contentType = mimeTypes[ext] || 'application/octet-stream';
   res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'max-age=60' });
   fs.createReadStream(resolved).pipe(res);
-}
-
-// ── Voice-to-Text (OpenAI Whisper) ──────────────────────────────────────────
-async function handleVoiceTranscribe(req, res) {
-  try {
-    const { audio } = await readBody(req);
-    if (!audio) return json(res, { error: 'audio (base64 WAV) required' }, 400);
-
-    const cfg = getConfig();
-    const apiKey = cfg.WhisperKey || '';
-    if (!apiKey) return json(res, { error: 'OpenAI API key not configured. Add it in Settings > Other > Voice Input.' }, 400);
-
-    // Decode base64 WAV to buffer
-    const wavBuffer = Buffer.from(audio, 'base64');
-
-    // Build multipart/form-data for OpenAI Whisper API
-    const boundary = '----SymphoneeVoice' + Date.now();
-    const parts = [];
-
-    // File part
-    parts.push(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="file"; filename="recording.wav"\r\n` +
-      `Content-Type: audio/wav\r\n\r\n`
-    );
-    parts.push(wavBuffer);
-    parts.push('\r\n');
-
-    // Model part
-    parts.push(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="model"\r\n\r\n` +
-      `whisper-1\r\n`
-    );
-
-    // Response format
-    parts.push(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="response_format"\r\n\r\n` +
-      `json\r\n`
-    );
-
-    parts.push(`--${boundary}--\r\n`);
-
-    // Combine into single buffer
-    const body = Buffer.concat(parts.map(p => typeof p === 'string' ? Buffer.from(p) : p));
-
-    const result = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: 'api.openai.com',
-        path: '/v1/audio/transcriptions',
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': body.length,
-        },
-      };
-
-      const apiReq = https.request(options, (resp) => {
-        let data = '';
-        resp.on('data', chunk => { data += chunk; });
-        resp.on('end', () => {
-          if (resp.statusCode >= 200 && resp.statusCode < 300) {
-            try { resolve(JSON.parse(data)); } catch (_) { resolve({ text: data }); }
-          } else {
-            reject(new Error(`Whisper API error (${resp.statusCode}): ${data.slice(0, 300)}`));
-          }
-        });
-      });
-      apiReq.on('error', reject);
-      apiReq.write(body);
-      apiReq.end();
-    });
-
-    json(res, { text: result.text || '', language: result.language || '' });
-  } catch (e) {
-    json(res, { error: e.message }, 502);
-  }
 }
 
 // ── Open External URL ───────────────────────────────────────────────────────
@@ -2745,9 +2554,47 @@ function handleHealthCheck(res) {
 }
 
 // ── Multi-PTY management ────────────────────────────────────────────────────
-const terminals = new Map(); // termId -> { pty, cols, rows }
+const terminals = new Map(); // termId -> { pty, cols, rows, cwd, label }
 const termAiMeta = new Map(); // termId -> { cli, launched, updatedAt }
 let defaultCols = 120, defaultRows = 30;
+
+// ── Terminal session persistence ────────────────────────────────────────────
+// PTYs are in-memory and die with the process, so to bring the user's shells
+// (name + working dir) back after an app restart we persist a small manifest of
+// open shells and recreate them on the first client connection. Local state, so
+// it lives under .ai-workspace (gitignored).
+const termSessionsFile = path.join(repoRoot, '.ai-workspace', 'terminal-sessions.json');
+let _sessionsRestored = false;
+function loadTermSessions() {
+  try { return JSON.parse(fs.readFileSync(termSessionsFile, 'utf8')) || {}; }
+  catch (_) { return { shells: [], mainLabel: null }; }
+}
+function saveTermSessions() {
+  try {
+    fs.mkdirSync(path.dirname(termSessionsFile), { recursive: true });
+    const shells = [];
+    let mainLabel = null;
+    for (const [id, t] of terminals) {
+      if (id === 'main') { mainLabel = t.label || null; continue; }
+      shells.push({ id, label: t.label || null, cwd: t.cwd || null });
+    }
+    atomicWriteSync(termSessionsFile, JSON.stringify({ shells, mainLabel }, null, 2));
+  } catch (_) { /* best-effort */ }
+}
+// Recreate persisted non-main shells once, on the first client connection after
+// a server (app) restart. Guarded so reconnects do not duplicate.
+function restoreTermSessionsOnce() {
+  if (_sessionsRestored) return;
+  _sessionsRestored = true;
+  let saved;
+  try { saved = loadTermSessions(); } catch (_) { return; }
+  for (const s of (saved && saved.shells) || []) {
+    if (!s || !s.id || s.id === 'main' || terminals.has(s.id)) continue;
+    let cwd = repoRoot;
+    try { if (s.cwd && fs.existsSync(s.cwd)) cwd = s.cwd; } catch (_) {}
+    try { createTerminal(s.id, defaultCols, defaultRows, cwd, s.label || null); } catch (_) {}
+  }
+}
 
 function findShell() {
   const pwsh = detectPwsh();
@@ -2795,7 +2642,7 @@ function _handleTerminalCwd(termId, cwd) {
   broadcast({ type: 'term-cwd', termId, cwd, repo: _repoForPath(cwd) });
 }
 
-function createTerminal(termId, cols = 120, rows = 30, cwd = null) {
+function createTerminal(termId, cols = 120, rows = 30, cwd = null, label = null) {
   // Default new terminals to Symphonee's repoRoot (where scripts/*.ps1 live)
   // so the user always has access to Symphonee's tools regardless of which
   // repo is active. The "active repo" is metadata Symphonee uses to know
@@ -2824,7 +2671,7 @@ function createTerminal(termId, cols = 120, rows = 30, cwd = null) {
     },
   });
 
-  terminals.set(termId, { pty: ptyProcess, cols, rows, cwd });
+  terminals.set(termId, { pty: ptyProcess, cols, rows, cwd, label: label || null });
 
   ptyProcess.onData(data => {
     broadcast({ type: 'output', termId, data });
@@ -2971,10 +2818,19 @@ Object.defineProperty(global, 'currentPty', {
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
-  // Send list of active terminals
+  // On the first connection after an app restart, bring back the user's saved
+  // shells (name + cwd) so renaming/opening shells survives a restart.
+  restoreTermSessionsOnce();
+  // Send list of active terminals with their labels + cwd so the client can
+  // rebuild the tabs (a fresh renderer has none).
   const active = [];
-  for (const [id] of terminals) active.push(id);
-  ws.send(JSON.stringify({ type: 'term-list', terminals: active }));
+  let mainLabel = null;
+  for (const [id, t] of terminals) {
+    if (id === 'main') mainLabel = t.label || null;
+    active.push({ id, label: t.label || null, cwd: t.cwd || null });
+  }
+  if (mainLabel == null) { try { mainLabel = loadTermSessions().mainLabel || null; } catch (_) {} }
+  ws.send(JSON.stringify({ type: 'term-list', terminals: active, mainLabel }));
 
   ws.on('message', (raw) => {
     try {
@@ -3005,11 +2861,18 @@ wss.on('connection', (ws) => {
           break;
         }
         case 'create-term': {
-          createTerminal(termId, msg.cols || defaultCols, msg.rows || defaultRows, msg.cwd);
+          createTerminal(termId, msg.cols || defaultCols, msg.rows || defaultRows, msg.cwd, msg.label || null);
+          saveTermSessions();
           break;
         }
         case 'kill-term': {
-          if (termId !== 'main') killTerminal(termId);
+          if (termId !== 'main') { killTerminal(termId); saveTermSessions(); }
+          break;
+        }
+        case 'rename-term': {
+          // Persist a user-renamed shell so the name survives an app restart.
+          const t = terminals.get(termId);
+          if (t) { t.label = (String(msg.label || '').slice(0, 60)) || null; saveTermSessions(); }
           break;
         }
         case 'restart': {
@@ -3217,6 +3080,30 @@ if (orchestrator) {
   orchestrator.saveTaskToMind = (task) => mind.saveTaskToMind(task);
 }
 
+// ── Mount Skill Corpus (the procedural layer of the cognitive loop) ─────────
+// Model-neutral SKILL.md recipes for HOW to do tasks the same way every time.
+// Surfaced in /api/bootstrap (so every direct CLI session sees the catalog) and
+// injected into dispatched-worker prompts (so delegated work follows the same
+// procedures). The body of each skill is fetched on demand from /api/skills/item.
+const { mountSkills } = require('./skill-corpus');
+const skills = mountSkills(addRoute, json, { repoRoot, broadcast });
+console.log(`  Skill corpus mounted (/api/skills/*) -- ${skills.catalog().length} skill(s)`);
+if (orchestrator) {
+  orchestrator.getSkillsHint = () => skills.catalogText();
+}
+// Skill Reflection: the REFLECT->LEARN arc -- mines Mind's corrections into
+// PROPOSED skills (propose-only; the user accepts). Closes the loop so the
+// system improves its own procedures, not just its knowledge.
+const { mountReflection } = require('./skill-reflection');
+const skillReflection = mountReflection(addRoute, json, { repoRoot, getUiContext: getUiContextWithPath, broadcast });
+console.log('  Skill reflection mounted (/api/skills/reflect, /api/skills/proposals)');
+// Contracts: the INTEND arc -- commit substantial/autonomous work to a reviewable
+// plan with acceptance criteria + per-unit evidence, so it is trustworthy and
+// auditable (see the run-a-contract skill).
+const { mountContracts } = require('./contracts');
+const contracts = mountContracts(addRoute, json, { repoRoot, broadcast });
+console.log('  Contracts mounted (/api/contracts/*)');
+
 // ── Mount Symphonee brain (planner + live intent model) ─────────────────────
 // The brain is the reasoning layer above Mind. Mind is memory; the brain
 // classifies inputs, picks tools, and (when planner mode is "active")
@@ -3375,13 +3262,32 @@ function runDeferredBootWork(trigger) {
   _deferredBootWorkStarted = true;
   console.log(`[boot] running deferred boot work (trigger: ${trigger || 'unknown'})`);
   Promise.resolve()
-    .then(() => (typeof mind.kickoffStartupRefresh === 'function' ? mind.kickoffStartupRefresh() : null))
+    // awaitStartupSettle runs the refresh AND waits for the graph build lock to
+    // free, so /api/startup/status.ready (which the boot overlay polls) only
+    // flips true once the Mind + repos are genuinely done -- not mid-build.
+    .then(() => (typeof mind.awaitStartupSettle === 'function'
+      ? mind.awaitStartupSettle()
+      : (typeof mind.kickoffStartupRefresh === 'function' ? mind.kickoffStartupRefresh() : null)))
     .catch(() => {})
     .then(() => (typeof mind.regenerateSplashQuotes === 'function' ? mind.regenerateSplashQuotes() : null))
+    .catch(() => {})
+    // After Mind has settled, reflect on accumulated corrections and propose
+    // skills (propose-only -- the user accepts). Cheap, deduped, never auto-edits.
+    .then(() => (skillReflection && typeof skillReflection.runDigest === 'function'
+      ? skillReflection.runDigest({ max: 6 }).then(r => { if (r && r.proposals && r.proposals.length) console.log(`  [reflect] proposed ${r.proposals.length} skill(s) from Mind corrections`); })
+      : null))
     .catch(() => {});
   // Stagger the brain setup slightly so the graph refresh gets the loop first.
   setTimeout(() => { try { runBrainSetup(); } catch (e) { console.warn('[brain/setup] start error:', e.message); } }, 1200);
+  // Daily reflection so corrections accumulated during long-running sessions
+  // become proposed skills without needing a restart.
+  if (!_skillReflectionInterval) {
+    _skillReflectionInterval = setInterval(() => {
+      try { if (skillReflection && skillReflection.runDigest) skillReflection.runDigest({ max: 6 }).catch(() => {}); } catch (_) {}
+    }, 24 * 60 * 60 * 1000);
+  }
 }
+let _skillReflectionInterval = null;
 
 // Trigger 1: explicit signal from the renderer once the dashboard has loaded.
 addRoute('POST', '/api/internal/app-ready', (req, res) => {

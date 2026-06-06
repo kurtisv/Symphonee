@@ -91,21 +91,56 @@ async function regenerate({ repoRoot, space, store, broadcast } = {}) {
     }
     const { chatOllama } = require('./llm');
     const sys = 'You write short, warm, reflective one-liners for a developer loading screen. ' +
-      'Each line is about HOW this person works and WHAT they have been building, in second person ("you"). ' +
-      'Grounded in the provided notes. No names, no hashtags, no quotes-marks in the text, under 120 characters each. ' +
-      'Return strict JSON: {"quotes":[{"text":"..."}]} with 12 items.';
-    const user = 'Notes from my knowledge graph:\n' + material.join('\n') +
-      '\n\nWrite 12 lines as specified.';
-    const out = await chatOllama(
+      'Each line speaks to the person in second person ("you") about HOW they work and WHAT they have been building, grounded in the provided notes. ' +
+      'Rules: exactly 12 lines; each UNDER 100 characters; plain text; no names, no hashtags, no surrounding quotation marks. ' +
+      'Return STRICT JSON only, an array of strings: {"quotes":["line one","line two", ...]}';
+    const user = 'Notes from my knowledge graph:\n' + material.join('\n') + '\n\nWrite the 12 lines now.';
+    // Ask for free-form text (not format:'json'): some models -- gemma in
+    // particular -- ignore the JSON mode and wrap the object in a ```json code
+    // fence, which the strict JSON parser then rejects. We strip fences/prose
+    // and parse ourselves.
+    const resp = await chatOllama(
       [{ role: 'system', content: sys }, { role: 'user', content: user }],
-      { format: 'json', temperature: 0.7, numPredict: 700, timeoutMs: 60000 }
+      { format: null, temperature: 0.6, numPredict: 1200, timeoutMs: 120000 }
     );
-    const raw = (out && Array.isArray(out.quotes)) ? out.quotes : [];
+    // chatOllama returns a wrapper {ok, model, text} for free-form, or a parsed
+    // object in JSON mode. Normalize, then strip ```json fences / surrounding
+    // prose and parse the first JSON object/array.
+    let out = null;
+    const rawStr = (resp && typeof resp === 'object' && typeof resp.text === 'string') ? resp.text
+                 : (typeof resp === 'string' ? resp : null);
+    if (rawStr != null) {
+      try {
+        const s = rawStr.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+        const mm = s.match(/[\{\[][\s\S]*[\}\]]/);
+        out = JSON.parse(mm ? mm[0] : s);
+      } catch (_) { out = null; }
+    } else if (resp && typeof resp === 'object') {
+      out = resp; // already parsed (JSON mode)
+    }
+    // Be liberal in what we accept: {quotes:[...]}, {lines:[...]}, a bare array,
+    // or the first array-valued field; items may be strings or {text|quote|line}.
+    let raw = [];
+    if (Array.isArray(out)) raw = out;
+    else if (out && Array.isArray(out.quotes)) raw = out.quotes;
+    else if (out && Array.isArray(out.lines)) raw = out.lines;
+    else if (out && typeof out === 'object') { const a = Object.values(out).find(v => Array.isArray(v)); if (a) raw = a; }
+    const seen = new Set();
     const quotes = raw
-      .map(q => ({ text: String((q && q.text) || '').replace(/^["']|["']$/g, '').trim(), author: 'Symphonee' }))
-      .filter(q => q.text && q.text.length <= 160)
-      .slice(0, 12);
-    if (quotes.length < 3) return { ok: false, reason: 'too-few-generated' };
+      .map(q => {
+        const t = (typeof q === 'string') ? q : (q && (q.text || q.quote || q.line || q.content)) || '';
+        return String(t).replace(/^["'\s]+|["'\s]+$/g, '').trim();
+      })
+      .filter(t => {
+        if (!t || t.length > 200) return false;
+        const k = t.toLowerCase();
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(0, 12)
+      .map(text => ({ text, author: 'Symphonee' }));
+    if (quotes.length < 3) return { ok: false, reason: 'too-few-generated', got: raw.length };
     const doc = { quotes, generatedAt: new Date().toISOString(), space };
     try { fs.mkdirSync(path.dirname(cacheFile(repoRoot)), { recursive: true }); } catch (_) {}
     fs.writeFileSync(cacheFile(repoRoot), JSON.stringify(doc, null, 2));
