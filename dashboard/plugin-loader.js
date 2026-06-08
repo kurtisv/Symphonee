@@ -540,11 +540,26 @@ function loadPlugins(pluginsDir, { addRoute, getConfig, broadcast, json, writePl
       });
       const { id, repo } = body;
       if (!id || !repo) { json(res, { error: 'id and repo required' }, 400); return; }
+      // Plugins run as in-process Node code, so installing one is code execution.
+      // Gate it (so a prompt-injected AI can't silently install one); user-driven
+      // installs surface an explicit confirm.
+      if (shellDeps && typeof shellDeps.permGate === 'function') {
+        if (!await shellDeps.permGate(res, 'api', 'POST /api/plugins/install-from-registry', 'Install plugin "' + id + '" from ' + repo)) return;
+      }
       const destDir = path.join(pluginsDir, id);
       if (fs.existsSync(destDir)) { json(res, { error: 'Plugin "' + id + '" already installed' }, 409); return; }
       // Clone the repo
-      const { execSync } = require('child_process');
-      execSync('git clone "' + repo + '.git" "' + destDir + '"', { encoding: 'utf8', timeout: 60000, stdio: ['pipe', 'pipe', 'pipe'] });
+      const { spawnSync } = require('child_process');
+      const installResult = spawnSync('git', ['clone', repo + '.git', destDir], {
+        encoding: 'utf8',
+        timeout: 60000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      });
+      if (installResult.error || installResult.status !== 0) {
+        throw new Error((installResult.stderr || installResult.stdout || (installResult.error && installResult.error.message) || 'git clone failed').trim());
+      }
       // Verify plugin.json exists
       if (!fs.existsSync(path.join(destDir, 'plugin.json'))) {
         fs.rmSync(destDir, { recursive: true, force: true });
@@ -582,6 +597,10 @@ function loadPlugins(pluginsDir, { addRoute, getConfig, broadcast, json, writePl
       });
       const { id, repo } = body;
       if (!id || !repo) { json(res, { error: 'id and repo required' }, 400); return; }
+      // Re-cloning plugin code is also code execution -- gate it.
+      if (shellDeps && typeof shellDeps.permGate === 'function') {
+        if (!await shellDeps.permGate(res, 'api', 'POST /api/plugins/update', 'Update plugin "' + id + '" from ' + repo)) return;
+      }
       const destDir = path.join(pluginsDir, id);
       if (!fs.existsSync(destDir)) { json(res, { error: 'Plugin "' + id + '" is not installed' }, 404); return; }
       // Backup config.json if it exists
@@ -592,8 +611,17 @@ function loadPlugins(pluginsDir, { addRoute, getConfig, broadcast, json, writePl
       }
       // Remove old version and re-clone
       fs.rmSync(destDir, { recursive: true, force: true });
-      const { execSync } = require('child_process');
-      execSync('git clone "' + repo + '.git" "' + destDir + '"', { encoding: 'utf8', timeout: 60000, stdio: ['pipe', 'pipe', 'pipe'] });
+      const { spawnSync } = require('child_process');
+      const updateResult = spawnSync('git', ['clone', repo + '.git', destDir], {
+        encoding: 'utf8',
+        timeout: 60000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      });
+      if (updateResult.error || updateResult.status !== 0) {
+        throw new Error((updateResult.stderr || updateResult.stdout || (updateResult.error && updateResult.error.message) || 'git clone failed').trim());
+      }
       if (!fs.existsSync(path.join(destDir, 'plugin.json'))) {
         fs.rmSync(destDir, { recursive: true, force: true });
         json(res, { error: 'Cloned repo has no plugin.json' }, 400);

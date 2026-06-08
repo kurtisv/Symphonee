@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node dashboard/server.js",
     "electron": "electron .",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "build:renderer": "node scripts/build-renderer.js",
+    "watch:renderer": "node scripts/build-renderer.js --watch"
   },
   "dependencies": {
     "@browserbasehq/stagehand": "^3.2.1",
@@ -35,8 +37,14 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/generator": "^7.29.7",
+    "@babel/parser": "^7.29.7",
+    "@babel/traverse": "^7.29.7",
+    "@babel/types": "^7.29.7",
     "electron": "^35.0.0",
     "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.0",
     "rcedit": "^5.0.2"
   },
   "build": {
@@ -52,6 +60,12 @@
     "files": [
       "dashboard/**/*",
       "config/**/*",
+      "!config/config.json",
+      "!config/application-state.json",
+      "!config/themes.json",
+      "!config/uninstalled-plugins.json",
+      "!config/browser-sessions/**",
+      "!dashboard/plugins/*/config.json",
       "node_modules/**/*",
       "package.json"
     ]
