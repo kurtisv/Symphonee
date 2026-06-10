@@ -20,6 +20,7 @@ const { detectPwsh } = require('./lib/detect-cli');
 const { readProcessTree: _readProcessTree, detectAiUnder: _detectAiUnder } = require('./lib/ai-tree-detect');
 const { createPluginHints } = require('./lib/plugin-hints');
 const { BusyGuard } = require('./utils/busy-guard');
+const { createFirewall } = require('./request-firewall');
 const instructionAudit = require('./instruction-audit');
 const trace = require('./startup-trace');
 trace.mark('server:module-eval:start');
@@ -30,23 +31,10 @@ const swrGit     = new SWRCache({ staleTTL: 10000, maxAge: 60000 });
 const swrPlugins = new SWRCache({ staleTTL: 30000, maxAge: 300000 });
 const guard      = new BusyGuard();
 
-// Return plugin info when a /api/ path matches routes a known extracted plugin
-// owns but no plugin currently has a handler registered. Lets core give a
-// useful {pluginRequired} 404 instead of bare "Not found" when the plugin is
-// uninstalled or inactive. Hardcoded to the two first-party extractions; add
-// future plugin prefixes here as needed.
-const EXTRACTED_PLUGIN_ROUTES = [
-  { pluginId: 'azure-devops', pluginName: 'Azure DevOps', prefix: /^\/api\/(workitems|iterations|teams|areas|velocity|burndown|start-working|team-members)(?:\/|$|\?)/ },
-  { pluginId: 'github',       pluginName: 'GitHub',       prefix: /^\/api\/(github\/|pull-request(?:$|\?))/ },
-];
-function matchUnclaimedPluginRoute(pathname, plugins) {
-  for (const spec of EXTRACTED_PLUGIN_ROUTES) {
-    if (!spec.prefix.test(pathname)) continue;
-    const installed = Array.isArray(plugins) && plugins.some(p => p.id === spec.pluginId);
-    return { pluginId: spec.pluginId, pluginName: spec.pluginName, installed };
-  }
-  return null;
-}
+// matchUnclaimedPluginRoute returns plugin info when a /api/ path matches routes
+// a known extracted plugin owns but no plugin currently has a handler registered,
+// so core can give a useful {pluginRequired} 404. Rules live in lib/.
+const { matchUnclaimedPluginRoute } = require('./lib/unclaimed-plugin-routes');
 
 // Strip non-ASCII control chars, smart quotes, and replacement characters.
 // Generic text hygiene shared by core and plugins via ctx.shell.
@@ -75,37 +63,9 @@ const repoRoot = path.resolve(__dirname, '..');
 // defined above the init site can close over it without a TDZ hazard.
 let _ledger = null;
 
-// ── Origin / Host firewall (anti-CSRF, anti-DNS-rebinding) ──────────────────
-// The local API runs high-privilege actions (terminals, git, file I/O,
-// automation, plugins) and has no auth token yet, so it MUST reject any request
-// that didn't come from the app's own renderer or a local CLI. Rules:
-//   - A browser cross-site request ALWAYS carries an Origin header; CLIs / curl
-//     / server-to-server send NONE. So "no Origin" = trusted local caller.
-//   - The renderer is same-origin (http://127.0.0.1:PORT) -> allowed.
-//   - Any foreign Origin (a malicious page the user merely opens) -> 403.
-//   - The Host header must be loopback; a DNS-rebinding page rebinds its domain
-//     to 127.0.0.1 but still sends Host: attacker.com -> 403.
-const ALLOWED_ORIGINS = new Set([
-  `http://${HOST}:${PORT}`, `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`,
-]);
-const ALLOWED_HOSTS = new Set([
-  `${HOST}:${PORT}`, `localhost:${PORT}`, `127.0.0.1:${PORT}`,
-  HOST, 'localhost', '127.0.0.1', `[::1]:${PORT}`, '[::1]',
-]);
-function _hostIsLoopback(host) {
-  if (!host) return true; // HTTP/1.0 / some local clients omit Host
-  return ALLOWED_HOSTS.has(String(host).toLowerCase());
-}
-function _originAllowed(origin) {
-  if (!origin) return true;            // not a browser cross-site request
-  const o = String(origin).toLowerCase();
-  if (o === 'null') return false;      // opaque/sandboxed origin -> reject
-  return ALLOWED_ORIGINS.has(o);
-}
-// True if the request may proceed. Used for both HTTP (below) and WS upgrades.
-function isRequestAllowed(req) {
-  return _hostIsLoopback(req.headers && req.headers.host) && _originAllowed(req.headers && req.headers.origin);
-}
+// Origin / Host firewall (anti-CSRF, anti-DNS-rebinding). Rules + rationale live
+// in request-firewall.js; isRequestAllowed gates both HTTP requests and WS upgrades.
+const { isRequestAllowed } = createFirewall(HOST, PORT);
 
 const publicDir = path.join(__dirname, 'public');
 const notesDir = path.join(repoRoot, 'notes'); // shared: hybrid-search index + note path-guards (note ROUTES live in routes/notes.js)
@@ -113,11 +73,53 @@ const nodeModules = path.join(repoRoot, 'node_modules');
 const configPath = path.join(repoRoot, 'config', 'config.json');
 const templatePath = path.join(repoRoot, 'config', 'config.template.json');
 
+// Per-boot API auth token. Gates STATE-MUTATING requests so a local process that
+// the firewall trusts (no Origin) still can't drive privileged actions without
+// it. Persist to config/runtime.json (0600) so out-of-process callers (MCP
+// bridge, PowerShell helpers run outside a spawned shell) can read it, and put
+// it on process.env so every spawned child (terminals, orchestrator CLIs)
+// inherits it automatically -- those env blocks already spread ...process.env.
+const { createAuthToken } = require('./lib/auth-token');
+const authToken = createAuthToken({ runtimePath: path.join(repoRoot, 'config', 'runtime.json'), port: PORT });
+authToken.persist();
+process.env.SYMPHONEE_TOKEN = authToken.value;
+// Kill switch: enforcement is on unless config explicitly sets it false.
+function authTokenRequired() {
+  try { const s = getConfig().Security; return !s || s.RequireApiToken !== false; } catch (_) { return true; }
+}
+
 // ── Static file routes ─────────────────────────────────────────────────────
 const ROUTES = {
   '/':                        { file: path.join(publicDir, 'index.html'),                                          type: 'text/html' },
   '/styles/app.css':          { file: path.join(publicDir, 'styles', 'app.css'),                                   type: 'text/css' },
   '/js/app.js':               { file: path.join(publicDir, 'js', 'app.js'),                                        type: 'application/javascript' },
+  // Extracted renderer ES-module bundles (built by scripts/build-renderer.js).
+  // The server allow-lists static files, so every bundle index.html loads MUST
+  // be registered here or it 404s and its window.* exports never define.
+  '/js/util.js':              { file: path.join(publicDir, 'js', 'util.js'),                                       type: 'application/javascript' },
+  '/js/pinned-tabs.js':       { file: path.join(publicDir, 'js', 'pinned-tabs.js'),                                type: 'application/javascript' },
+  '/js/local-model-prompt.js':{ file: path.join(publicDir, 'js', 'local-model-prompt.js'),                         type: 'application/javascript' },
+  '/js/mcp.js':               { file: path.join(publicDir, 'js', 'mcp.js'),                                        type: 'application/javascript' },
+  '/js/notes-search.js':      { file: path.join(publicDir, 'js', 'notes-search.js'),                               type: 'application/javascript' },
+  '/js/permissions.js':       { file: path.join(publicDir, 'js', 'permissions.js'),                                type: 'application/javascript' },
+  '/js/activity-timeline.js': { file: path.join(publicDir, 'js', 'activity-timeline.js'),                          type: 'application/javascript' },
+  '/js/activity-ledger.js':   { file: path.join(publicDir, 'js', 'activity-ledger.js'),                            type: 'application/javascript' },
+  '/js/browser-credentials.js':{ file: path.join(publicDir, 'js', 'browser-credentials.js'),                       type: 'application/javascript' },
+  '/js/plugin-registry.js':   { file: path.join(publicDir, 'js', 'plugin-registry.js'),                            type: 'application/javascript' },
+  '/js/themes.js':            { file: path.join(publicDir, 'js', 'themes.js'),                                     type: 'application/javascript' },
+  '/js/notifications.js':     { file: path.join(publicDir, 'js', 'notifications.js'),                              type: 'application/javascript' },
+  '/js/pull-requests.js':     { file: path.join(publicDir, 'js', 'pull-requests.js'),                              type: 'application/javascript' },
+  '/js/git.js':               { file: path.join(publicDir, 'js', 'git.js'),                                        type: 'application/javascript' },
+  '/js/files.js':             { file: path.join(publicDir, 'js', 'files.js'),                                      type: 'application/javascript' },
+  '/js/notes.js':             { file: path.join(publicDir, 'js', 'notes.js'),                                      type: 'application/javascript' },
+  '/js/spaces-repos.js':      { file: path.join(publicDir, 'js', 'spaces-repos.js'),                               type: 'application/javascript' },
+  '/js/work-items.js':        { file: path.join(publicDir, 'js', 'work-items.js'),                                 type: 'application/javascript' },
+  '/js/command-palette.js':   { file: path.join(publicDir, 'js', 'command-palette.js'),                            type: 'application/javascript' },
+  '/js/plugins.js':           { file: path.join(publicDir, 'js', 'plugins.js'),                                    type: 'application/javascript' },
+  '/js/settings.js':          { file: path.join(publicDir, 'js', 'settings.js'),                                   type: 'application/javascript' },
+  '/js/browser.js':           { file: path.join(publicDir, 'js', 'browser.js'),                                    type: 'application/javascript' },
+  '/js/apps-tab.js':          { file: path.join(publicDir, 'js', 'apps-tab.js'),                                       type: 'application/javascript' },
+  '/js/orchestrator.js':      { file: path.join(publicDir, 'js', 'orchestrator.js'),                               type: 'application/javascript' },
   '/xterm.css':               { file: path.join(nodeModules, '@xterm/xterm/css/xterm.css'),                          type: 'text/css' },
   '/xterm.js':                { file: path.join(nodeModules, '@xterm/xterm/lib/xterm.js'),                           type: 'application/javascript' },
   '/xterm-addon-fit.js':      { file: path.join(nodeModules, '@xterm/addon-fit/lib/addon-fit.js'),                   type: 'application/javascript' },
@@ -142,22 +144,22 @@ function addRoute(method, pathname, handler) {
 }
 
 // ── Plugin system ────────────────────────────────────────────────────────────
-const { loadPlugins, checkActivation } = require('./plugin-loader');
+const { loadPlugins, checkActivation } = require('./plugins-core/plugin-loader');
 const pluginsDir = path.join(__dirname, 'plugins');
 
 // ── Config store (merge/normalize infrastructure behind getConfig) ───────────
 const { createConfigStore } = require('./lib/config-store');
-const { getConfig, readAllPluginConfigs, getPluginConfigKeyMap, persistPluginConfigKeys, normalizeRootConfig } =
+const { getConfig, invalidate: invalidateConfig, readAllPluginConfigs, getPluginConfigKeyMap, persistPluginConfigKeys, normalizeRootConfig } =
   createConfigStore({ templatePath, configPath, pluginsDir });
 let loadedPlugins = [];
 
 // ── Orchestrator (cross-AI communication bus) ────────────────────────────────
 const { mountOrchestrator, pretrustFolderForCli } = require('./orchestrator');
 const permissions = require('./permissions');
-const { MCPClientManager } = require('./mcp-client');
+const { MCPClientManager } = require('./mcp/mcp-client');
 const mcpClient = new MCPClientManager({ configPath });
 mcpClient.bootstrap().catch(e => console.warn('  [mcp-client] bootstrap error:', e.message));
-const { GraphRunsEngine } = require('./graph-runs');
+const { GraphRunsEngine } = require('./graph/graph-runs');
 const graphRuns = new GraphRunsEngine({
   repoRoot,
   injectToTerminal: (termId, text) => {
@@ -179,7 +181,7 @@ async function permGate(res, type, value, label) {
 }
 
 // ── Learnings (collective intelligence) ──────────────────────────────────────
-const { mountLearnings } = require('./learnings');
+const { mountLearnings } = require('./learnings/learnings');
 let _learningsInstance = null;
 trace.mark('server:top-requires-done');
 
@@ -198,6 +200,12 @@ const server = http.createServer(async (req, res) => {
   // route runs. Local CLIs (no Origin) and the same-origin renderer pass.
   if (!isRequestAllowed(req)) {
     try { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Cross-origin request blocked' })); } catch (_) {}
+    return;
+  }
+  // Auth-token gate: state-mutating requests must carry the per-boot token.
+  // Reads (GET/HEAD) pass on the firewall alone. See lib/auth-token.js.
+  if (authTokenRequired() && !authToken.isAllowed(req)) {
+    try { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing or invalid API token', code: 'TOKEN_REQUIRED' })); } catch (_) {}
     return;
   }
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
@@ -610,13 +618,23 @@ const server = http.createServer(async (req, res) => {
     // concern - so always-fresh is the right default.
     const route = ROUTES[url.pathname];
     if (route && fs.existsSync(route.file)) {
-      res.writeHead(200, {
+      const headers = {
         'Content-Type': route.type,
         'Cache-Control': 'no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
-      });
-      fs.createReadStream(route.file).pipe(res);
+      };
+      // Inject the token + fetch/XHR wrapper into served HTML so the renderer
+      // (and any same-origin document) carries the token on mutating calls.
+      if (route.type === 'text/html') {
+        let html = fs.readFileSync(route.file, 'utf8');
+        html = authToken.injectHtml(html);
+        res.writeHead(200, headers);
+        res.end(html);
+      } else {
+        res.writeHead(200, headers);
+        fs.createReadStream(route.file).pipe(res);
+      }
     } else {
       // Plugin-aware 404 for /api/ paths owned by extracted plugins. Keeps the
       // UI and AI seeing a structured 'this feature lives in a plugin - install
@@ -847,11 +865,11 @@ const { mountCliInstall } = require('./routes/cli-install');
 mountCliInstall(addRoute, json, { configPath });
 const { mountConfig } = require('./routes/config');
 mountConfig(addRoute, json, {
-  getConfig, normalizeRootConfig, configPath, templatePath, repoRoot, pluginsDir,
+  getConfig, invalidateConfig, normalizeRootConfig, configPath, templatePath, repoRoot, pluginsDir,
   swrGit, swrPlugins, broadcast, writePluginHints, getPlugins: () => loadedPlugins,
 });
 const { mountSpaces } = require('./routes/spaces');
-mountSpaces(addRoute, json, { getConfig, normalizeRootConfig, configPath, broadcast });
+mountSpaces(addRoute, json, { getConfig, invalidateConfig, normalizeRootConfig, configPath, broadcast });
 const { mountImageProxy } = require('./routes/image-proxy');
 mountImageProxy(addRoute, json, { getConfig, getPlugins: () => loadedPlugins, host: HOST, port: PORT });
 const { mountPluginRecommendations } = require('./routes/plugin-recommendations');
@@ -1180,15 +1198,15 @@ function runDeferredBootWork(trigger) {
     .then(() => (typeof mind.awaitStartupSettle === 'function'
       ? mind.awaitStartupSettle()
       : (typeof mind.kickoffStartupRefresh === 'function' ? mind.kickoffStartupRefresh() : null)))
-    .catch(() => {})
+    .catch(e => console.warn('[boot] Mind startup refresh failed:', e && e.message))
     .then(() => (typeof mind.regenerateSplashQuotes === 'function' ? mind.regenerateSplashQuotes() : null))
-    .catch(() => {})
+    .catch(e => console.warn('[boot] splash-quote regen failed:', e && e.message))
     // After Mind has settled, reflect on accumulated corrections and propose
     // skills (propose-only -- the user accepts). Cheap, deduped, never auto-edits.
     .then(() => (skillReflection && typeof skillReflection.runDigest === 'function'
       ? skillReflection.runDigest({ max: 6 }).then(r => { if (r && r.proposals && r.proposals.length) console.log(`  [reflect] proposed ${r.proposals.length} skill(s) from Mind corrections`); })
       : null))
-    .catch(() => {});
+    .catch(e => console.warn('[boot] skill reflection failed:', e && e.message));
   // Stagger the brain setup slightly so the graph refresh gets the loop first.
   setTimeout(() => { try { runBrainSetup(); } catch (e) { console.warn('[brain/setup] start error:', e.message); } }, 1200);
   // Daily reflection so corrections accumulated during long-running sessions
@@ -1232,23 +1250,67 @@ hybridSearch.initialize({ notesDir, learnings: _learningsInstance })
 
 // ── Mount browser agent ──────────────────────────────────────────────────────
 try {
-  const { mountBrowserRoutes } = require('./browser-agent');
+  const { mountBrowserRoutes } = require('./agents/browser/browser-agent');
   const browserAgentInstance = mountBrowserRoutes(addRoute, json, { getConfig, repoRoot, broadcast });
   console.log('  Browser agent mounted (/api/browser/*)');
   try {
-    const { mountBrowserAgentChatRoutes } = require('./browser-agent-chat');
+    const { mountBrowserAgentChatRoutes } = require('./agents/browser/browser-agent-chat');
     mountBrowserAgentChatRoutes(addRoute, json, { getConfig, agent: browserAgentInstance, broadcast });
     console.log('  Browser agent chat mounted (/api/browser/agent/*)');
   } catch (e2) {
     console.log('  Browser agent chat skipped:', e2.message);
   }
+  // /api/browser/server-log -- recent output of the visited app's dev server.
+  // Auto-detects the active repo's dev-server terminal (by cwd + localhost
+  // signature). Deliberately scoped to project terminals; Symphonee's own
+  // backend logs are never surfaced here.
+  addRoute('GET', '/api/browser/server-log', (req, res) => {
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const lines = Math.max(1, Math.min(3000, parseInt(url.searchParams.get('lines')) || 200));
+      const wantRepo = url.searchParams.get('repo');
+      const wantTerm = url.searchParams.get('termId');
+      let ctx = {};
+      try { ctx = (typeof getUiContextWithPath === 'function') ? getUiContextWithPath() : {}; } catch (_) {}
+      const cfg = getConfig() || {};
+      const repos = cfg.Repos || {};
+      const repoName = wantRepo || ctx.activeRepo || null;
+      const repoPath = (repoName && repos[repoName]) ? repos[repoName] : ctx.activeRepoPath;
+      const norm = p => String(p || '').replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase();
+      const nRepo = norm(repoPath);
+      const strip = s => String(s || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+      const devUrlRe = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?[^\s'"]*/i;
+      const devSigRe = /(VITE v|ready in|Local:\s+https?|webpack compiled|compiled successfully|next dev|nodemon|listening on|dev server|server (?:running|started|listening))/i;
+      const cands = [];
+      for (const [id, t] of terminals) {
+        const buf = strip(t.outputBuffer || '');
+        const inRepo = !!(nRepo && t.cwd && (norm(t.cwd) === nRepo || norm(t.cwd).startsWith(nRepo + '\\')));
+        const m = buf.match(devUrlRe);
+        cands.push({ id, cwd: t.cwd, inRepo, devUrl: m ? m[0] : null, isDev: !!(m || devSigRe.test(buf)), buf });
+      }
+      let pick = wantTerm ? cands.find(c => c.id === wantTerm) : null;
+      if (!pick) {
+        let pool = cands.filter(c => c.inRepo);
+        if (!pool.length) pool = cands.filter(c => c.isDev);
+        if (!pool.length) pool = cands;
+        pool.sort((a, b) => (b.isDev ? 1 : 0) - (a.isDev ? 1 : 0));
+        pick = pool[0];
+      }
+      if (!pick) return json(res, { ok: true, termId: null, output: '', note: 'No terminals with output yet.' });
+      const all = pick.buf.split('\n');
+      json(res, { ok: true, termId: pick.id, repo: repoName, cwd: pick.cwd, devUrl: pick.devUrl, isDevServer: pick.isDev, totalLines: all.length, output: all.slice(-lines).join('\n') });
+    } catch (e) {
+      json(res, { ok: false, error: e.message }, 500);
+    }
+  });
+  console.log('  Browser server-log mounted (/api/browser/server-log)');
 } catch (e) {
   console.log('  Browser agent skipped:', e.message);
 }
 
 // ── Mount browser router (auto-picks between Stagehand and browser-use) ─────
 try {
-  const { mountBrowserRouterRoutes } = require('./browser-router');
+  const { mountBrowserRouterRoutes } = require('./agents/browser/browser-router');
   mountBrowserRouterRoutes(addRoute, json, { getConfig, broadcast, port: PORT });
   console.log('  Browser router mounted (/api/browser/router/*)');
 } catch (e) {
@@ -1257,7 +1319,7 @@ try {
 
 // ── Mount apps agent (desktop control) ──────────────────────────────────────
 try {
-  const { mountAppsRoutes } = require('./apps-agent');
+  const { mountAppsRoutes } = require('./agents/apps/apps-agent');
   mountAppsRoutes(addRoute, json, {
     getConfig,
     broadcast,
@@ -1275,6 +1337,7 @@ try {
 // ── Load plugins ─────────────────────────────────────────────────────────────
 loadedPlugins = loadPlugins(pluginsDir, {
   addRoute, getConfig, broadcast, json, writePluginHints,
+  injectHtml: (html) => authToken.injectHtml(html),
   swrCache: swrPlugins,
   shellDeps: {
     gitExec, sanitizeText, permGate,

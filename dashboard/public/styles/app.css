@@ -1320,6 +1320,262 @@
       flex: 1; min-width: 0; overflow: hidden; display: flex;
     }
     .inapp-browser-stage .inapp-browser-frame { flex: 1; min-width: 0; }
+
+    /* ── DevTools drawer ───────────────────────────────────────────────── */
+    .inapp-devtools {
+      flex-shrink: 0; display: flex; flex-direction: column;
+      height: 300px; min-height: 120px; max-height: 75%;
+      position: relative; background: var(--mantle);
+      border-top: 1px solid var(--surface1);
+    }
+    .inapp-devtools-resize {
+      position: absolute; top: -3px; left: 0; right: 0; height: 7px;
+      cursor: ns-resize; z-index: 3;
+    }
+    .inapp-devtools-resize:hover { background: var(--accent); opacity: 0.4; }
+    /* ── Docking (bottom / left / right) ─────────────────────────────────── */
+    .inapp-browser-content { flex: 1; min-height: 0; min-width: 0; display: flex; }
+    .inapp-browser-content.dock-bottom { flex-direction: column; }
+    .inapp-browser-content.dock-right { flex-direction: row; }
+    .inapp-browser-content.dock-left { flex-direction: row-reverse; }
+    .inapp-browser-content > .inapp-browser-body { flex: 1; min-width: 0; min-height: 0; }
+    .inapp-devtools.dock-bottom { width: auto; height: 300px; max-height: 75%; border-top: 1px solid var(--surface1); border-left: 0; border-right: 0; }
+    .inapp-devtools.dock-right { height: auto; width: 380px; max-width: 80%; border-left: 1px solid var(--surface1); border-top: 0; }
+    .inapp-devtools.dock-left { height: auto; width: 380px; max-width: 80%; border-right: 1px solid var(--surface1); border-top: 0; }
+    .inapp-devtools.dock-bottom > .inapp-devtools-resize { top: -3px; left: 0; right: 0; bottom: auto; width: auto; height: 7px; cursor: ns-resize; }
+    .inapp-devtools.dock-right > .inapp-devtools-resize { left: -3px; top: 0; bottom: 0; right: auto; width: 7px; height: auto; cursor: ew-resize; }
+    .inapp-devtools.dock-left > .inapp-devtools-resize { right: -3px; top: 0; bottom: 0; left: auto; width: 7px; height: auto; cursor: ew-resize; }
+    /* AI panel hosted inside the drawer */
+    .inapp-devtools .inapp-agent-panel { display: none; flex: 1; width: auto; min-width: 0; max-width: none; border-left: 0; min-height: 0; }
+    .inapp-devtools .inapp-agent-panel.dt-ai-active { display: flex; }
+    /* Dock buttons */
+    .dt-dock-group { display: inline-flex; align-items: center; gap: 1px; margin-right: 4px; padding: 1px; background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius); }
+    .dt-dock-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; background: transparent; border: 0; border-radius: 3px; color: var(--overlay0); cursor: pointer; }
+    .dt-dock-btn:hover { color: var(--text); background: var(--surface1); }
+    .dt-dock-btn.active { color: var(--accent); background: var(--surface1); }
+    .dt-dock-btn i { width: 13px; height: 13px; }
+    /* Zoom row in the picker menu */
+    .dt-zoom-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; }
+    .dt-zoom-label { flex: 1; font: 12px var(--font-ui); color: var(--subtext1); }
+    .dt-zoom-btn { background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius); color: var(--text); font: 11px var(--font-ui); cursor: pointer; min-width: 24px; height: 22px; padding: 0 6px; }
+    .dt-zoom-btn:hover { border-color: var(--accent); }
+    .dt-zoom-value { font: 11px var(--font-mono); color: var(--text); min-width: 42px; text-align: center; }
+    .dt-zoom-reset { margin-left: 4px; }
+    .inapp-devtools-head {
+      display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+      padding: 5px 8px; background: var(--crust);
+      border-bottom: 1px solid var(--surface0); flex-shrink: 0; min-width: 0;
+    }
+    /* Panel picker (replaces the tab strip) */
+    .inapp-devtools-picker { position: relative; flex-shrink: 0; }
+    .inapp-devtools-picker-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius);
+      color: var(--text); font: 600 11px var(--font-ui); cursor: pointer; padding: 0 9px; height: 26px; white-space: nowrap;
+    }
+    .inapp-devtools-picker-btn:hover { border-color: var(--accent); }
+    .inapp-devtools-picker-btn i { color: var(--subtext0); }
+    .inapp-devtools-picker-label { min-width: 60px; }
+    .inapp-devtools-menu {
+      display: none; position: absolute; top: 32px; left: 0; z-index: 20;
+      min-width: 224px; max-height: 240px; overflow: auto; padding: 4px;
+      background: var(--mantle); border: 1px solid var(--surface1); border-radius: var(--radius-lg);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    .inapp-devtools-menu.open { display: block; }
+    .dt-menu-group {
+      font: 10px var(--font-ui); text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--overlay0); padding: 8px 8px 4px;
+    }
+    .dt-menu-item {
+      display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+      background: transparent; border: 0; border-radius: var(--radius); cursor: pointer;
+      color: var(--subtext1); font: 12px var(--font-ui); padding: 6px 8px;
+    }
+    .dt-menu-item .dt-menu-name { flex: 1; }
+    .dt-menu-item:hover { background: var(--surface0); color: var(--text); }
+    .dt-menu-item.active { background: var(--surface0); color: var(--accent); }
+    .dt-menu-count {
+      font: 10px var(--font-mono); color: var(--subtext0);
+      background: var(--surface1); border-radius: 999px; padding: 0 6px; min-width: 16px; text-align: center;
+    }
+    .dt-menu-pill {
+      font: 9px var(--font-ui); text-transform: uppercase; letter-spacing: 0.04em;
+      background: var(--accent); color: var(--crust); border-radius: 999px; padding: 1px 6px;
+    }
+    /* Contextual controls: left = panel-specific, right = copy/export/clear/close */
+    .inapp-devtools-ctl-left { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+    .inapp-devtools-ctl-right { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+    .dt-ctl-select, .dt-ctl-filter {
+      background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius);
+      color: var(--text); font: 11px var(--font-mono); padding: 0 7px; outline: none; height: 24px;
+    }
+    .dt-ctl-select { max-width: 260px; }
+    .dt-ctl-filter { width: 150px; }
+    .dt-ctl-select:focus, .dt-ctl-filter:focus { border-color: var(--accent); }
+    .dt-ctl-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 24px; background: transparent; border: 1px solid transparent;
+      border-radius: var(--radius); color: var(--subtext0); cursor: pointer;
+    }
+    .dt-ctl-btn:hover { background: var(--surface0); color: var(--text); border-color: var(--surface1); }
+    .dt-ctl-btn i { width: 13px; height: 13px; }
+    .dt-ctl-close:hover { color: var(--red); border-color: var(--red); }
+    /* Themed toggle switch (Preserve) */
+    .dt-switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; font: 11px var(--font-ui); color: var(--subtext0); }
+    .dt-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .dt-switch-track { position: relative; width: 28px; height: 16px; border-radius: 999px; background: var(--surface2); transition: background 0.15s; flex-shrink: 0; }
+    .dt-switch-thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--overlay1); transition: transform 0.15s, background 0.15s; }
+    .dt-switch input:checked + .dt-switch-track { background: var(--accent); }
+    .dt-switch input:checked + .dt-switch-track .dt-switch-thumb { transform: translateX(12px); background: var(--crust); }
+    .dt-switch:hover .dt-switch-label { color: var(--text); }
+    .inapp-devtools-body {
+      flex: 1; min-height: 0; overflow: auto;
+      font: 11px/1.55 var(--font-mono); color: var(--text);
+    }
+    .inapp-devtools-empty { padding: 24px; text-align: center; color: var(--overlay0); font: 11px var(--font-ui); }
+    /* When the drawer body hosts a relocated tool (Elements/Issues/Audit/Emulate),
+       give it the tool panel's comfortable padding + UI font instead of the
+       flush monospace log layout. */
+    .inapp-devtools-body.dt-tool-host { padding: 10px 12px; font: 12px var(--font-ui); }
+
+    /* Reader panel controls */
+    .rv-panel { display: flex; flex-direction: column; gap: 12px; max-width: 560px; }
+    .rv-status { display: flex; align-items: center; gap: 10px; }
+    .rv-status-icon { width: 22px; height: 22px; color: var(--accent); flex-shrink: 0; }
+    .rv-status-copy { flex: 1; min-width: 0; }
+    .rv-status-title { font: 600 13px var(--font-ui); color: var(--text); }
+    .rv-status-sub { font: 11px var(--font-ui); color: var(--subtext0); margin-top: 1px; }
+    .rv-toggle { background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius); color: var(--text); font: 12px var(--font-ui); padding: 5px 12px; cursor: pointer; flex-shrink: 0; }
+    .rv-toggle:hover { border-color: var(--accent); }
+    .rv-toggle.on { background: var(--accent); color: var(--crust); border-color: var(--accent); }
+    .rv-row { display: flex; align-items: center; gap: 10px; }
+    .rv-row-label { width: 54px; flex-shrink: 0; font: 10px var(--font-ui); color: var(--subtext0); text-transform: uppercase; letter-spacing: 0.04em; }
+    .rv-seg { display: inline-flex; background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius); overflow: hidden; }
+    .rv-seg-btn { background: transparent; border: 0; border-right: 1px solid var(--surface1); color: var(--subtext1); font: 12px var(--font-ui); padding: 5px 12px; cursor: pointer; }
+    .rv-seg-btn:last-child { border-right: 0; }
+    .rv-seg-btn:hover { color: var(--text); background: var(--surface1); }
+    .rv-seg-btn.active { background: var(--accent); color: var(--crust); }
+    .rv-actions { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; }
+    .rv-act-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius); color: var(--text); font: 12px var(--font-ui); padding: 5px 11px; cursor: pointer; }
+    .rv-act-btn:hover { border-color: var(--accent); }
+    .rv-act-btn i { width: 14px; height: 14px; }
+    .rv-act-primary { background: color-mix(in srgb, var(--accent) 16%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent); }
+    .rv-act-primary:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+
+    /* Console + log rows */
+    .dt-row {
+      display: flex; gap: 8px; align-items: baseline;
+      padding: 3px 10px; border-bottom: 1px solid rgba(127,127,127,0.08);
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .dt-row .dt-time { color: var(--overlay0); flex-shrink: 0; font-size: 10px; }
+    .dt-row .dt-text { flex: 1; min-width: 0; }
+    .dt-row.dt-error { background: color-mix(in srgb, var(--red) 9%, transparent); }
+    .dt-row.dt-error .dt-text { color: var(--red); }
+    .dt-row.dt-warning .dt-text { color: var(--yellow); }
+    .dt-row.dt-info .dt-text { color: var(--sapphire); }
+    .dt-row .dt-src { color: var(--overlay1); font-size: 10px; }
+
+    /* Network table */
+    .dt-net-head, .dt-net-row {
+      display: grid; grid-template-columns: 1fr 56px 70px 80px 70px;
+      gap: 8px; padding: 3px 10px; align-items: center;
+    }
+    .dt-net-head {
+      position: sticky; top: 28px; background: var(--crust); color: var(--subtext0);
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+      border-bottom: 1px solid var(--surface0); z-index: 1;
+    }
+    .dt-net-row { border-bottom: 1px solid rgba(127,127,127,0.08); cursor: pointer; }
+    .dt-net-row:hover { background: var(--surface0); }
+    .dt-net-row.dt-failed .dt-net-name { color: var(--red); }
+    .dt-net-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dt-net-col { color: var(--subtext0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dt-net-status.s2 { color: var(--green); }
+    .dt-net-status.s3 { color: var(--blue); }
+    .dt-net-status.s4 { color: var(--yellow); }
+    .dt-net-status.s5, .dt-net-status.sx { color: var(--red); }
+    .dt-net-detail {
+      grid-column: 1 / -1; background: var(--base); border-radius: var(--radius);
+      margin: 2px 0 6px; padding: 8px 10px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+    }
+    .dt-net-detail .dt-kv { color: var(--subtext0); }
+    .dt-net-detail .dt-kv b { color: var(--text); font-weight: 600; }
+    .dt-net-curl {
+      background: var(--surface1); border: 1px solid var(--surface2); border-radius: var(--radius);
+      color: var(--text); font: 10px var(--font-ui); padding: 2px 8px; cursor: pointer;
+    }
+    .dt-net-curl:hover { border-color: var(--accent); }
+    .dt-net-types {
+      position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px;
+      padding: 5px 10px; background: var(--mantle); border-bottom: 1px solid var(--surface0);
+    }
+    .dt-net-type {
+      background: transparent; border: 1px solid var(--surface1); border-radius: 999px;
+      color: var(--subtext0); font: 10px var(--font-ui); padding: 1px 9px; cursor: pointer;
+    }
+    .dt-net-type:hover { color: var(--text); }
+    .dt-net-type.active { background: var(--accent); color: var(--crust); border-color: var(--accent); }
+
+    /* Performance */
+    .dt-perf { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+    .dt-perf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .dt-perf-card { background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius); padding: 9px 11px; }
+    .dt-perf-card .dt-perf-val { font: 600 16px var(--font-mono); color: var(--text); }
+    .dt-perf-card .dt-perf-lbl { font: 10px var(--font-ui); color: var(--subtext0); margin-top: 2px; }
+    .dt-perf-section-title { font: 11px var(--font-ui); color: var(--subtext1); text-transform: uppercase; letter-spacing: 0.04em; }
+
+    /* Server log */
+    .dt-server { white-space: pre-wrap; word-break: break-word; padding: 6px 10px; }
+    .dt-server .dt-srv-line { color: var(--text); }
+    .dt-server .dt-srv-line.dt-err { color: var(--red); }
+    .dt-server .dt-srv-line.dt-warn { color: var(--yellow); }
+    .dt-server-hint { padding: 6px 10px; color: var(--overlay0); font: 10px var(--font-ui); border-bottom: 1px solid var(--surface0); }
+
+    /* Storage panel */
+    .dt-store-section { border-bottom: 1px solid var(--surface0); }
+    .dt-store-title {
+      display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+      font: 11px var(--font-ui); color: var(--subtext1); text-transform: uppercase; letter-spacing: 0.04em;
+      background: var(--crust); position: sticky; top: 0; z-index: 1;
+    }
+    .dt-store-title span { color: var(--overlay0); font-weight: 400; }
+    .dt-store-title .dt-net-curl { margin-left: auto; text-transform: none; letter-spacing: 0; }
+    .dt-store-row {
+      display: grid; grid-template-columns: minmax(120px, 1fr) 2fr 48px; gap: 8px;
+      padding: 3px 10px; align-items: center; border-bottom: 1px solid rgba(127,127,127,0.06);
+    }
+    .dt-store-key { color: var(--mauve); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dt-store-val { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dt-store-act { display: flex; gap: 2px; justify-content: flex-end; }
+    .dt-store-act button {
+      background: transparent; border: 0; color: var(--overlay1); cursor: pointer;
+      font-size: 13px; padding: 0 4px; line-height: 1;
+    }
+    .dt-store-act button:hover { color: var(--text); }
+    .dt-store-empty { padding: 6px 10px; color: var(--overlay0); font: 10px var(--font-ui); }
+
+    /* Console REPL row + input */
+    .dt-row.dt-input .dt-text { color: var(--subtext1); }
+    .dt-row.dt-input { background: rgba(127,127,127,0.04); }
+    .dt-row.dt-result .dt-text { color: var(--teal); }
+    .inapp-devtools-repl {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+      padding: 4px 10px; border-top: 1px solid var(--surface0); background: var(--crust);
+    }
+    .inapp-devtools-repl-caret { color: var(--teal); font: 14px var(--font-mono); }
+    .inapp-devtools-repl-input {
+      flex: 1; background: transparent; border: 0; outline: none;
+      color: var(--text); font: 11px var(--font-mono);
+    }
+    .inapp-devtools-repl-input::placeholder { color: var(--overlay0); }
+
+    /* Toolbar badge */
+    .inapp-devtools-badge {
+      font: 9px var(--font-mono); background: var(--red); color: var(--crust);
+      border-radius: 999px; padding: 0 4px; margin-left: 4px; min-width: 13px; text-align: center; line-height: 13px;
+    }
     .inapp-browser-zoom-inline {
       display: inline-flex; align-items: center; gap: 4px;
       padding: 2px; border-radius: 999px;
@@ -3524,6 +3780,14 @@
     .diffview-file:hover { background: var(--surface0); }
     .diffview-file.active { background: var(--surface0); color: var(--accent); }
     .diffview-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    /* Inline discard button on changed-file / diffview-file rows (reveals on hover). */
+    .cf-discard {
+      margin-left: auto; flex-shrink: 0; background: transparent; border: 0; cursor: pointer;
+      color: var(--overlay0); font-size: 13px; line-height: 1; padding: 0 5px; border-radius: var(--radius);
+      opacity: 0; transition: opacity 0.1s, color 0.1s, background 0.1s;
+    }
+    .changed-file:hover .cf-discard, .diffview-file:hover .cf-discard { opacity: 1; }
+    .cf-discard:hover { color: var(--red); background: rgba(242,139,130,0.14); }
     .tab-panel#panel-diffview.active { display: flex; }
 
     /* ── Pull Requests panel ─────────────────────────────────────────────── */
@@ -4955,3 +5219,59 @@
     .lg-cp-undo { background: transparent; border: 1px solid var(--surface2); color: var(--subtext1); border-radius: 6px; font-size: 10px; font-weight: 600; padding: 3px 9px; cursor: pointer; flex-shrink: 0; transition: all 0.12s; }
     .lg-cp-undo:hover { border-color: var(--accent); color: var(--accent); }
     .lg-cp-meta { font-size: 10px; color: var(--overlay1); margin-top: 5px; }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Accessibility (a11y) -- keyboard focus, skip link, SR-only, reduced motion.
+       Appended as one block so the additions are easy to find/audit.
+       ════════════════════════════════════════════════════════════════════ */
+
+    /* Visible keyboard-focus ring for EVERYTHING that doesn't already define one.
+       Many controls set `outline: none` for mouse users; :focus-visible only
+       fires for keyboard/AT focus, so this restores a visible indicator without
+       affecting click styling. Components with their own ring (e.g. .sy-btn)
+       keep it -- their more specific :focus-visible rule wins. */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 3px;
+    }
+
+    /* Skip-to-content link: first focusable element, off-screen until focused. */
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 100000;
+      background: var(--accent);
+      color: var(--crust);
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      font: 600 12px var(--font-ui);
+      text-decoration: none;
+      transform: translateY(-160%);
+      transition: transform 0.15s ease;
+    }
+    .skip-link:focus { transform: translateY(0); outline: 2px solid var(--text); outline-offset: 2px; }
+
+    /* Visually-hidden but available to screen readers (live region, labels). */
+    .sr-only {
+      position: absolute !important;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* Respect the user's reduced-motion preference: neutralise animations and
+       transitions (boot overlay, panel fades, smooth scrolling) for users who
+       opt out, without removing the end states. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+      }
+    }

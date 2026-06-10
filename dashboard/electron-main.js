@@ -9,6 +9,13 @@ trace.mark('main:module-eval');
 
 process.env.ELECTRON = '1';
 
+// Give the running process its own Windows app identity so the taskbar button,
+// pinning, and jump list use OUR icon (icon.ico) instead of falling back to the
+// electron.exe default. Must match build.appId in package.json. No-op off Windows.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.symphonee');
+}
+
 const PORT = 3800;
 const HOST = '127.0.0.1';
 
@@ -245,7 +252,7 @@ if (!gotLock) {
     // Browser tab instead of launching a system Edge/Chrome window. Safe to
     // call even if browser-agent was skipped (setter is a no-op then).
     try {
-      const { setActiveBrowserDriver } = require('./browser-agent');
+      const { setActiveBrowserDriver } = require('./agents/browser/browser-agent');
       setActiveBrowserDriver(internalWebviewDriver);
       console.log('  Browser automation bound to in-app webview');
     } catch (err) {

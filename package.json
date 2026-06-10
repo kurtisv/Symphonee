@@ -10,7 +10,11 @@
     "electron": "electron .",
     "dist": "electron-builder --win",
     "build:renderer": "node scripts/build-renderer.js",
-    "watch:renderer": "node scripts/build-renderer.js --watch"
+    "watch:renderer": "node scripts/build-renderer.js --watch",
+    "test": "npm run test:renderer",
+    "test:renderer": "node --test --test-force-exit \"scripts/*.test.js\" \"dashboard/public/**/*.test.js\"",
+    "test:server": "node --test --test-force-exit \"dashboard/*.test.js\" \"dashboard/!(public)/**/*.test.js\"",
+    "test:all": "npm run test:renderer && npm run test:server"
   },
   "dependencies": {
     "@browserbasehq/stagehand": "^3.2.1",

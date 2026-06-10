@@ -11,7 +11,8 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { gitAsync, gitSync } = require('../utils/git-async');
+const { gitAsync, gitSync, currentBranch } = require('../utils/git-async');
+const { resolveInRepo, isUnsafeGitRef } = require('../utils/safe-path');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -48,7 +49,7 @@ function mountGit(addRoute, json, ctx) {
     // heavy repos, and the legacy gitExec/gitSync would block the Electron main
     // process (server.js runs in it) for the duration -- the recurring freeze.
     let branch = '', status = '';
-    try { branch = await gitAsync(repoPath, 'rev-parse --abbrev-ref HEAD'); } catch (_) {}
+    try { branch = await currentBranch(repoPath); } catch (_) {}
     try { status = await gitAsync(repoPath, 'status --porcelain -u'); } catch (_) {}
     const statusMap = { 'M': 'modified', 'A': 'added', 'D': 'deleted', 'R': 'renamed', '?': 'new', 'U': 'conflict' };
     const statusLabel = { 'modified': 'M', 'added': 'A', 'deleted': 'D', 'renamed': 'R', 'new': 'N', 'conflict': 'U' };
@@ -98,8 +99,8 @@ function mountGit(addRoute, json, ctx) {
       if (!diff) diff = await g(`diff --ignore-cr-at-eol --cached -- "${filePath}"`);
       // For untracked/new files, show entire content as additions
       if (!diff) {
-        const fullPath = path.join(repoPath, filePath);
-        if (fs.existsSync(fullPath)) {
+        const fullPath = resolveInRepo(repoPath, filePath);
+        if (fullPath && fs.existsSync(fullPath)) {
           try {
             const content = fs.readFileSync(fullPath, 'utf8');
             const lines = content.split('\n');
@@ -118,8 +119,8 @@ function mountGit(addRoute, json, ctx) {
           .filter(l => l.startsWith('??'))
           .map(l => l.substring(3).replace(/\r$/, '').trim());
         for (const uf of untrackedFiles) {
-          const fullPath = path.join(repoPath, uf);
-          if (fs.existsSync(fullPath)) {
+          const fullPath = resolveInRepo(repoPath, uf);
+          if (fullPath && fs.existsSync(fullPath)) {
             try {
               const content = fs.readFileSync(fullPath, 'utf8');
               const lines = content.split('\n');
@@ -142,7 +143,7 @@ function mountGit(addRoute, json, ctx) {
 
     try {
       const data = await swrGit.get('branches:' + repoPath, async () => {
-        const current = await gitAsync(repoPath, 'rev-parse --abbrev-ref HEAD');
+        const current = await currentBranch(repoPath);
         const output = await gitAsync(repoPath, 'branch --format="%(refname:short)"');
         const branches = output ? output.split('\n').filter(Boolean) : [];
         return { current, branches };
@@ -177,6 +178,7 @@ function mountGit(addRoute, json, ctx) {
     const repoPath = getRepoPath(repoName);
     if (!repoPath) return json(res, { error: 'Repo not found' }, 400);
     if (!hash) return json(res, { error: 'hash required' }, 400);
+    if (isUnsafeGitRef(hash)) return json(res, { error: 'Invalid hash' }, 400);
 
     const pathArg = filePath ? ` -- "${filePath}"` : '';
     const g = async (cmd) => { try { return await gitAsync(repoPath, cmd); } catch (_) { return ''; } };
@@ -207,7 +209,7 @@ function mountGit(addRoute, json, ctx) {
         await gitAsync(repoPath, 'fetch --prune', { timeout: 30000 });
 
         const result = await gitAsync(repoPath, `checkout ${body.branch}`);
-        const current = await gitAsync(repoPath, 'rev-parse --abbrev-ref HEAD');
+        const current = await currentBranch(repoPath);
 
         // Pull latest changes after switching (best-effort, don't fail the checkout)
         let pullMsg = '';
@@ -237,7 +239,7 @@ function mountGit(addRoute, json, ctx) {
       await guard.run(`git:${repoPath}`, 'pull', async () => {
         await gitAsync(repoPath, 'fetch --prune', { timeout: 30000 });
         const result = await gitAsync(repoPath, 'pull', { timeout: 30000 });
-        const branch = await gitAsync(repoPath, 'rev-parse --abbrev-ref HEAD');
+        const branch = await currentBranch(repoPath);
         swrGit.clear();
         broadcast({ type: 'git-changed', repo: body.repo, branch });
         json(res, { ok: true, branch, message: result });
@@ -254,7 +256,7 @@ function mountGit(addRoute, json, ctx) {
       if (!repoPath) return json(res, { error: 'Repo not found' }, 400);
 
       await guard.run(`git:${repoPath}`, 'push', async () => {
-        const branch = await gitAsync(repoPath, 'rev-parse --abbrev-ref HEAD');
+        const branch = await currentBranch(repoPath);
         if (isUnsafeBranchName(branch)) {
           throw Object.assign(new Error('Current branch name is unsafe to use in git commands.'), { invalidBranch: true });
         }
@@ -293,7 +295,7 @@ function mountGit(addRoute, json, ctx) {
 
       await guard.run(`git:${repoPath}`, 'fetch', async () => {
         await gitAsync(repoPath, 'fetch --prune', { timeout: 30000 });
-        const current = await gitAsync(repoPath, 'rev-parse --abbrev-ref HEAD');
+        const current = await currentBranch(repoPath);
         const localOut = await gitAsync(repoPath, 'branch --format="%(refname:short)"');
         const remoteOut = await gitAsync(repoPath, 'branch -r --format="%(refname:short)"');
         const local = localOut ? localOut.split('\n').filter(Boolean) : [];
@@ -345,6 +347,7 @@ function mountGit(addRoute, json, ctx) {
     const base = url.searchParams.get('base') || 'HEAD';
     const repoPath = getRepoPath(repoName);
     if (!repoPath) return json(res, { error: 'Repo not found' }, 400);
+    if (isUnsafeGitRef(base)) return json(res, { error: 'Invalid base ref' }, 400);
 
     try {
       // Get the original version from git
@@ -361,9 +364,9 @@ function mountGit(addRoute, json, ctx) {
       } catch (_) { original = ''; }
 
       // Get the current version from disk
-      const fullPath = path.join(repoPath, filePath);
+      const fullPath = resolveInRepo(repoPath, filePath);
       let modified = '';
-      try { modified = fs.readFileSync(fullPath, 'utf8'); } catch (_) {}
+      try { if (fullPath) modified = fs.readFileSync(fullPath, 'utf8'); } catch (_) {}
 
       // Normalize line endings to LF so diff doesn't flag every line
       original = original.replace(/\r\n/g, '\n').replace(/\r/g, '\n');

@@ -1,0 +1,945 @@
+/**
+ * Apps Agent Chat - natural-language driver over any running Windows
+ * application via DesktopDriver (nut.js + PowerShell).
+ *
+ * Mirrors dashboard/browser-agent-chat.js: provider-agnostic tool-use
+ * loop with Anthropic / OpenAI-compatible / Gemini adapters, vision
+ * injection for screenshots, streaming where supported.
+ *
+ * Phase 2 scope: low-level pixel + keyboard tools only. Memory,
+ * research sub-tasks, and goal decomposition land in later phases.
+ */
+
+const { httpJson, httpJsonWithRetry, isAbortError } = require('./apps-chat-http');
+const { buildProviderRegistry, pickProvider } = require('./apps-chat-providers');
+const http = require('http');
+const memory = require('./apps-memory');
+const learning = require('./apps-learning-loop');
+const planner = require('./apps-goal-planner');
+const healer = require('./apps-self-healer');
+const { diffFrames } = require('./apps-frame-diff');
+
+// "Live view" capture: when the model calls screenshot after a pixel-level
+// input tool ran, poll until the frame actually differs from the one we last
+// showed, or until the wait budget is exhausted. Returning immediately on the
+// first delta makes the loop feel live without streaming video, and a
+// 'changed: false' readout tells the model its action was a no-op.
+const LIVE_POLL_INTERVAL_MS = 150;
+const LIVE_POLL_MAX_WAIT_MS = 1500;
+
+// Shared keep-alive agent. agent:false opens a fresh TCP+TLS handshake per
+// request, which on Windows occasionally surfaces a spurious
+// SSLV3_ALERT_BAD_RECORD_MAC when a handshake races a pending socket close.
+// Reusing sockets removes that window and cuts per-step latency too.
+
+// Hard cap so a runaway loop can't burn unlimited tokens, but high enough
+// that a multi-stage real task (search -> scroll -> pick -> confirm -> verify)
+// never trips it. Stuck detection via the learning loop catches earlier
+// repeats; this is just a safety net.
+const MAX_ITERATIONS = 500;
+
+// Canonical tool set for desktop control. Each provider adapter
+// translates to its own shape (the adapters live in apps-chat-providers).
+const DESKTOP_TOOLS = require('./apps-chat-tools');
+
+const BASE_SYSTEM_PROMPT = require('./apps-chat-prompt');
+
+function buildSystemPrompt({ targetApp, targetTitle, plan } = {}) {
+  let p = BASE_SYSTEM_PROMPT;
+  if (targetApp || targetTitle) {
+    p += `\n\n## Current target\n`;
+    if (targetApp) p += `App: ${targetApp}\n`;
+    if (targetTitle) p += `Window title: ${targetTitle}\n`;
+  }
+  if (targetApp) p += memory.buildSystemPromptAddition(targetApp);
+  if (plan) p += planner.summarizeForPrompt(plan);
+  return p;
+}
+
+// ---- HTTP helpers (same shape as browser-agent-chat) ----
+
+
+// ---- Tool dispatch (calls into apps-driver) ----
+
+// Input tools that send mouse / keyboard events to the OS. Before each of
+// these runs, we re-assert that the target window is the foreground one
+// so a stray click that landed outside (or a notification that stole focus)
+// can't redirect subsequent input into an unrelated window.
+// Pixel-coordinate input tools. UIA-targeted tools (click_element /
+// type_into_element) handle foreground enforcement themselves, so they are
+// NOT in this set — adding them would double-enforce.
+const INPUT_TOOLS = new Set(['click', 'mouse_move', 'drag', 'scroll', 'type_text', 'key']);
+
+async function executeTool(driver, session, name, args) {
+  args = args || {};
+  const hwnd = session.hwnd;
+  if (INPUT_TOOLS.has(name) && hwnd != null && typeof driver.ensureForeground === 'function') {
+    try {
+      await driver.ensureForeground(hwnd);
+    } catch (e) {
+      // Refusing to send input into the wrong window is critical: the agent
+      // would otherwise report "nothing changed" and loop forever. Surface
+      // the focus-stolen code so the model can react (retry via focus_window
+      // tool, call ask_user, or declare_stuck cleanly).
+      const err = new Error(e.message || 'focus enforcement failed');
+      err.code = e.code || 'focus_failed';
+      throw err;
+    }
+    session._pendingChange = true;
+  }
+  switch (name) {
+    case 'screenshot':
+      if (hwnd == null) throw new Error('no target window focused');
+      {
+        const started = Date.now();
+        let shot = await driver.screenshotWindow(hwnd, { format: 'jpeg', quality: 60 });
+        // Only poll for a real delta when the model just issued an input tool.
+        // Back-to-back screenshots (no action between) return immediately.
+        if (session._pendingChange && session.lastShotBase64 && shot && shot.base64) {
+          let diff = await diffFrames(session.lastShotBase64, shot.base64);
+          while (!diff.changed && !session.stopped && (Date.now() - started) < LIVE_POLL_MAX_WAIT_MS) {
+            await new Promise(r => setTimeout(r, LIVE_POLL_INTERVAL_MS));
+            const next = await driver.screenshotWindow(hwnd, { format: 'jpeg', quality: 60 });
+            if (!next || !next.base64) break;
+            shot = next;
+            diff = await diffFrames(session.lastShotBase64, shot.base64);
+          }
+          shot.changed = diff.changed;
+          shot.diffScore = diff.score;
+          shot.waitedMs = Date.now() - started;
+        }
+        if (shot && shot.rect) session.lastShotRect = shot.rect;
+        if (shot && shot.base64) session.lastShotBase64 = shot.base64;
+        session._pendingChange = false;
+        return shot;
+      }
+    case 'describe_window': {
+      if (hwnd == null) throw new Error('no target window focused');
+      const cap = Math.min(2000, Math.max(50, Number(args.maxNodes) || 400));
+      try {
+        const tree = await driver.uiaTree(hwnd, { maxNodes: cap });
+        const nodes = (tree && tree.nodes) || [];
+        // Tag each node with a stable uid so the agent can refer back without
+        // restating the full selector. Hash of (type|name|automationId|depth)
+        // collides only when two siblings are genuinely indistinguishable.
+        for (const n of nodes) {
+          const seed = `${n.type || ''}|${n.name || ''}|${n.automationId || ''}|${n.depth || 0}`;
+          n.uid = 'uia_' + require('crypto').createHash('md5').update(seed).digest('hex').slice(0, 10);
+        }
+        // Seed the delta baseline so the next mutating action's
+        // _postUiaDelta is computed against this snapshot.
+        session._lastUiaUids = new Set(nodes.map(n => n.uid));
+        return { ok: true, nodes, truncated: !!(tree && tree.truncated), count: nodes.length };
+      } catch (e) {
+        return { ok: false, error: e.message, hint: 'window may be non-automatable; fall back to screenshot' };
+      }
+    }
+    case 'click_element': {
+      if (hwnd == null) throw new Error('no target window focused');
+      if (!args.selector || typeof args.selector !== 'object') throw new Error('click_element requires a selector object');
+      try {
+        await driver.ensureForeground(hwnd);
+      } catch (e) {
+        const err = new Error(e.message || 'focus enforcement failed');
+        err.code = e.code || 'focus_failed';
+        throw err;
+      }
+      // Try Invoke pattern first (deterministic, no mouse movement). Fall back
+      // to find + click center coordinates.
+      const invoked = await driver.invokeUIAElement(hwnd, args.selector);
+      if (invoked && invoked.ok) {
+        session._pendingChange = true;
+        session.actionLog = session.actionLog || [];
+        session.actionLog.push({ verb: 'CLICK_ELEMENT', target: { selector: args.selector, via: 'uia-invoke', name: invoked.name, type: invoked.type }, attemptN: 1, outcome: 'ok', ts: Date.now() });
+        return { ok: true, via: 'invoke', pattern: invoked.pattern, name: invoked.name, type: invoked.type };
+      }
+      let hit = await driver.findUIAElement(hwnd, args.selector);
+      if (!hit) {
+        // Self-heal: try relaxed selectors, then vision fallback. On heal
+        // success the action log is rewritten with the recovered selector
+        // so the next run skips the heal.
+        session.actionLog = session.actionLog || [];
+        session.actionLog.push({ verb: 'CLICK_ELEMENT', target: { selector: args.selector, via: 'uia-find' }, attemptN: 1, outcome: 'miss', ts: Date.now() });
+        const description = [args.selector.name, args.selector.type, 'in', session.app || 'window'].filter(Boolean).join(' ');
+        const healed = await healer.heal({ driver, session, op: 'find', selector: args.selector, description });
+        if (healed.ok) {
+          session._pendingChange = true;
+          session.actionLog.push({ verb: 'CLICK_ELEMENT', target: { selector: healed.selector || healed.recoveredSelector || args.selector, via: 'healed-tier-' + healed.tier, xy: healed.xy }, attemptN: 2, outcome: 'healed', ts: Date.now() });
+          return { ok: true, via: 'healed', tier: healed.tier, x: (healed.xy && healed.xy.x) || null, y: (healed.xy && healed.xy.y) || null, recoveredSelector: healed.recoveredSelector || null };
+        }
+        const err = new Error('no element matched selector (heal failed)'); err.code = 'uia_miss'; throw err;
+      }
+      // Sandboxed targets cannot receive SendInput — route the click via
+      // PostMessage WM_LBUTTONDOWN/UP so it lands in the off-screen Spotify
+      // / Chromium-button instead of the user's foreground app. For
+      // non-sandboxed targets, the original nut-js click stays (faster +
+      // more compatible with weird input handlers).
+      if (typeof driver.isSandboxedHwnd === 'function' && driver.isSandboxedHwnd(hwnd)) {
+        const r = await driver.postMessageClick(hwnd, hit.x, hit.y);
+        if (!r || !r.ok) {
+          const err = new Error('sandboxed PostMessage click failed: ' + (r && r.reason || 'unknown'));
+          err.code = 'sandboxed_click_failed'; throw err;
+        }
+        session._pendingChange = true;
+        session.actionLog = session.actionLog || [];
+        session.actionLog.push({ verb: 'CLICK_ELEMENT', target: { selector: args.selector, via: 'postmessage', name: hit.meta && hit.meta.name, type: hit.meta && hit.meta.type, xy: { x: hit.x, y: hit.y }, target_hwnd: r.hwnd_target }, attemptN: 1, outcome: 'ok', ts: Date.now() });
+        return { ok: true, via: 'postmessage', x: hit.x, y: hit.y, name: hit.meta && hit.meta.name, type: hit.meta && hit.meta.type };
+      }
+      await driver.click(hit.x, hit.y, { hwnd });
+      session._pendingChange = true;
+      session.actionLog = session.actionLog || [];
+      session.actionLog.push({ verb: 'CLICK_ELEMENT', target: { selector: args.selector, via: 'uia-find+click', name: hit.meta && hit.meta.name, type: hit.meta && hit.meta.type, xy: { x: hit.x, y: hit.y } }, attemptN: 1, outcome: 'ok', ts: Date.now() });
+      return { ok: true, via: 'find+click', x: hit.x, y: hit.y, name: hit.meta && hit.meta.name, type: hit.meta && hit.meta.type, degraded: hit.meta && hit.meta.degraded || null };
+    }
+    case 'type_into_element': {
+      if (hwnd == null) throw new Error('no target window focused');
+      if (!args.selector || typeof args.selector !== 'object') throw new Error('type_into_element requires a selector');
+      const text = String(args.text == null ? '' : args.text);
+      try {
+        await driver.ensureForeground(hwnd);
+      } catch (e) {
+        const err = new Error(e.message || 'focus enforcement failed');
+        err.code = e.code || 'focus_failed';
+        throw err;
+      }
+      // Sandbox-aware path: prefer UIA ValuePattern.SetValue, which doesn't
+      // synthesize keystrokes (so the off-screen target gets the text instead
+      // of the user's foreground app) and is faster anyway. Pixel
+      // click+type is blocked on sandboxed hwnds for safety. We try
+      // UIA-value first for ALL targets (even non-sandboxed) since it's
+      // strictly better when the element supports ValuePattern.
+      if (typeof driver.setUIAValue === 'function') {
+        const v = await driver.setUIAValue(hwnd, args.selector, text);
+        if (v && v.ok) {
+          session._pendingChange = true;
+          session.actionLog = session.actionLog || [];
+          session.actionLog.push({ verb: 'TYPE_INTO_ELEMENT', target: { selector: args.selector, via: 'uia-value', name: v.name, type: v.type }, text, attemptN: 1, outcome: 'ok', ts: Date.now() });
+          return { ok: true, via: 'uia-value', name: v.name, charsTyped: v.chars };
+        }
+        // ValuePattern unsupported; if sandboxed we can't fall back to
+        // pixel input — surface a typed error so the agent can adapt
+        // (e.g. ask user to release sandbox, or pick a different field).
+        if (typeof driver.isSandboxedHwnd === 'function' && driver.isSandboxedHwnd(hwnd)) {
+          const err = new Error(`type_into_element: target element does not support UIA ValuePattern (${v && v.reason || 'unknown'}) and pixel input is blocked on sandboxed windows. Try a sibling input element or release the sandbox.`);
+          err.code = 'uia_value_unsupported_in_sandbox'; throw err;
+        }
+        // Non-sandboxed: fall through to legacy click+type path below.
+      }
+      // Legacy: click the element to focus it, then type. SetFocus via UIA
+      // isn't universally supported, so a click is the most portable focus
+      // path. Pixel-only — driver.click will refuse if sandboxed.
+      const hit = await driver.findUIAElement(hwnd, args.selector);
+      if (!hit) {
+        const err = new Error('no element matched selector'); err.code = 'uia_miss'; throw err;
+      }
+      await driver.click(hit.x, hit.y, { hwnd });
+      await driver.type(text, { hwnd });
+      session._pendingChange = true;
+      session.actionLog = session.actionLog || [];
+      session.actionLog.push({ verb: 'TYPE_INTO_ELEMENT', target: { selector: args.selector, via: 'uia-focus+type', name: hit.meta && hit.meta.name }, text, attemptN: 1, outcome: 'ok', ts: Date.now() });
+      return { ok: true, name: hit.meta && hit.meta.name, charsTyped: text.length };
+    }
+    case 'wait_for_element': {
+      if (hwnd == null) throw new Error('no target window focused');
+      if (!args.selector || typeof args.selector !== 'object') throw new Error('wait_for_element requires a selector');
+      const timeoutMs = Math.min(30000, Math.max(250, Number(args.timeoutMs) || 5000));
+      const r = await driver.waitForUIAElement(hwnd, args.selector, { timeoutMs });
+      session.actionLog = session.actionLog || [];
+      session.actionLog.push({ verb: 'WAIT_FOR_ELEMENT', target: { selector: args.selector }, attemptN: 1, outcome: r.hit ? 'ok' : 'timeout', waitedMs: r.waitedMs, ts: Date.now() });
+      return r;
+    }
+    case 'read_element': {
+      if (hwnd == null) throw new Error('no target window focused');
+      if (!args.selector || typeof args.selector !== 'object') throw new Error('read_element requires a selector');
+      const r = await driver.readUIAElement(hwnd, args.selector);
+      return r;
+    }
+    case 'list_windows':
+      return await driver.listWindows({ force: true });
+    case 'focus_window': {
+      const r = await driver.focusWindow(args.hwnd);
+      session.hwnd = args.hwnd;
+      session.title = r.title;
+      return r;
+    }
+    case 'click': {
+      if (hwnd == null) throw new Error('no target window focused');
+      // If the window has moved more than a tolerance since the last
+      // screenshot, refuse the click so the agent takes a fresh screenshot
+      // instead of clicking where the window USED to be.
+      if (session.lastShotRect) {
+        await driver.verifyStableRect(hwnd, session.lastShotRect);
+      }
+      return await driver.click(args.x, args.y, { hwnd, button: args.button, double: !!args.double });
+    }
+    case 'mouse_move':
+      if (hwnd == null) throw new Error('no target window focused');
+      return await driver.mouseMove(args.x, args.y, { hwnd, smooth: !!args.smooth });
+    case 'drag':
+      if (hwnd == null) throw new Error('no target window focused');
+      return await driver.drag(args.fromX, args.fromY, args.toX, args.toY, { hwnd });
+    case 'scroll':
+      if (hwnd == null) throw new Error('no target window focused');
+      return await driver.scroll(args.dx || 0, args.dy || 0, { hwnd });
+    case 'type_text':
+      if (hwnd == null) throw new Error('no target window focused');
+      return await driver.type(args.text, { hwnd });
+    case 'key':
+      if (hwnd == null) throw new Error('no target window focused');
+      return await driver.key(args.combo, { hwnd });
+    case 'wait_ms':
+      return await driver.waitMs(args.ms);
+    case 'calibrate_mouse_look':
+      if (hwnd == null) throw new Error('no target window focused');
+      return await driver.calibrateMouseLook({ hwnd, testDeltaPx: args.testDeltaPx });
+    case 'declare_stuck': {
+      // DO NOT write the stuck reason to memory. Stuck reasons are almost
+      // always self-narrative noise ("Reached N stuck declarations", "UI did
+      // not respond to clicks") that poisons future sessions by making the
+      // agent preemptively give up. Real don't-do learnings come from the
+      // write_memory tool when the agent explicitly decides something is
+      // worth recording. Keep the file clean.
+      return { ok: true, stuck: true, reason: args.reason || '' };
+    }
+    case 'web_research': {
+      const query = String(args.query || '').trim();
+      if (!query) throw new Error('web_research requires a query');
+      // Delegate to the same research helper used by the stuck-handler, but
+      // scope the question to whatever the agent is asking right now. Live
+      // providers (Gemini Live, OpenAI Realtime) use a stub adapter that
+      // can't run a classic text turn, so live runners stash a batch-mode
+      // counterpart on the session for research to use.
+      const providerEntry = session._researchProviderEntry || session._providerEntry;
+      const model = session._researchModel || session._model;
+      if (!providerEntry) return { ok: false, error: 'No provider bound to session for research.' };
+      const research = await require('./apps-learning-loop').runResearch({
+        session, providerEntry, model,
+        goal: query,
+        reason: 'proactive web research',
+      });
+      if (typeof session._emit === 'function') {
+        session._emit({ kind: 'research', provider: research.provider, summary: research.summary });
+      }
+      return { ok: true, summary: research.summary, provider: research.provider };
+    }
+    case 'ask_user': {
+      const question = String(args.question || '').trim();
+      if (!question) throw new Error('ask_user requires a question');
+      // Parked promise — resolved when the user POSTs /api/apps/session/answer.
+      // Times out after 5 minutes so a forgotten prompt doesn't hang forever.
+      return await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          session._pendingAsk = null;
+          resolve({ ok: false, timedOut: true, message: 'No answer in 5 minutes. Continue without user input or call declare_stuck.' });
+        }, 5 * 60 * 1000);
+        session._pendingAsk = {
+          question,
+          resolve: (answer) => {
+            clearTimeout(timer);
+            session._pendingAsk = null;
+            resolve({ ok: true, answer: String(answer || '').trim() });
+          },
+        };
+        // Emit so the UI can render an inline input.
+        if (typeof session._emit === 'function') {
+          session._emit({ kind: 'ask', question });
+        }
+      });
+    }
+    case 'write_memory': {
+      const app = session.app;
+      if (!app) throw new Error('no app identified for this session; writeMemory needs an app');
+      const r = memory.appendSection(app, String(args.section || '').trim(), String(args.note || '').trim());
+      // Live Mind sync: every write_memory call pushes the per-app memory
+      // file into the brain so a different CLI can pick up the new note
+      // without waiting for the next /api/mind/build.
+      try {
+        const http = require('http');
+        const filePath = (r && r.path) || (typeof memory.filePath === 'function' ? memory.filePath(app) : null);
+        if (filePath) {
+          const payload = JSON.stringify({
+            path: filePath,
+            label: `${app} memory`,
+            kind: 'doc',
+            createdBy: 'apps-agent-memory',
+            tags: ['app-memory', app],
+          });
+          const mreq = http.request({
+            host: '127.0.0.1', port: 3800, path: '/api/mind/add', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+          }, (mres) => { mres.resume(); });
+          mreq.on('error', () => {});
+          mreq.write(payload); mreq.end();
+        }
+      } catch (_) {}
+      return r;
+    }
+    case 'read_memory': {
+      const app = session.app;
+      if (!app) throw new Error('no app identified for this session; readMemory needs an app');
+      return { app: memory.normalizeApp(app), body: memory.loadMemory(app) };
+    }
+    case 'set_subgoal': {
+      if (!session.plan) session.plan = planner.createEmptyPlan(session.goal);
+      const sg = planner.addSubgoal(session.plan, {
+        id: args.id, title: args.title, completionCheck: args.completionCheck,
+        parentId: args.parentId, status: args.status,
+      });
+      return { ok: true, subgoal: sg, activeId: session.plan.activeId };
+    }
+    case 'complete_subgoal': {
+      if (!session.plan) throw new Error('no plan on this session; call set_subgoal first');
+      const id = args.id || session.plan.activeId;
+      if (!id) throw new Error('no active subgoal to complete');
+      return planner.completeSubgoal(session.plan, id, args.evidence);
+    }
+    case 'finish': {
+      // Only record the final summary to memory when it looks like an
+      // ACTUAL success. Reject summaries that read as failure narration so
+      // the memory file keeps its signal-to-noise ratio.
+      const summary = String(args.summary || '').trim();
+      const looksLikeFailure = !summary || /\b(stuck|unable|cannot|could not|didn't work|did not work|gave up|handed off|reached \d+|failed|blocked|no progress|not respond)\b/i.test(summary);
+      if (session.app && summary && !looksLikeFailure) {
+        try {
+          memory.appendSection(session.app, 'Successful workflows',
+            `"${(session.goal || '').slice(0, 80)}": ${summary.slice(0, 320)}`);
+        } catch (_) {}
+      }
+      return { ok: true, finished: true, summary };
+    }
+    default:
+      throw new Error('unknown tool: ' + name);
+  }
+}
+
+function describeAction(name, args) {
+  args = args || {};
+  switch (name) {
+    case 'screenshot': return 'Screenshot';
+    case 'list_windows': return 'List windows';
+    case 'focus_window': return `Focus hwnd=${args.hwnd}`;
+    case 'click': return `Click (${args.x}, ${args.y})${args.double ? ' x2' : ''}${args.button && args.button !== 'left' ? ` ${args.button}` : ''}`;
+    case 'mouse_move': return `Move to (${args.x}, ${args.y})${args.smooth ? ' smooth' : ''}`;
+    case 'drag': return `Drag (${args.fromX}, ${args.fromY}) -> (${args.toX}, ${args.toY})`;
+    case 'scroll': return `Scroll dx=${args.dx || 0} dy=${args.dy || 0}`;
+    case 'type_text': return `Type "${String(args.text || '').slice(0, 40)}"`;
+    case 'key': return `Key ${args.combo}`;
+    case 'wait_ms': return `Wait ${args.ms}ms`;
+    case 'calibrate_mouse_look': return `Calibrate mouse look (${args.testDeltaPx || 200}px)`;
+    case 'declare_stuck': return `Declare stuck: ${args.reason || ''}`;
+    case 'write_memory': return `Memory <- [${args.section || '?'}] ${String(args.note || '').slice(0, 60)}`;
+    case 'read_memory': return 'Read memory';
+    case 'set_subgoal': return `Subgoal: ${String(args.title || '').slice(0, 60)}${args.status ? ' (' + args.status + ')' : ''}`;
+    case 'complete_subgoal': return `Complete subgoal${args.id ? ' ' + args.id : ''}${args.evidence ? ': ' + String(args.evidence).slice(0, 40) : ''}`;
+    case 'finish': return `Finish: ${String(args.summary || '').slice(0, 80)}`;
+    default: return name;
+  }
+}
+
+// ---- Session + runner ----
+
+class AppsSession {
+  constructor(id) {
+    this.id = id;
+    this.providerKind = null;
+    this.messages = [];
+    this.hwnd = null;
+    this.app = null;
+    this.title = null;
+    this.goal = null;
+    this.stopped = false;
+    this.running = false;
+    this.abortController = null;
+    this.createdAt = Date.now();
+  }
+}
+
+const sessions = new Map();
+function getSession(id) {
+  if (!sessions.has(id)) sessions.set(id, new AppsSession(id));
+  return sessions.get(id);
+}
+
+function pruneSessions() {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [id, s] of sessions) {
+    if (!s.running && s.createdAt < cutoff) sessions.delete(id);
+  }
+}
+
+async function runSession({ session, task, driver, providerEntry, model, broadcast }) {
+  session.running = true;
+  const emit = (step) => {
+    if (typeof broadcast === 'function') {
+      // Include session.app and session.title on every frame so the
+      // multi-session strip in the UI can label chips even before it sees
+      // a session/start response (events for a brand-new session id may
+      // arrive before the strip has any other context).
+      broadcast({
+        type: 'apps-agent-step',
+        sessionId: session.id,
+        app: session.app || null,
+        title: session.title || null,
+        hwnd: session.hwnd || null,
+        ...step,
+        at: Date.now(),
+      });
+    }
+    // Session-scoped terminal listener (used by /api/apps/do to block on
+    // completion). Best-effort, does not affect normal operation.
+    try {
+      if (typeof session._terminalListener === 'function') session._terminalListener(step);
+    } catch (_) {}
+  };
+  session._emit = emit; // so executeTool (ask_user) can push UI events too.
+  session._providerEntry = providerEntry;
+  session._model = model;
+  emit({ kind: 'provider', provider: providerEntry.adapter.kind, label: providerEntry.adapter.label });
+
+  if (session.app) {
+    try { memory.bumpSession(session.app); } catch (_) {}
+    try {
+      const body = memory.loadMemory(session.app) || '';
+      const bytes = Buffer.byteLength(body, 'utf8');
+      emit({ kind: 'memory_loaded', app: memory.normalizeApp(session.app), bytes, hasInstructions: /##\s*Instructions[\s\S]*?\S/i.test(body) });
+    } catch (_) {}
+  } else {
+    emit({ kind: 'memory_loaded', app: null, bytes: 0, hasInstructions: false, reason: 'no app key on session' });
+  }
+
+  // Decompose the goal into subgoals. Best-effort; if decomposition fails
+  // we still run the session as a single flat goal.
+  if (!session.plan) session.plan = planner.createEmptyPlan(session.goal || task);
+  if (session.plan.subgoals.length === 0 && session.goal) {
+    try {
+      const subs = await planner.decompose({ goal: session.goal, app: session.app, providerEntry, model });
+      if (Array.isArray(subs) && subs.length) {
+        for (const s of subs) planner.addSubgoal(session.plan, { title: s.title, completionCheck: s.completionCheck });
+        emit({ kind: 'plan', subgoals: session.plan.subgoals.map(s => ({ id: s.id, title: s.title, completionCheck: s.completionCheck, status: s.status })), activeId: session.plan.activeId });
+      }
+    } catch (_) {}
+  }
+
+  const systemPrompt = buildSystemPrompt({ targetApp: session.app, targetTitle: session.title, plan: session.plan });
+
+  // Reset thread state when provider changes.
+  if (session.providerKind !== providerEntry.adapter.kind) {
+    session.messages = providerEntry.adapter.initMessages(task);
+    session.providerKind = providerEntry.adapter.kind;
+  } else {
+    if (providerEntry.adapter.kind === 'gemini') session.messages.push({ role: 'user', parts: [{ text: task }] });
+    else session.messages.push({ role: 'user', content: task });
+  }
+  emit({ kind: 'user', text: task });
+
+  let iter = 0;
+  let finalSummary = null;
+  // Hoisted so the auto-promote pass at the end of the run can read it
+  // after the iteration loop exits. Each iteration's per-turn stuck flag
+  // assigns into this same binding.
+  let lastStuckSignal = null;
+  const recentActions = [];
+  try {
+    while (iter < MAX_ITERATIONS) {
+      if (session.stopped) { emit({ kind: 'stopped' }); break; }
+      iter++;
+      emit({ kind: 'thinking', iter });
+      let resp;
+      try {
+        session.abortController = new AbortController();
+        if (typeof providerEntry.adapter.callStream === 'function') {
+          resp = await providerEntry.adapter.callStream({
+            messages: session.messages, apiKey: providerEntry.apiKey, model,
+            systemPrompt, signal: session.abortController.signal,
+          }, (delta) => emit({ kind: 'token', text: delta }));
+        } else {
+          resp = await providerEntry.adapter.call({
+            messages: session.messages, apiKey: providerEntry.apiKey, model,
+            systemPrompt, signal: session.abortController.signal,
+          });
+        }
+      } catch (e) {
+        if (session.stopped && isAbortError(e)) { emit({ kind: 'stopped' }); return { ok: true, stopped: true }; }
+        emit({ kind: 'error', message: providerEntry.adapter.label + ' API error: ' + e.message });
+        session.running = false;
+        return { ok: false, error: e.message };
+      } finally {
+        session.abortController = null;
+      }
+
+      if (resp.text) emit({ kind: 'message', text: resp.text });
+      providerEntry.adapter.appendAssistant(session.messages, resp.raw);
+
+      if (!resp.toolCalls.length) {
+        finalSummary = resp.text || 'Done.';
+        break;
+      }
+
+      const pairs = [];
+      let finished = false;
+      let stuckSignal = null;
+      // Mirror per-iteration stuck signal into the outer-scope flag so the
+      // auto-promote pass at end-of-run can decide whether to save a recipe.
+      const _propagateStuck = () => { if (stuckSignal) lastStuckSignal = stuckSignal; };
+      const lastActionsForObserver = [];
+      for (const tc of resp.toolCalls) {
+        if (session.stopped) break;
+        emit({ kind: 'action', tool: tc.name, args: tc.args, summary: describeAction(tc.name, tc.args) });
+        const actionKey = tc.name + ':' + JSON.stringify(tc.args);
+        recentActions.push(actionKey);
+        if (recentActions.length > 6 && recentActions.slice(-4).every(a => a === actionKey)) {
+          emit({ kind: 'observation', tool: tc.name, ok: false, error: 'Loop detected: same action repeated. Stopping.' });
+          finalSummary = 'Stopped: the same action was repeated without progress.';
+          finished = true; break;
+        }
+        // Retry-with-variation guard: if this exact call recently failed,
+        // reject it before executing so the model must try something new.
+        const dup = learning.alreadyFailedIdentically(session, tc.name, tc.args);
+        if (dup) {
+          const msg = `Already tried ${tc.name} with these exact args and it failed. Try a different approach (different coordinates, a different tool, or declare_stuck).`;
+          const errBlock = providerEntry.adapter.kind === 'anthropic' ? [{ type: 'text', text: msg }] : msg;
+          pairs.push({ toolUseId: tc.id, name: tc.name, blocks: errBlock, isError: true });
+          emit({ kind: 'observation', tool: tc.name, ok: false, error: msg, code: 'already_tried' });
+          learning.trackTry(session, tc.name, tc.args);
+          lastActionsForObserver.push({ tool: tc.name, summary: describeAction(tc.name, tc.args), ok: false, error: 'already_tried' });
+          // Persist the failing call so future sessions skip it without
+          // rediscovering the dead end every time. Only once per unique key.
+          if (session.app && !(session._dontRetryNoted || (session._dontRetryNoted = new Set())).has(dup.key)) {
+            session._dontRetryNoted.add(dup.key);
+            try {
+              memory.appendSection(session.app, "DON'T DOs",
+                `${describeAction(tc.name, tc.args)} — failed identically twice, use a different tool or coordinates.`);
+            } catch (_) {}
+          }
+          continue;
+        }
+        try {
+          learning.trackTry(session, tc.name, tc.args);
+          let result = await executeTool(driver, session, tc.name, tc.args);
+          learning.recordOutcome(session, tc.name, tc.args, true);
+          // Auto-refresh the UIA tree after every UI-mutating action so the
+          // model SEES the new state — buttons that just appeared, dialogs
+          // that opened, items that loaded — without having to call
+          // describe_window manually. We diff against the prior snapshot
+          // and attach a compact delta (added/removed UIDs + a short list
+          // of newly-visible interactables) to the tool result.
+          const MUTATING_TOOLS = new Set([
+            'click', 'click_element', 'type_text', 'type_into_element',
+            'key', 'scroll', 'drag', 'mouse_move',
+          ]);
+          if (MUTATING_TOOLS.has(tc.name) && session.hwnd != null && result && !result.error) {
+            try {
+              await new Promise(r => setTimeout(r, 350)); // let UI settle
+              const fresh = await driver.uiaTree(session.hwnd, { maxNodes: 300 });
+              const freshNodes = (fresh && fresh.nodes) || [];
+              const crypto = require('crypto');
+              const tag = (n) => 'uia_' + crypto.createHash('md5').update(`${n.type || ''}|${n.name || ''}|${n.automationId || ''}|${n.depth || 0}`).digest('hex').slice(0, 10);
+              const freshUids = new Set(freshNodes.map(tag));
+              const prevUids = session._lastUiaUids instanceof Set ? session._lastUiaUids : new Set();
+              const addedUids = [...freshUids].filter(u => !prevUids.has(u));
+              const removedUids = [...prevUids].filter(u => !freshUids.has(u));
+              const interactables = freshNodes
+                .filter(n => n.invokable || /Button|MenuItem|TabItem|Hyperlink|ListItem|TreeItem|RadioButton|CheckBox|ComboBox|Edit/i.test(n.type || ''))
+                .filter(n => n.name && n.name.length)
+                .slice(0, 60)
+                .map(n => ({ uid: tag(n), name: n.name, type: n.type, automationId: n.automationId || undefined }));
+              session._lastUiaUids = freshUids;
+              result = Object.assign({}, result, {
+                _postUiaDelta: {
+                  addedCount: addedUids.length,
+                  removedCount: removedUids.length,
+                  totalElements: freshNodes.length,
+                  truncated: !!(fresh && fresh.truncated),
+                  interactables,
+                  hint: 'Window state refreshed after your action. Use the elements above for the next click/type — call describe_window only if you need the full tree.',
+                },
+              });
+            } catch (_) { /* uia not available — leave result unchanged */ }
+          }
+          // Successful action: progress, not an attempt. Attempt counts
+          // only increment for failures (see catch branch below).
+          // Broadcast plan updates after set_subgoal / complete_subgoal.
+          if ((tc.name === 'set_subgoal' || tc.name === 'complete_subgoal') && session.plan) {
+            emit({ kind: 'plan', subgoals: session.plan.subgoals.map(s => ({ id: s.id, title: s.title, completionCheck: s.completionCheck, status: s.status, evidence: s.evidence, attempts: s.attempts })), activeId: session.plan.activeId });
+            // Reset the auto-stuck latch when a subgoal completes so the
+            // next subgoal gets its own budget.
+            if (tc.name === 'complete_subgoal') session._autoStuckFired = false;
+          }
+          pairs.push({
+            toolUseId: tc.id, name: tc.name,
+            blocks: providerEntry.adapter.buildToolResultBlocks(tc.name, result),
+            isError: false,
+            visionData: (tc.name === 'screenshot' && result && result.base64)
+              ? { base64: result.base64, mimeType: result.mimeType || 'image/jpeg' } : null,
+          });
+          // Broadcast screenshots so the UI can show the live view even
+          // when the tool result itself is consumed by the model.
+          if (tc.name === 'screenshot' && result && result.base64) {
+            emit({
+              kind: 'screenshot',
+              base64: result.base64,
+              mimeType: result.mimeType || 'image/jpeg',
+              width: result.width,
+              height: result.height,
+              rect: result.rect,
+              changed: result.changed,
+              diffScore: result.diffScore,
+              waitedMs: result.waitedMs,
+            });
+            learning.noteScreenshot(session, result);
+          }
+          learning.noteAction(session, tc.name);
+          // Record successful input-level actions so the user can later
+          // export the session as a reusable recipe. Both pixel-level and
+          // UIA-targeted tools are captured — the UIA ones produce stable
+          // recipe steps without coordinate drift.
+          const RECORDABLE = ['click', 'type_text', 'key', 'scroll', 'drag', 'wait_ms',
+                              'click_element', 'type_into_element', 'wait_for_element'];
+          if (RECORDABLE.includes(tc.name)) {
+            if (!Array.isArray(session._recordedActions)) session._recordedActions = [];
+            session._recordedActions.push({
+              name: tc.name,
+              args: tc.args || {},
+              result: result && typeof result === 'object' ? {
+                via: result.via, name: result.name, type: result.type,
+                x: result.x, y: result.y, hit: result.hit,
+              } : null,
+              at: Date.now(),
+            });
+          }
+          lastActionsForObserver.push({ tool: tc.name, summary: describeAction(tc.name, tc.args), ok: true });
+          emit({ kind: 'observation', tool: tc.name, ok: true, preview: summarizeResultForUi(tc.name, result) });
+          if (tc.name === 'finish') { finished = true; finalSummary = (tc.args && tc.args.summary) || 'Done.'; break; }
+          if (tc.name === 'declare_stuck') {
+            // declare_stuck is terminal. Ending here is what lets the user
+            // actually take over instead of the agent looping on "I am stuck"
+            // while burning tokens. The reason goes into the done summary.
+            const reason = (tc.args && tc.args.reason) || 'declared stuck';
+            stuckSignal = reason;
+            finished = true;
+            finalSummary = `Stopped for user takeover. ${reason}`;
+            emit({ kind: 'stuck', reason });
+            break;
+          }
+        } catch (e) {
+          learning.recordOutcome(session, tc.name, tc.args, false);
+          const errText = 'Error: ' + (e.message || String(e)) + (e.code ? ` (${e.code})` : '');
+          const errBlock = providerEntry.adapter.kind === 'anthropic' ? [{ type: 'text', text: errText }] : errText;
+          pairs.push({ toolUseId: tc.id, name: tc.name, blocks: errBlock, isError: true });
+          emit({ kind: 'observation', tool: tc.name, ok: false, error: e.message, code: e.code || null });
+          lastActionsForObserver.push({ tool: tc.name, summary: describeAction(tc.name, tc.args), ok: false, error: e.message });
+          // Failed tool against the current subgoal counts toward its
+          // attempt budget; trip auto-stuck when exceeded.
+          if (session.plan) {
+            const bump = planner.bumpAttempt(session.plan, { failed: true });
+            if (bump.overBudget && !session._autoStuckFired) {
+              session._autoStuckFired = true;
+              stuckSignal = `${bump.attempts} failed attempts on "${bump.subgoal.title}"`;
+              emit({ kind: 'stuck', reason: stuckSignal });
+            }
+          }
+        }
+      }
+      if (pairs.length) {
+        providerEntry.adapter.appendToolResults(session.messages, pairs);
+        if (typeof providerEntry.adapter.appendVision === 'function') {
+          const visionItems = pairs.filter(p => !p.isError && p.visionData).map(p => p.visionData);
+          if (visionItems.length) providerEntry.adapter.appendVision(session.messages, visionItems);
+        }
+      }
+      if (finished) break;
+
+      // Stuck detection: either explicit declare_stuck or heuristic.
+      // When declare_stuck fired, we already emitted the 'stuck' frame
+      // inside the tool loop, so don't re-emit here (that was the source of
+      // the duplicate "Stuck: ..." rows in the activity panel).
+      let emittedStuckAlready = !!stuckSignal;
+      if (!stuckSignal) {
+        const probe = learning.isStuck(session);
+        if (probe.stuck) stuckSignal = probe.reason;
+      }
+      if (stuckSignal) {
+        session._stuckCount = (session._stuckCount || 0) + 1;
+        // Cap research calls at 2 per session so we don't spend unbounded
+        // tokens hitting web_search when the agent genuinely can't recover.
+        const researchBudget = 2;
+        session._researchCount = session._researchCount || 0;
+
+        if (!emittedStuckAlready) emit({ kind: 'stuck', reason: stuckSignal });
+
+        // First stuck -> research + strategy reminder.
+        // Second stuck -> fresh research + HARDER switch directive.
+        // Third+ stuck -> skip research (already tried), force declare_stuck.
+        if (session._researchCount < researchBudget) {
+          session._researchCount++;
+          const research = await learning.runResearch({
+            session, providerEntry, model,
+            goal: session.goal || task.slice(0, 200),
+            reason: stuckSignal,
+          });
+          emit({ kind: 'research', provider: research.provider, summary: research.summary });
+          const escalator = session._stuckCount >= 2
+            ? `You are stuck for the ${session._stuckCount}${session._stuckCount === 2 ? 'nd' : 'rd+'} time. Stop repeating what you were doing. Do ALL of the following before your next action:\n` +
+              `1) List the 2-3 approaches you've already tried.\n` +
+              `2) Pick exactly ONE new approach you have NOT tried — prefer keyboard shortcuts, menus, or right-click context menus over more clicking.\n` +
+              `3) If nothing new remains, call declare_stuck with a clear reason and stop.`
+            : `You are stuck. Use the research below to try a DIFFERENT approach (different tool, different coordinates, a keyboard shortcut, or a menu path). Do NOT repeat what you just tried.`;
+          const inject = `${escalator}\n\nResearch notes:\n\n${research.summary}`;
+          if (providerEntry.adapter.kind === 'gemini') session.messages.push({ role: 'user', parts: [{ text: inject }] });
+          else session.messages.push({ role: 'user', content: inject });
+        } else {
+          // Already researched twice and still stuck — hand off rather than loop.
+          const handoff = `You've been stuck ${session._stuckCount} times and research didn't unblock you. Call declare_stuck with a one-sentence reason and stop. The user will take over.`;
+          if (providerEntry.adapter.kind === 'gemini') session.messages.push({ role: 'user', parts: [{ text: handoff }] });
+          else session.messages.push({ role: 'user', content: handoff });
+        }
+        // Reset the same-tool streak so the next stuck-detection pass isn't
+        // triggered by the exact same signal instantly.
+        if (session._sameToolStreak) session._sameToolStreak = { tool: null, n: 0 };
+      }
+      _propagateStuck();
+
+      // Observer pass: every N actions, fire-and-forget a side call to
+      // capture anything memory-worthy.
+      if (learning.shouldObserve(session)) {
+        // Don't block the main loop on this; fire concurrently.
+        learning.runObserver({
+          session, providerEntry, model,
+          lastActions: lastActionsForObserver,
+        }).then(r => {
+          if (r && r.wrote) {
+            emit({ kind: 'memory', section: r.section, note: r.note, source: 'observer' });
+          }
+        }).catch(() => {});
+      }
+    }
+    if (!finalSummary) finalSummary = iter >= MAX_ITERATIONS ? `Stopped after ${MAX_ITERATIONS} steps.` : 'Done.';
+
+    // Auto-promote a successful session into a draft recipe so the next
+    // run on the same goal can replay it without spending LLM tokens.
+    // Only fires on a clean finish (no stuck signal) with at least 3
+    // recorded actions — anything shorter is too thin to be a recipe.
+    if (!lastStuckSignal && Array.isArray(session._recordedActions) && session._recordedActions.length >= 3 && session.app) {
+      try {
+        const recipes = require('./apps-recipes');
+        const steps = recipes.actionsToSteps(session._recordedActions);
+        if (steps.length >= 3) {
+          // Minimization pass: fold consecutive WAIT entries into one and
+          // drop trailing WAITs. The agent often waits 500ms between
+          // every input, which bloats the recipe without adding value.
+          const minimized = [];
+          for (const s of steps) {
+            const last = minimized[minimized.length - 1];
+            if (s.verb === 'WAIT' && last && last.verb === 'WAIT') {
+              const ms = (parseInt(last.target, 10) || 0) + (parseInt(s.target, 10) || 0);
+              last.target = String(Math.min(60000, ms));
+              continue;
+            }
+            minimized.push(s);
+          }
+          while (minimized.length && minimized[minimized.length - 1].verb === 'WAIT') minimized.pop();
+
+          // Detect concept tags from the goal AND from the recipe step
+          // contents so cross-app queries like "how do I export X" surface
+          // recipes whose goal phrasing didn't match but whose actions did
+          // (e.g. a recipe that types "password" and clicks "Sign in"
+          // gets a login tag even if the goal said "log into Spotify").
+          const haystack = [
+            String(session.goal || ''),
+            String(finalSummary || ''),
+            ...minimized.map(s => `${s.target || ''} ${s.text || ''} ${s.notes || ''}`),
+          ].join(' ').toLowerCase();
+          const conceptTags = [];
+          const conceptMap = {
+            login: ['log in', 'login', 'sign in', 'signin', 'authenticate', 'password', 'username', 'email'],
+            export: ['export', 'save as', 'download', 'render out', 'render to'],
+            import: ['import', 'open file', 'load file', 'paste from'],
+            search: ['search for', 'find ', 'lookup', 'query for'],
+            create: ['create ', 'new file', 'new project', 'add a ', 'new document'],
+            send: ['send ', 'submit', 'post ', 'publish', 'share'],
+            open: ['open '],
+            play: ['play '],
+            stop: [' stop ', 'pause '],
+            'close-app': ['close app', 'quit ', 'exit '],
+            navigate: ['go to', 'navigate to', 'visit '],
+            settings: ['preferences', 'settings', 'options menu'],
+          };
+          for (const [tag, keys] of Object.entries(conceptMap)) {
+            if (keys.some(k => haystack.includes(k))) conceptTags.push(tag);
+          }
+
+          const baseName = (session.goal || 'auto-recorded').slice(0, 60).replace(/[\\/:*?"<>|]/g, ' ').trim();
+          const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+          const recipeName = `${baseName} (auto ${stamp})`;
+          const saved = recipes.saveRecipe(session.app, {
+            name: recipeName,
+            description: `Auto-recorded from session ${session.id}. Goal: ${session.goal || ''}`,
+            steps: minimized,
+            status: 'draft',
+            conceptTags,
+            sourceSessionId: session.id,
+          });
+
+          emit({ kind: 'auto_recipe', name: recipeName, app: session.app, steps: minimized.length, conceptTags });
+
+          // Live Mind sync so other CLIs see the new automation immediately,
+          // without waiting for the next /api/mind/build pass.
+          if (saved && saved.path) {
+            const http = require('http');
+            const body = JSON.stringify({
+              path: saved.path,
+              label: `${session.app}: ${recipeName}`,
+              kind: 'recipe',
+              createdBy: 'apps-agent',
+              tags: ['app-automation', session.app, ...conceptTags],
+            });
+            const req = http.request({
+              host: '127.0.0.1', port: 3800, path: '/api/mind/add', method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+            }, (resp) => { resp.resume(); });
+            req.on('error', () => {});
+            req.write(body); req.end();
+          }
+        }
+      } catch (e) {
+        emit({ kind: 'auto_recipe_error', error: e.message });
+      }
+    }
+
+    emit({ kind: 'done', summary: finalSummary });
+    return { ok: true, summary: finalSummary, iterations: iter };
+  } catch (e) {
+    emit({ kind: 'error', message: e.message });
+    return { ok: false, error: e.message };
+  } finally {
+    session.running = false;
+    // Drop the topmost pin we installed at focus/launch time so the window
+    // behaves normally when the agent is no longer driving it.
+    if (session.hwnd != null && driver && typeof driver.unpinTopmost === 'function') {
+      driver.unpinTopmost(session.hwnd).catch(() => {});
+    }
+    pruneSessions();
+  }
+}
+
+function summarizeResultForUi(name, result) {
+  if (result == null) return 'ok';
+  if (name === 'screenshot') return `screenshot ${result.width}x${result.height}`;
+  if (name === 'list_windows') return `${Array.isArray(result) ? result.length : 0} windows`;
+  if (typeof result === 'string') return result.slice(0, 120);
+  try { return JSON.stringify(result).slice(0, 180); } catch (_) { return 'ok'; }
+}
+
+module.exports = {
+  DESKTOP_TOOLS,
+  BASE_SYSTEM_PROMPT,
+  buildProviderRegistry,
+  pickProvider,
+  runSession,
+  getSession,
+  sessions,
+  describeAction,
+  executeTool,
+  httpJson,
+  httpJsonWithRetry,
+};

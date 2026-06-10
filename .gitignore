@@ -1,6 +1,7 @@
 node_modules/
 dist/
 config/config.json
+config/runtime.json
 config/display-pref.json
 config/themes.json
 config/browser-sessions/
@@ -20,11 +21,14 @@ dashboard/app-recipe-history/*
 !dashboard/app-recipe-history/README.md
 dashboard/app-recipe-tests/*
 !dashboard/app-recipe-tests/README.md
-notes/
+/notes/
 .ai-workspace/
 .claude/
 *.ps1.tmp
 temp-*.ps1
+# Junk file created on non-Windows when a `... 2>nul` shell redirect runs (e.g.
+# the CLI-detection probe in tests): on Linux `nul` becomes a literal file.
+nul
 dashboard/public/icon.ico
 dashboard/public/icon.png
 package-lock.json

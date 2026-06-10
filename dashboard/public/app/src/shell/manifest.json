@@ -1,0 +1,9 @@
+[
+  "state.js",
+  "terminals.js",
+  "app-state.js",
+  "startup.js",
+  "tabs-panels.js",
+  "onboarding.js",
+  "keyboard.js"
+]

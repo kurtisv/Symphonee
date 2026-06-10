@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { resolveInRepo } = require('../utils/safe-path');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -33,10 +34,7 @@ const FILE_BROWSER_SKIP = new Set([
 ]);
 
 function resolveRepoSubPath(repoPath, subPath = '') {
-  const repoRoot = path.resolve(repoPath);
-  const targetPath = path.resolve(path.join(repoRoot, subPath || ''));
-  if (targetPath !== repoRoot && !targetPath.startsWith(repoRoot + path.sep)) return null;
-  return targetPath;
+  return resolveInRepo(repoPath, subPath || '');
 }
 
 function mountFiles(addRoute, json, ctx) {
@@ -267,10 +265,18 @@ function mountFiles(addRoute, json, ctx) {
     const repoPath = getRepoPath(repoName);
     if (!repoPath || !filePath) { res.writeHead(400); return res.end('Missing params'); }
 
-    const fullPath = path.join(repoPath, filePath);
-    const resolved = path.resolve(fullPath);
-    if (resolved !== path.resolve(repoPath) && !resolved.startsWith(path.resolve(repoPath) + path.sep)) { res.writeHead(403); return res.end('Forbidden'); }
+    const resolved = resolveRepoSubPath(repoPath, filePath);
+    if (!resolved) { res.writeHead(403); return res.end('Forbidden'); }
     if (!fs.existsSync(resolved)) { res.writeHead(404); return res.end('Not found'); }
+
+    // Follow symlinks and re-check: a link inside the repo must not serve a
+    // target outside it, and only regular files are streamable.
+    let real;
+    try { real = fs.realpathSync(resolved); } catch (_) { res.writeHead(404); return res.end('Not found'); }
+    let repoReal;
+    try { repoReal = fs.realpathSync(path.resolve(repoPath)); } catch (_) { repoReal = path.resolve(repoPath); }
+    if (real !== repoReal && !real.startsWith(repoReal + path.sep)) { res.writeHead(403); return res.end('Forbidden'); }
+    if (!fs.statSync(real).isFile()) { res.writeHead(403); return res.end('Forbidden'); }
 
     const ext = path.extname(resolved).slice(1).toLowerCase();
     const mimeTypes = {
@@ -280,13 +286,31 @@ function mountFiles(addRoute, json, ctx) {
     };
     const contentType = mimeTypes[ext] || 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'max-age=60' });
-    fs.createReadStream(resolved).pipe(res);
+    fs.createReadStream(real).pipe(res);
+  }
+
+  // ── Reveal a file in the OS file explorer (Windows: explorer /select) ─────
+  async function handleFileReveal(req, res) {
+    try {
+      const body = await readBody(req);
+      const repoPath = getRepoPath(body.repo);
+      if (!repoPath) return json(res, { error: 'Repo not found' }, 400);
+      const resolved = resolveRepoSubPath(repoPath, body.path || '');
+      if (!resolved) return json(res, { error: 'Invalid path' }, 403);
+      if (!fs.existsSync(resolved)) return json(res, { error: 'Path not found' }, 404);
+      // explorer.exe exits non-zero even on success, so ignore the callback error.
+      require('child_process').execFile('explorer.exe', ['/select,', resolved], () => {});
+      json(res, { ok: true, path: resolved });
+    } catch (e) {
+      json(res, { error: e.message }, 500);
+    }
   }
 
   // ── Route registrations ─────────────────────────────────────────────────
   addRoute('GET',  '/api/files/tree',     (req, res, url) => handleFileTree(url, res));
   addRoute('GET',  '/api/files/read',     (req, res, url) => handleFileRead(url, res));
   addRoute('POST', '/api/files/save',     (req, res) => handleFileSave(req, res));
+  addRoute('POST', '/api/files/reveal',   (req, res) => handleFileReveal(req, res));
   addRoute('GET',  '/api/files/search',   (req, res, url) => handleFileSearch(url, res));
   addRoute('GET',  '/api/files/grep',     (req, res, url) => handleFileGrep(url, res));
   addRoute('GET',  '/api/files/serve',    (req, res, url) => handleServeFile(url, res));
