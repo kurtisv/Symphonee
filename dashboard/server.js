@@ -115,6 +115,7 @@ const ROUTES = {
   '/js/spaces-repos.js':      { file: path.join(publicDir, 'js', 'spaces-repos.js'),                               type: 'application/javascript' },
   '/js/work-items.js':        { file: path.join(publicDir, 'js', 'work-items.js'),                                 type: 'application/javascript' },
   '/js/command-palette.js':   { file: path.join(publicDir, 'js', 'command-palette.js'),                            type: 'application/javascript' },
+  '/js/ambient-whisper.js':   { file: path.join(publicDir, 'js', 'ambient-whisper.js'),                            type: 'application/javascript' },
   '/js/plugins.js':           { file: path.join(publicDir, 'js', 'plugins.js'),                                    type: 'application/javascript' },
   '/js/settings.js':          { file: path.join(publicDir, 'js', 'settings.js'),                                   type: 'application/javascript' },
   '/js/browser.js':           { file: path.join(publicDir, 'js', 'browser.js'),                                    type: 'application/javascript' },
@@ -545,7 +546,7 @@ const server = http.createServer(async (req, res) => {
         let brainField = null;
         try {
           if (brain && typeof brain.getIntent === 'function') {
-            const brainSetup = await require('./mind/ollama-setup').detectBrainSetup();
+            const brainSetup = await require('./lib/ollama-setup').detectBrainSetup();
             brainField = {
               intent: brain.getIntent(),
               triageModel: require('./brain/planner').TRIAGE_MODEL,
@@ -747,6 +748,24 @@ const { createUiContextStore } = require('./lib/ui-context');
 const { createTerminalHub } = require('./lib/terminal-hub');
 const _termHub = createTerminalHub({ httpServer: server, repoRoot, getConfig, verifyUpgrade: isRequestAllowed });
 const { broadcast, terminals, termAiMeta, createTerminal, killTerminal } = _termHub;
+
+// Terminal-size ground truth for debugging renderer/PTY desync (the scroll
+// "ghosting" / misplaced-TUI investigation). Compare against `mode con` run
+// INSIDE a terminal: if ConPTY's size differs from what is here, the resize
+// pipeline broke; if they match but rendering is wrong, the bug is client-side.
+addRoute('GET', '/api/terminals/diag', (req, res) => {
+  const out = [];
+  for (const [id, t] of terminals) {
+    out.push({
+      id,
+      label: t.label || null,
+      hubCols: t.cols, hubRows: t.rows,
+      ptyCols: t.pty && t.pty.cols, ptyRows: t.pty && t.pty.rows,
+      pid: t.pty && t.pty.pid,
+    });
+  }
+  json(res, { terminals: out });
+});
 const _uiCtxStore = createUiContextStore({ repoRoot, getConfig, broadcast, onActiveRepoChange: () => { try { writePluginHints(); } catch (_) {} } });
 const getUiContextWithPath = _uiCtxStore.getUiContext;
 
@@ -1057,6 +1076,8 @@ const brain = mountBrain(addRoute, json, {
   repoRoot, broadcast,
   getUiContext: getUiContextWithPath,
   getConfig,
+  // The ambient observer writes activity digests into the shared graph.
+  mind,
 });
 console.log('  Brain mounted (/api/symphonee/*) - planner + intent');
 trace.mark('server:brain-mounted');
@@ -1099,7 +1120,7 @@ _brainForKnowledgeEvents = brain;
 // work AFTER the dashboard has rendered (see runDeferredBootWork) so it does not
 // starve the renderer's event loop during first paint.
 function runBrainSetup() {
-  const setupMod = require('./mind/ollama-setup');
+  const setupMod = require('./lib/ollama-setup');
   return setupMod.detectBrainSetup().then(async (status) => {
     if (!status.ollamaInstalled) {
       console.log('[brain/setup] Ollama not installed - brain features disabled until you install it from https://ollama.com/download');
