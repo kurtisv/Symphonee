@@ -3724,9 +3724,22 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ── Close modals on overlay click ───────────────────────────────────────
+// A modal can opt into its own close logic (focus restore, unsaved-change
+// cleanup, etc.) via data-close-fn="globalFunctionName" on its
+// .modal-overlay; without it, this falls back to the original blunt
+// class removal so untouched modals keep behaving exactly as before.
+function closeModalOverlay(overlay) {
+  const closeFnName = overlay.dataset.closeFn;
+  const closeFn = closeFnName && window[closeFnName];
+  if (typeof closeFn === 'function') {
+    closeFn();
+  } else {
+    overlay.classList.remove('open');
+  }
+}
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => {
-    if (e.target === overlay) overlay.classList.remove('open');
+    if (e.target === overlay) closeModalOverlay(overlay);
   });
 });
 
@@ -3976,7 +3989,7 @@ rebuildHotkeyMap(); // defaults until loadConfig() applies overrides
 // ── Keyboard shortcut hub ───────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+    document.querySelectorAll('.modal-overlay.open').forEach(m => closeModalOverlay(m));
     _clearSeq();
   }
 

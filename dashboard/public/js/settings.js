@@ -224,6 +224,15 @@
     const settingsModal = document.getElementById("settingsModal");
     settingsModal.classList.add("open");
     settingsModal.classList.toggle("theme-preview", targetTab === "theme");
+    _settingsFocusReturnEl = document.activeElement;
+    document.addEventListener("keydown", _settingsFocusTrap);
+    requestAnimationFrame(() => {
+      const modalEl = document.querySelector("#settingsModal .modal");
+      const firstFocusable = modalEl?.querySelector(
+        'input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])'
+      );
+      (firstFocusable || modalEl)?.focus();
+    });
     if (targetTab === "ai") detectAiTools();
     if (targetTab === "theme") renderThemeList();
     try {
@@ -231,8 +240,32 @@
     } catch (_) {
     }
   }
+  var _settingsFocusReturnEl = null;
+  function _settingsFocusTrap(e) {
+    if (e.key !== "Tab") return;
+    const modalEl = document.querySelector("#settingsModal .modal");
+    if (!modalEl) return;
+    const focusable = Array.from(
+      modalEl.querySelectorAll('input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])')
+    ).filter((el) => el.offsetParent !== null && !el.disabled);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
   function closeSettings() {
     document.getElementById("settingsModal").classList.remove("open");
+    document.removeEventListener("keydown", _settingsFocusTrap);
+    if (_settingsFocusReturnEl && typeof _settingsFocusReturnEl.focus === "function") {
+      _settingsFocusReturnEl.focus();
+    }
+    _settingsFocusReturnEl = null;
     if (state._themeEditorDirty) {
       state._themeEditorDirty = false;
       const status = document.getElementById("themeEditorStatus");

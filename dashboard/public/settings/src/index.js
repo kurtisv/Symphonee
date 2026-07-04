@@ -308,6 +308,15 @@ function openSettings(tab) {
   const settingsModal = document.getElementById('settingsModal');
   settingsModal.classList.add('open');
   settingsModal.classList.toggle('theme-preview', targetTab === 'theme');
+  _settingsFocusReturnEl = document.activeElement;
+  document.addEventListener('keydown', _settingsFocusTrap);
+  requestAnimationFrame(() => {
+    const modalEl = document.querySelector('#settingsModal .modal');
+    const firstFocusable = modalEl?.querySelector(
+      'input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])'
+    );
+    (firstFocusable || modalEl)?.focus();
+  });
   // Trigger any per-tab lazy loaders for the initially-shown tab. Previously only
   // switchSettingsTab did this, so opening straight onto "AI Tools" (the default)
   // showed an empty panel until the user tabbed away and back.
@@ -317,8 +326,35 @@ function openSettings(tab) {
     lucide.createIcons();
   } catch (_) {}
 }
+// ── Focus management for settingsModal (the dialog-semantics reference
+// implementation -- see DESIGN_SYSTEM.md and skills/modal-and-form-polisher).
+// Other modals are rolled to this pattern incrementally, not all at once.
+let _settingsFocusReturnEl = null;
+function _settingsFocusTrap(e) {
+  if (e.key !== 'Tab') return;
+  const modalEl = document.querySelector('#settingsModal .modal');
+  if (!modalEl) return;
+  const focusable = Array.from(
+    modalEl.querySelectorAll('input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])')
+  ).filter(el => el.offsetParent !== null && !el.disabled);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 function closeSettings() {
   document.getElementById('settingsModal').classList.remove('open');
+  document.removeEventListener('keydown', _settingsFocusTrap);
+  if (_settingsFocusReturnEl && typeof _settingsFocusReturnEl.focus === 'function') {
+    _settingsFocusReturnEl.focus();
+  }
+  _settingsFocusReturnEl = null;
   // Revert unsaved theme editor changes
   if (state._themeEditorDirty) {
     state._themeEditorDirty = false;

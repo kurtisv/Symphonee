@@ -1332,10 +1332,10 @@
   </div>
 </div>
 
-<div class="modal-overlay" id="settingsModal">
-  <div class="modal modal-settings">
+<div class="modal-overlay" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle" data-close-fn="closeSettings">
+  <div class="modal modal-settings" tabindex="-1">
     <div class="modal-title" style="display:flex;align-items:center;justify-content:space-between;">
-      <span>Settings</span>
+      <span id="settingsModalTitle">Settings</span>
       <button onclick="restartApp()" title="Restart Symphonee" style="background:none;border:none;color:var(--subtext0);cursor:pointer;padding:4px;display:flex;align-items:center;border-radius:var(--radius);" onmouseover="this.style.color='var(--text)';this.style.background='var(--surface0)'" onmouseout="this.style.color='var(--subtext0)';this.style.background='none'">
         <i data-lucide="rotate-cw" style="width:15px;height:15px;"></i>
       </button>
