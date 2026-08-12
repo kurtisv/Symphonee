@@ -114,6 +114,35 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
   addRoute('POST', '/api/orchestrator/spawn', async (req, res) => {
     let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space } = await readBody(req);
     if (!prompt) return json(res, { error: 'prompt required' }, 400);
+
+    // LE WORKER DEMARRE DANS LE DEPOT ACTIF, PAS DANS SYMPHONEE.
+    //
+    // POURQUOI CETTE LIGNE EXISTE (12 aout 2026)
+    // -------------------------------------------------------------------
+    // `spawnHeadless` retombe sur `cwd || process.cwd()`, et process.cwd()
+    // est le repertoire du serveur. Une sonde l'a mesure plutot que
+    // suppose: un worker Claude depeche sans `cwd` a repondu
+    //
+    //     repertoire de travail : C:\Symphonee
+    //     CLAUDE.md recu        : "# CLAUDE.md - Symphonee"
+    //
+    // Consequence: les regles du depot sur lequel on travaille -- son
+    // CLAUDE.md, son AGENTS.md, son protocole de gouvernance -- n'etaient
+    // JAMAIS chargees par un worker. Codex ne les a lues que parce que les
+    // prompts epelaient le chemin du depot en premiere ligne. Une
+    // convention, pas un mecanisme.
+    //
+    // Le `cwd` explicite du corps de requete reste prioritaire: une
+    // worktree isolee doit pouvoir imposer le sien.
+    if (!cwd && getUiContext) {
+      try {
+        const chemin = getUiContext().activeRepoPath;
+        // On ne fabrique pas un cwd qui n'existe pas: un repertoire absent
+        // ferait echouer le spawn avec une erreur systeme opaque, moins
+        // lisible que le comportement actuel.
+        if (chemin && fs.existsSync(chemin)) cwd = chemin;
+      } catch (_) { /* contexte indisponible: on garde le defaut */ }
+    }
     // Symphonee brain consultation: when cli is omitted, the brain tries
     // to answer locally FIRST (Mind recall or gemma synthesis). Frontier
     // dispatch only happens if the brain says source === 'escalate'.
