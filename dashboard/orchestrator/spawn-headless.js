@@ -68,7 +68,7 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] — auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, mode, repo, _retryAttempt = 0 }) {
     const cfg = HEADLESS_FLAGS[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(HEADLESS_FLAGS).join(', ')}`);
     const originalPrompt = prompt;
@@ -213,10 +213,24 @@ module.exports = {
 
     // Pre-trust the working folder so first-time dispatches don't abort with
     // "this folder isn't trusted". This is independent of full bypass mode.
-    try { pretrustFolderForCli(cli, cwd || process.cwd()); } catch (_) {}
+    // LE POINT D ETRANGLEMENT. Treize sites d appel convergent ici -- dont
+    // `jobs-scheduler.js` (taches planifiees), `escalation.js` (echelle de
+    // repli) et `lifecycle.js` (reprise), qui ne passent par AUCUNE route.
+    // Corriger les routes une a une les aurait toutes laissees sur
+    // `process.cwd()`, c est-a-dire dans Symphonee au lieu du depot actif.
+    //
+    // MESURE: une sonde a montre un worker demarrant dans C:\\Symphonee et
+    // chargeant le CLAUDE.md de Symphonee. Le repli silencieux est donc
+    // supprime pour une mission de code: il echoue, et il le DIT.
+    const contexte = this.resoudreContexte({ mode, cwd, repo });
+    cwd = contexte.cwd;
+
+    try { pretrustFolderForCli(cli, cwd); } catch (_) {}
 
     const proc = spawn(cfg.cmd, finalArgs, {
-      cwd: cwd || process.cwd(),
+      // Resolu par la primitive: plus aucun repli. Un repli mort reste un piege
+      // pour le prochain lecteur, qui le croira actif.
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
       shell: useShell,

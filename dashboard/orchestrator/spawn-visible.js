@@ -25,7 +25,7 @@ module.exports = {
    * @param {string} [opts.taskId]  — tie to existing task
    * @returns {Task}
    */
-  spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space }) {
+  spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space, mode, repo }) {
     const cfg = CLI_CONFIG[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(CLI_CONFIG).join(', ')}`);
     if (!this.createTerminal) throw new Error('createTerminal not available - cannot spawn visible terminals');
@@ -53,7 +53,10 @@ module.exports = {
     });
 
     // Create a real PTY terminal
-    this.createTerminal(termId, 120, 30, cwd || process.cwd());
+    // MEME POINT D ETRANGLEMENT que `spawnHeadless`: un terminal visible
+    // ouvert dans Symphonee ne verrait pas davantage le CLAUDE.md du depot.
+    const contexte = this.resoudreContexte({ mode, cwd, repo });
+    this.createTerminal(termId, 120, 30, contexte.cwd);
 
     task.state = STATE.RUNNING;
     task.startedAt = Date.now();
