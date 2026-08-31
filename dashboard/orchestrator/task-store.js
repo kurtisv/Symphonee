@@ -13,7 +13,7 @@ module.exports = {
     try {
       const serializable = [];
       for (const [, task] of this.tasks) {
-        const { _proc, _timer, _pollInterval, _spawnOpts, _escalationChain, _escalationPrompt, _escalationCwd, _retryAttempt, ...safe } = task;
+        const { _proc, _timer, _pollInterval, _spawnOpts, _escalationChain, _escalationPrompt, _escalationCwd, _retryAttempt, _abortController, ...safe } = task;
         serializable.push(safe);
       }
       fs.writeFileSync(this._tasksFile, JSON.stringify(serializable, null, 2));
@@ -76,6 +76,10 @@ module.exports = {
     if (task._proc) {
       try { task._proc.kill('SIGTERM'); } catch (_) {}
       task._proc = null;
+    }
+    if (task._abortController) {
+      try { task._abortController.abort(); } catch (_) {}
+      task._abortController = null;
     }
     if (task._timer) clearTimeout(task._timer);
     if (task._pollInterval) clearInterval(task._pollInterval);
@@ -176,7 +180,7 @@ module.exports = {
 
   _serializeTask(task) {
     if (!task) return null;
-    const { _proc, _timer, _pollInterval, _spawnOpts, _retryAttempt, ...safe } = task;
+    const { _proc, _timer, _pollInterval, _spawnOpts, _retryAttempt, _abortController, ...safe } = task;
     return safe;
   },
 
@@ -200,7 +204,7 @@ module.exports = {
 
     // Release queued tasks whose dependencies are now met
     const taskFinished = task.state === STATE.COMPLETED || task.state === STATE.FAILED || task.state === STATE.TIMEOUT;
-    if (taskFinished) this._releaseQueuedTasks();
+    if (taskFinished && typeof this._releaseQueuedTasks === 'function') this._releaseQueuedTasks();
 
     // Mind: completed tasks become conversation nodes in the shared brain.
     // This is the "shared consciousness" mechanic - what each CLI figures

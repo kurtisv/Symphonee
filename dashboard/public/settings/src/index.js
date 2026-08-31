@@ -280,7 +280,7 @@ function openSettings(tab) {
   document.getElementById('settingsXaiKey').value = aiKeys.XAI_API_KEY || '';
   renderBrowserCreds();
   // Populate orchestrator CLI checkboxes
-  var orchList = Array.isArray(state.configData.OrchestrateCliList) ? state.configData.OrchestrateCliList : ['claude', 'gemini', 'codex', 'copilot', 'grok', 'qwen', 'antigravity'];
+  var orchList = Array.isArray(state.configData.OrchestrateCliList) ? state.configData.OrchestrateCliList : ['claude', 'gemini', 'codex', 'copilot', 'grok', 'qwen', 'antigravity', 'jules'];
   document.querySelectorAll('.orch-cli-cb').forEach(function (cb) {
     cb.checked = orchList.includes(cb.value);
   });

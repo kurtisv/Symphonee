@@ -96,6 +96,12 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     const enriched = {};
     for (const [cli, meta] of Object.entries(CLI_MODELS)) {
       enriched[cli] = { ...meta };
+      if (cli === 'jules') {
+        enriched[cli].hasApiKey = !!process.env.JULES_API_KEY;
+        enriched[cli].isRemote = true;
+        enriched[cli].available = !!process.env.JULES_API_KEY;
+        continue;
+      }
       // Indicate which API keys are set (boolean, not the actual key)
       const keyMap = { claude: 'ANTHROPIC_API_KEY', gemini: 'GEMINI_API_KEY', codex: 'OPENAI_API_KEY', grok: 'XAI_API_KEY', qwen: 'DASHSCOPE_API_KEY' };
       enriched[cli].hasApiKey = !!(keyMap[cli] && aiKeys[keyMap[cli]]);
@@ -187,13 +193,17 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     try {
       // Auto-select best mode: pipe mode for CLIs that support it (fast, reliable),
       // visible PTY for interactive CLIs that need a terminal.
+      // Remote cloud workers (e.g. Jules) route to spawnJules without spawning a local CLI process.
       // The 'visible' param can override: visible=true forces PTY, visible=false forces headless.
       const cliCfg = CLI_CONFIG[cli];
-      const useVisible = visible === true || (visible !== false && cliCfg && !cliCfg.pipeMode);
+      const isRemote = cli === 'jules' || (cliCfg && cliCfg.isRemote);
+      const useVisible = !isRemote && (visible === true || (visible !== false && cliCfg && !cliCfg.pipeMode));
       const resolvedSpace = resolveSpace(space);
-      const task = useVisible
-        ? orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace })
-        : orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace });
+      const task = isRemote && typeof orch.spawnJules === 'function'
+        ? orch.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace })
+        : (useVisible
+          ? orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace })
+          : orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace }));
       const payload = orch._serializeTask(task);
       if (brainPickedCli) {
         payload.brainPickedCli = brainPickedCli;
@@ -499,7 +509,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         orch.broadcast({ type: 'orchestrator-event', event: 'agent-stale', taskId: beat.taskId, cli: beat.cli, idleMs: beat.idleMs, timestamp: Date.now() });
       }
     }
-  }, 30000);
+  }, 30000).unref();
 
 
 }

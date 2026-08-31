@@ -124,6 +124,21 @@ const CLI_MODELS = {
     extraHeadless: [],
     notes: 'Qwen Code is a Gemini CLI fork. Auth via DashScope (DASHSCOPE_API_KEY) or OpenAI-compatible endpoint. Qwen3-Coder models are code-specialized.',
   },
+  jules: {
+    models: ['default'],
+    modelIds: ['default'],
+    defaultModel: 'default',
+    modelFlag: null,
+    effortFlag: null,
+    permissionFlag: null,
+    autoPermission: true,
+    outputFormatFlag: null,
+    systemPromptFlag: null,
+    worktreeFlag: null,
+    extraHeadless: [],
+    isRemote: true,
+    notes: 'Google Jules remote worker (cloud REST API). Requires JULES_API_KEY environment variable.',
+  },
 };
 
 // Provider abstraction: launch config, cost tier, idle-detection patterns.
@@ -136,6 +151,7 @@ const CLI_CONFIG = {
   copilot: { cmd: 'copilot', label: 'Copilot CLI', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>]\s*$/ },
   grok:    { cmd: 'grok',    label: 'Grok Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
   qwen:    { cmd: 'qwen',    label: 'Qwen Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  jules:   { cmd: null,      label: 'Jules',       pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
 };
 
 // Cross-model escalation chain (cheapest first); skips circuit-broken / uninstalled CLIs.

@@ -34,6 +34,11 @@ const CLI_CONFIG = {
   qwen: {
     cmd: 'qwen',
     label: 'Qwen Code'
+  },
+  jules: {
+    cmd: null,
+    label: 'Jules',
+    isRemote: true
   }
 };
 // Exposed on window so the extracted notifications module (loaded after app.js)

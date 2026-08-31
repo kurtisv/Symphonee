@@ -88,6 +88,7 @@ Object.assign(
   require('./orchestrator/escalation'),     // escalation, fan-out, aggregation, worktree, lineage, handoff
   require('./orchestrator/spawn-headless'), // headless spawn, PTY injection, dispatch
   require('./orchestrator/spawn-visible'),  // visible PTY spawn with interactive watcher
+  require('./orchestrator/spawn-jules'),    // Google Jules cloud remote worker
 );
 
 // ── Route mounting ───────────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ function mountOrchestrator(addRoute, json, { terminals, broadcast, repoRoot, cre
   orch.getLearnings = getLearnings || null;
 
   // Auto-cleanup tasks older than 1 hour every 30 minutes (preserves recent results)
-  setInterval(() => orch.cleanup(60 * 60 * 1000), 30 * 60 * 1000);
+  setInterval(() => orch.cleanup(60 * 60 * 1000), 30 * 60 * 1000).unref();
 
   registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast, getUiContext, repoRoot });
   return orch;

@@ -7,7 +7,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { STATE } = require('./state');
-const { HEADLESS_FLAGS, CLI_MODELS, ESCALATION_ORDER } = require('./cli-config');
+const { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER } = require('./cli-config');
 const { classifyError, retryDelay, MAX_RETRIES } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
@@ -69,6 +69,9 @@ module.exports = {
    * @returns {Task}
    */
   spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, _retryAttempt = 0 }) {
+    if ((cli === 'jules' || (CLI_CONFIG[cli] && CLI_CONFIG[cli].isRemote)) && typeof this.spawnJules === 'function') {
+      return this.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space });
+    }
     const cfg = HEADLESS_FLAGS[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(HEADLESS_FLAGS).join(', ')}`);
     const originalPrompt = prompt;

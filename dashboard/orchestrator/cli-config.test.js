@@ -20,7 +20,9 @@ test('cli-config exposes all maps for all supported CLIs', () => {
   assert.equal(cfg.CLI_MODELS.antigravity.defaultModel, null);
   assert.equal(cfg.CLI_MODELS.antigravity.modelFlag, '--model');
   assert.equal(cfg.CLI_MODELS.antigravity.effortFlag, '--effort');
-  assert.equal(cfg.CLI_MODELS.antigravity.permissionFlag, '--dangerously-skip-permissions');
+  assert.equal(cfg.CLI_CONFIG.jules.label, 'Jules');
+  assert.equal(cfg.CLI_CONFIG.jules.isRemote, true);
+  assert.equal(cfg.CLI_MODELS.jules.isRemote, true);
   assert.ok(cfg.ESCALATION_ORDER.indexOf('antigravity') < cfg.ESCALATION_ORDER.indexOf('codex'));
   assert.ok(cfg.ESCALATION_ORDER.indexOf('antigravity') < cfg.ESCALATION_ORDER.indexOf('claude'));
 });
