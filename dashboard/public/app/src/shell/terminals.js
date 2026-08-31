@@ -19,6 +19,10 @@ const CLI_CONFIG = {
     cmd: 'codex',
     label: 'Codex CLI'
   },
+  antigravity: {
+    cmd: 'agy',
+    label: 'Antigravity'
+  },
   grok: {
     cmd: 'grok',
     label: 'Grok Code'

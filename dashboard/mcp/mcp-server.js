@@ -120,11 +120,11 @@ const TOOLS = [
   },
   {
     name: 'spawn_worker',
-    description: 'Spawn an AI worker (claude, gemini, codex, grok, copilot, qwen) with a prompt via the Symphonee orchestrator. Gated by permissions.',
+    description: 'Spawn an AI worker (claude, gemini, codex, antigravity, grok, copilot, qwen) with a prompt via the Symphonee orchestrator. Gated by permissions.',
     inputSchema: {
       type: 'object',
       properties: {
-        cli: { type: 'string', enum: ['claude', 'gemini', 'codex', 'grok', 'copilot', 'qwen'] },
+        cli: { type: 'string', enum: ['claude', 'gemini', 'codex', 'antigravity', 'grok', 'copilot', 'qwen'] },
         prompt: { type: 'string' },
         cwd: { type: 'string', description: 'Optional working directory. Defaults to active repo.' },
         autoPermit: { type: 'boolean', description: 'Pass YOLO flag to the child CLI.', default: false },

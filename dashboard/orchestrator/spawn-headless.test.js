@@ -7,6 +7,7 @@ const path = require('path');
 const spawnHeadless = require('./spawn-headless');
 const taskStore = require('./task-store');
 const { STATE } = require('./state');
+const { HEADLESS_FLAGS, CLI_MODELS } = require('./cli-config');
 
 function inst() {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-spawn-'));
@@ -71,4 +72,15 @@ test('dispatch creates a RUNNING task and injects the wrapped prompt', () => {
 test('spawnHeadless rejects an unknown CLI', () => {
   const o = inst();
   assert.throws(() => o.spawnHeadless({ cli: 'bogus', prompt: 'x' }), /Unknown CLI/);
+});
+
+test('Antigravity uses agy -p prompt mode and no Gemini API key', () => {
+  assert.equal(HEADLESS_FLAGS.antigravity.cmd, 'agy');
+  assert.deepEqual(HEADLESS_FLAGS.antigravity.args, ['-p']);
+  assert.equal(HEADLESS_FLAGS.antigravity.promptMode, 'flag');
+  assert.equal(CLI_MODELS.antigravity.defaultModel, null);
+  assert.equal(CLI_MODELS.antigravity.permissionFlag, '--dangerously-skip-permissions');
+  assert.equal(CLI_MODELS.antigravity.modelFlag, '--model');
+  assert.equal(CLI_MODELS.antigravity.effortFlag, '--effort');
+  assert.doesNotMatch(JSON.stringify(CLI_MODELS.antigravity), /GEMINI_API_KEY/);
 });

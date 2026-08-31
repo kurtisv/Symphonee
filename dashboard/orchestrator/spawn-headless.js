@@ -57,7 +57,7 @@ module.exports = {
    * The prompt is sent via stdin and stdout is collected as the result.
    *
    * @param {Object} opts
-   * @param {string} opts.cli       — 'claude' | 'gemini' | 'codex' | 'copilot' | 'grok' | 'qwen'
+   * @param {string} opts.cli       — 'claude' | 'gemini' | 'codex' | 'antigravity' | 'copilot' | 'grok' | 'qwen'
    * @param {string} opts.prompt    — the prompt to send
    * @param {string} [opts.cwd]     — working directory
    * @param {number} [opts.timeout] — ms before killing (default 5 min)
@@ -204,6 +204,7 @@ module.exports = {
       gemini:  ['GEMINI_API_KEY'],
       codex:   ['OPENAI_API_KEY'],
       copilot: [],  // uses GitHub auth, not API keys
+      antigravity: [], // uses local/cached Google authentication, not Gemini API keys
       grok:    ['XAI_API_KEY'],
       qwen:    ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY'],
     };

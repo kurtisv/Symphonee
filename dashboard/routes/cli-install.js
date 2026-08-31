@@ -16,7 +16,7 @@ function mountCliInstall(addRoute, json, ctx) {
       config: { exists: false, complete: false },
     };
 
-    for (const id of ['claude', 'gemini', 'copilot', 'codex', 'grok', 'qwen']) {
+    for (const id of ['claude', 'gemini', 'copilot', 'codex', 'grok', 'qwen', 'antigravity']) {
       result.cliTools[id] = detectCli(id);
     }
 
