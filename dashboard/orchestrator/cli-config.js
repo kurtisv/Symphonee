@@ -139,19 +139,35 @@ const CLI_MODELS = {
     isRemote: true,
     notes: 'Google Jules remote worker (cloud REST API). Requires JULES_API_KEY environment variable.',
   },
+  'gemini-api': {
+    models: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash', 'gemini-3-pro-preview'],
+    modelIds: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash', 'gemini-3-pro-preview'],
+    defaultModel: 'gemini-3.5-flash-lite',
+    modelFlag: null,
+    effortFlag: null,
+    permissionFlag: null,
+    autoPermission: true,
+    outputFormatFlag: null,
+    systemPromptFlag: null,
+    worktreeFlag: null,
+    extraHeadless: [],
+    isRemote: true,
+    notes: 'Google Gemini Developer API remote worker (cloud REST API). Requires GEMINI_API_KEY environment variable.',
+  },
 };
 
 // Provider abstraction: launch config, cost tier, idle-detection patterns.
 //   tier: 1=basic, 2=mid, 3=premium ; costRank: 1=cheapest .. 5=most expensive
 const CLI_CONFIG = {
-  claude:  { cmd: 'claude',  label: 'Claude Code', pipeMode: true, tier: 3, costRank: 5, idlePattern: /[❯>]\s*$/ },
-  gemini:  { cmd: 'gemini',  label: 'Gemini CLI',  pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
-  codex:   { cmd: 'codex',   label: 'Codex CLI',   pipeMode: true, tier: 2, costRank: 3, idlePattern: /[❯>$]\s*$/ },
-  antigravity: { cmd: 'agy', label: 'Antigravity', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>$]\s*$/ },
-  copilot: { cmd: 'copilot', label: 'Copilot CLI', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>]\s*$/ },
-  grok:    { cmd: 'grok',    label: 'Grok Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
-  qwen:    { cmd: 'qwen',    label: 'Qwen Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
-  jules:   { cmd: null,      label: 'Jules',       pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
+  claude:      { cmd: 'claude',  label: 'Claude Code', pipeMode: true, tier: 3, costRank: 5, idlePattern: /[❯>]\s*$/ },
+  gemini:      { cmd: 'gemini',  label: 'Gemini CLI',  pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  codex:       { cmd: 'codex',   label: 'Codex CLI',   pipeMode: true, tier: 2, costRank: 3, idlePattern: /[❯>$]\s*$/ },
+  antigravity: { cmd: 'agy',     label: 'Antigravity', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>$]\s*$/ },
+  copilot:     { cmd: 'copilot', label: 'Copilot CLI', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>]\s*$/ },
+  grok:        { cmd: 'grok',    label: 'Grok Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  qwen:        { cmd: 'qwen',    label: 'Qwen Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  jules:       { cmd: null,      label: 'Jules',       pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
+  'gemini-api': { cmd: null,     label: 'Gemini API',  pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
 };
 
 // Cross-model escalation chain (cheapest first); skips circuit-broken / uninstalled CLIs.

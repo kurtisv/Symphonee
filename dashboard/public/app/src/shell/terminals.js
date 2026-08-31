@@ -35,6 +35,11 @@ const CLI_CONFIG = {
     cmd: null,
     label: 'Jules',
     isRemote: true
+  },
+  'gemini-api': {
+    cmd: null,
+    label: 'Gemini API',
+    isRemote: true
   }
 };
 // Exposed on window so the extracted notifications module (loaded after app.js)

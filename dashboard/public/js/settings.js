@@ -199,7 +199,7 @@
     document.getElementById("settingsAnthropicKey").value = aiKeys.ANTHROPIC_API_KEY || "";
     document.getElementById("settingsXaiKey").value = aiKeys.XAI_API_KEY || "";
     renderBrowserCreds();
-    var orchList = Array.isArray(state.configData.OrchestrateCliList) ? state.configData.OrchestrateCliList : ["claude", "gemini", "codex", "copilot", "grok", "qwen", "antigravity", "jules"];
+    var orchList = Array.isArray(state.configData.OrchestrateCliList) ? state.configData.OrchestrateCliList : ["claude", "gemini", "codex", "copilot", "grok", "qwen", "antigravity", "jules", "gemini-api"];
     document.querySelectorAll(".orch-cli-cb").forEach(function(cb) {
       cb.checked = orchList.includes(cb.value);
     });

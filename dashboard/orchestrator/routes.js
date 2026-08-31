@@ -102,6 +102,12 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         enriched[cli].available = !!process.env.JULES_API_KEY;
         continue;
       }
+      if (cli === 'gemini-api') {
+        enriched[cli].hasApiKey = !!process.env.GEMINI_API_KEY;
+        enriched[cli].isRemote = true;
+        enriched[cli].available = !!process.env.GEMINI_API_KEY;
+        continue;
+      }
       // Indicate which API keys are set (boolean, not the actual key)
       const keyMap = { claude: 'ANTHROPIC_API_KEY', gemini: 'GEMINI_API_KEY', codex: 'OPENAI_API_KEY', grok: 'XAI_API_KEY', qwen: 'DASHSCOPE_API_KEY' };
       enriched[cli].hasApiKey = !!(keyMap[cli] && aiKeys[keyMap[cli]]);
@@ -193,17 +199,26 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     try {
       // Auto-select best mode: pipe mode for CLIs that support it (fast, reliable),
       // visible PTY for interactive CLIs that need a terminal.
-      // Remote cloud workers (e.g. Jules) route to spawnJules without spawning a local CLI process.
+      // Remote cloud workers (e.g. Jules, Gemini API) route to remote spawn methods without spawning a local CLI process.
       // The 'visible' param can override: visible=true forces PTY, visible=false forces headless.
       const cliCfg = CLI_CONFIG[cli];
-      const isRemote = cli === 'jules' || (cliCfg && cliCfg.isRemote);
+      const isRemote = cli === 'jules' || cli === 'gemini-api' || (cliCfg && cliCfg.isRemote);
       const useVisible = !isRemote && (visible === true || (visible !== false && cliCfg && !cliCfg.pipeMode));
       const resolvedSpace = resolveSpace(space);
-      const task = isRemote && typeof orch.spawnJules === 'function'
-        ? orch.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace })
-        : (useVisible
-          ? orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace })
-          : orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace }));
+      let task;
+      if (cli === 'gemini-api' && typeof orch.spawnGeminiApi === 'function') {
+        task = orch.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space: resolvedSpace });
+      } else if (cli === 'jules' && typeof orch.spawnJules === 'function') {
+        task = orch.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
+      } else if (isRemote && typeof orch.spawnGeminiApi === 'function' && cli === 'gemini-api') {
+        task = orch.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space: resolvedSpace });
+      } else if (isRemote && typeof orch.spawnJules === 'function') {
+        task = orch.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
+      } else if (useVisible) {
+        task = orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
+      } else {
+        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace });
+      }
       const payload = orch._serializeTask(task);
       if (brainPickedCli) {
         payload.brainPickedCli = brainPickedCli;
@@ -237,10 +252,15 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     if (!await gateSpawn(res, { cli, label: `Follow-up to ${parentTaskId.slice(0, 8)}`, wait: !autoPermit })) return;
     try {
       const cliCfg = CLI_CONFIG[cli];
-      const useVisible = cliCfg && !cliCfg.pipeMode;
+      const isRemote = cli === 'jules' || cli === 'gemini-api' || (cliCfg && cliCfg.isRemote);
+      const useVisible = !isRemote && cliCfg && !cliCfg.pipeMode;
       const inheritedSpace = space !== undefined ? space : ((parent && parent.space) || resolveSpace());
       let task;
-      if (useVisible) {
+      if (cli === 'gemini-api' && typeof orch.spawnGeminiApi === 'function') {
+        task = orch.spawnGeminiApi({ cli, prompt: combined, from: 'followup', model: parent.model, space: inheritedSpace });
+      } else if (cli === 'jules' && typeof orch.spawnJules === 'function') {
+        task = orch.spawnJules({ cli, prompt: combined, from: 'followup', space: inheritedSpace });
+      } else if (useVisible) {
         // Visible PTY spawn types the prompt into a live terminal character-by-character.
         // Embedded newlines in the combined context get interpreted as Enter keypresses
         // and submit partial content, so the worker loses the prior conversation.

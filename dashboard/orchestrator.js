@@ -89,6 +89,7 @@ Object.assign(
   require('./orchestrator/spawn-headless'), // headless spawn, PTY injection, dispatch
   require('./orchestrator/spawn-visible'),  // visible PTY spawn with interactive watcher
   require('./orchestrator/spawn-jules'),    // Google Jules cloud remote worker
+  require('./orchestrator/spawn-gemini-api'), // Google Gemini Developer API remote worker
 );
 
 // ── Route mounting ───────────────────────────────────────────────────────────

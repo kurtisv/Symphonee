@@ -69,8 +69,19 @@ module.exports = {
    * @returns {Task}
    */
   spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, _retryAttempt = 0 }) {
-    if ((cli === 'jules' || (CLI_CONFIG[cli] && CLI_CONFIG[cli].isRemote)) && typeof this.spawnJules === 'function') {
+    if (cli === 'gemini-api' && typeof this.spawnGeminiApi === 'function') {
+      return this.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space });
+    }
+    if (cli === 'jules' && typeof this.spawnJules === 'function') {
       return this.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space });
+    }
+    if (CLI_CONFIG[cli] && CLI_CONFIG[cli].isRemote) {
+      if (cli === 'gemini-api' && typeof this.spawnGeminiApi === 'function') {
+        return this.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space });
+      }
+      if (typeof this.spawnJules === 'function') {
+        return this.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space });
+      }
     }
     const cfg = HEADLESS_FLAGS[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(HEADLESS_FLAGS).join(', ')}`);
