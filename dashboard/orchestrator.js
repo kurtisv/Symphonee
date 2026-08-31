@@ -17,6 +17,8 @@ const path = require('path');
 const EventEmitter = require('events');
 const { pretrustFolderForCli } = require('./orchestrator/pretrust');
 const { CircuitBreaker } = require('./orchestrator/reliability');
+const { ProviderHealthManager } = require('./orchestrator/provider-health');
+const { TaskRouter } = require('./orchestrator/task-router');
 const { registerOrchestratorRoutes } = require('./orchestrator/routes');
 
 // ── Orchestrator class ───────────────────────────────────────────────────────
@@ -57,6 +59,8 @@ class Orchestrator extends EventEmitter {
 
     /** @type {CircuitBreaker} per-CLI circuit breaker */
     this.circuitBreaker = new CircuitBreaker();
+    this.providerHealth = new ProviderHealthManager({ getConfig: this.getConfig });
+    this.taskRouter = new TaskRouter({ health: this.providerHealth, getConfig: this.getConfig });
 
     /** @type {Map<string, number>} task heartbeat timestamps (taskId -> lastActivity) */
     this.heartbeats = new Map();

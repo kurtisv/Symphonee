@@ -812,6 +812,9 @@ function handleHealthCheck(res) {
     memory: process.memoryUsage(),
     terminals: terminals.size,
     activeLocks: guard.activeLocks().length,
+    providers: typeof orchestrator !== 'undefined' && orchestrator.providerHealth
+      ? Object.fromEntries(Object.entries(orchestrator.providerHealth.publicStatus()).map(([id, p]) => [id, { enabled: p.enabled, available: p.available, health: p.health, cooldownUntil: p.cooldownUntil }]))
+      : {},
   });
 }
 

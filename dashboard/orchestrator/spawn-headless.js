@@ -329,7 +329,7 @@ module.exports = {
           return; // don't complete the task yet
         }
 
-        task.state = STATE.FAILED;
+        task.state = task._needsAttention ? STATE.NEEDS_ATTENTION : STATE.FAILED;
         task.error = classified.flagError
           ? `CLI "${cli}" rejected flags ${JSON.stringify(finalArgs)}: ${errText.substring(0, 300)}. ` +
             `Update HEADLESS_FLAGS in orchestrator.js to match the CLI's current interface.`
@@ -344,7 +344,7 @@ module.exports = {
         // The actual failover event is broadcast by _tryEscalate after it
         // successfully spawns the next CLI. That keeps the UI from saying
         // "sent to Copilot" when Copilot is skipped and Gemini actually runs.
-        if (classified.failover) {
+        if (classified.failover && task._autoRouting) {
           if (!task._escalationChain || !task._escalationChain.length) {
             task._escalationChain = ESCALATION_ORDER
               .filter(c => c !== cli && this.circuitBreaker.isAvailable(c));
@@ -354,7 +354,7 @@ module.exports = {
         }
 
         // Try cross-model escalation before giving up
-        if (task._escalationChain && task._escalationChain.length && classified.recoverable) {
+        if (task._autoRouting && task._escalationChain && task._escalationChain.length && classified.recoverable) {
           if (this._tryEscalate(task)) return; // escalated to next CLI
         }
 

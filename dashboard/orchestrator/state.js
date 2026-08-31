@@ -20,6 +20,7 @@ const STATE = {
   FAILED:    'failed',
   CANCELLED: 'cancelled',
   TIMEOUT:   'timeout',
+  NEEDS_ATTENTION: 'needs_attention',
 };
 
 module.exports = { STATE, DEFAULT_REACTIONS };

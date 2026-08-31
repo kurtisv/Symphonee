@@ -1434,6 +1434,15 @@
             </div>
           </div>
           <div class="settings-section">
+            <div class="settings-section-title">Multi-Agent Routing</div>
+            <div class="settings-section-desc">Let Symphonee select compatible providers and preserve manual provider choices.</div>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsAutoRoutingEnabled" type="checkbox"> Auto routing enabled</label>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsAutomaticFallback" type="checkbox"> Enable automatic fallback</label>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsPreferCheaperProviders" type="checkbox"> Prefer cheaper providers</label>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsPreservePremiumProviders" type="checkbox"> Preserve premium providers for complex tasks</label>
+            <div class="modal-field"><label>Max fallback attempts</label><input id="settingsMaxFallbackAttempts" type="number" min="0" max="3" step="1" style="width:90px;padding:6px 8px;background:var(--surface0);border:1px solid var(--surface1);border-radius:var(--radius);color:var(--text);font-size:12px;"></div>
+          </div>
+          <div class="settings-section">
             <div class="settings-section-title">API Keys</div>
             <div class="settings-section-desc">Optional API keys unlock additional models. Without these, CLIs use your subscription login. With a key, the CLI uses API billing instead and all models become available.</div>
             <div class="modal-field" style="margin-bottom:6px;">

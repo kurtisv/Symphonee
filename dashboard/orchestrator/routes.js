@@ -47,12 +47,17 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
       orchestrating: orch.orchestrating,
       runningTasks: running.length,
       tasks: running.map(t => orch._serializeTask(t)),
+      providers: orch.providerHealth ? Object.fromEntries(Object.entries(orch.providerHealth.publicStatus()).map(([id, p]) => [id, { available: p.available && p.enabled, health: p.health, cooldownUntil: p.cooldownUntil }])) : {},
     });
   });
 
   // ── GET /api/orchestrator/agents ──────────────────────────────────────
   addRoute('GET', '/api/orchestrator/agents', (req, res) => {
     json(res, orch.getAgents());
+  });
+
+  addRoute('GET', '/api/orchestrator/providers', (req, res) => {
+    json(res, orch.providerHealth ? orch.providerHealth.publicStatus() : {});
   });
 
   // ── GET /api/orchestrator/terminal-output ────────────────────────────
@@ -124,8 +129,17 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
 
   // ── POST /api/orchestrator/spawn ──────────────────────────────────────
   addRoute('POST', '/api/orchestrator/spawn', async (req, res) => {
-    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space } = await readBody(req);
+    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, task: taskHints } = await readBody(req);
     if (!prompt) return json(res, { error: 'prompt required' }, 400);
+    const requestedCli = cli;
+    let routing = null;
+    if (cli === 'auto') {
+      if (getConfig && getConfig().AutoRoutingEnabled === false) return json(res, { error: 'Auto routing is disabled in Settings', requestedCli: 'auto' }, 400);
+      try {
+        routing = orch.taskRouter.selectProvider({ ...(taskHints || {}), prompt }, { preferCheaper: !!(taskHints && taskHints.preferCheaper) });
+        cli = routing.provider;
+      } catch (err) { return json(res, { error: err.message, requestedCli: 'auto' }, 503); }
+    }
     // Symphonee brain consultation: when cli is omitted, the brain tries
     // to answer locally FIRST (Mind recall or gemma synthesis). Frontier
     // dispatch only happens if the brain says source === 'escalate'.
@@ -220,6 +234,23 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace });
       }
       const payload = orch._serializeTask(task);
+      if (requestedCli === 'auto' || routing) {
+        payload.requestedCli = 'auto';
+        payload.selectedProvider = cli;
+        payload.routingReason = routing.reason;
+        payload.routingScore = routing.score;
+        payload.routingAttempt = 1;
+        payload.routingHistory = [];
+        const configuredFallback = getConfig && getConfig().MaxFallbackAttempts;
+        const maxFallback = Math.max(0, Math.min(3, Number(configuredFallback === undefined ? 3 : configuredFallback)));
+        task.requestedCli = 'auto'; task.selectedProvider = cli; task.routingReason = routing.reason; task.routingScore = routing.score; task.routingAttempt = 1; task.routingHistory = []; task._autoRouting = true;
+        task._automaticFallback = !getConfig || (getConfig().AutomaticFallback !== false && getConfig().EnableAutomaticFallback !== false);
+        task._needsAttention = !!(taskHints && (taskHints.destructive || taskHints.nonIdempotent || taskHints.ambiguousRepoState));
+        if (task._needsAttention) task._automaticFallback = false;
+        task._escalationChain = task._automaticFallback ? (routing.candidates || []).slice(1, maxFallback + 1).map(c => c.provider) : [];
+        task._escalationPrompt = prompt; task._escalationCwd = cwd;
+        if (typeof orch._saveTasks === 'function') orch._saveTasks();
+      }
       if (brainPickedCli) {
         payload.brainPickedCli = brainPickedCli;
         payload.brainDecision = brainDecision;
