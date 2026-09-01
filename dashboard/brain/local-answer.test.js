@@ -67,17 +67,17 @@ test('KNOWLEDGE_KINDS excludes drawer, includes note/doc/memory', () => {
 
 // ── the context bus: successes, fresh memory, edited notes ──────────────────
 
-function _withTasksFile(tasks, fn) {
+async function _withTasksFile(tasks, fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-ctx-'));
   const dir = path.join(root, '.ai-workspace', 'orchestrator');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'tasks.json'), JSON.stringify(tasks), 'utf8');
-  try { return fn(root); } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  try { return await fn(root); } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
-test('_recentSuccesses picks fresh completed tasks with their result, newest first', () => {
+test('_recentSuccesses picks fresh completed tasks with their result, newest first', async () => {
   const now = Date.now();
-  _withTasksFile([
+  await _withTasksFile([
     { id: 'old', state: 'completed', cli: 'codex', result: 'ancient', completedAt: now - 60 * 60 * 1000 },
     { id: 'new1', state: 'completed', cli: 'gemini', result: 'fresh result', prompt: 'do a thing', completedAt: now - 60 * 1000 },
     { id: 'fail', state: 'failed', cli: 'claude', error: 'boom', completedAt: now - 30 * 1000 },
@@ -232,7 +232,7 @@ test('deepAnswer reports ungrounded when there is genuinely nothing', async () =
 
 test('gatherContext carries the full bus: successes, mindNew, notesEdited', async () => {
   const now = Date.now();
-  _withTasksFile([
+  await _withTasksFile([
     { id: 's1', state: 'completed', cli: 'gemini', result: 'r', completedAt: now - 1000 },
   ], (root) => {
     const store = require('../mind/store');
