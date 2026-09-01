@@ -117,3 +117,30 @@ test('_saveTasks + _loadTasks round-trip; running tasks become failed on reload'
   assert.ok(reloaded, 'task reloaded');
   assert.equal(reloaded.state, STATE.FAILED, 'in-flight task marked failed after restart');
 });
+
+test('routing metadata and history survive task-store reload', () => {
+  const o = inst();
+  const t = o._createTask({
+    type: 'headless', cli: 'claude', prompt: 'review',
+    routing: {
+      requestedCli: 'auto', selectedProvider: 'claude', selectedRole: 'reviewer',
+      routingScore: 82, routingReason: ['independent from author'],
+      routingCandidates: [{ provider: 'claude', score: 82 }],
+      routingHistory: [{ provider: 'claude', outcome: 'success' }],
+      policy: 'QUALITY', reviewIndependence: true,
+    },
+  });
+  t.state = STATE.COMPLETED;
+  o._saveTasks();
+
+  const o2 = inst();
+  o2._tasksFile = o._tasksFile;
+  o2._loadTasks();
+  const reloaded = o2.getTask(t.id);
+  assert.equal(reloaded.requestedCli, 'auto');
+  assert.equal(reloaded.selectedProvider, 'claude');
+  assert.equal(reloaded.selectedRole, 'reviewer');
+  assert.equal(reloaded.routingScore, 82);
+  assert.deepEqual(reloaded.routingHistory, [{ provider: 'claude', outcome: 'success' }]);
+  assert.equal(reloaded.reviewIndependence, true);
+});
