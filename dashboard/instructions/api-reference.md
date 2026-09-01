@@ -90,7 +90,8 @@ curl -s -X POST http://127.0.0.1:3800/api/ui/view-note -H "Content-Type: applica
 | GET | `/api/orchestrator/agents` | List all active terminals (enrich with AI state from frontend) |
 | POST | `/api/orchestrator/inject` | Inject text into a terminal's PTY. Body: `{ termId, text }` |
 | POST | `/api/orchestrator/dispatch` | Dispatch a task to a running AI terminal. Body: `{ targetTermId, prompt, from?, timeout? }` |
-| POST | `/api/orchestrator/spawn` | Spawn an AI CLI for a one-shot task. Body: `{ cli, prompt, cwd?, timeout?, from?, visible? }` (cli: claude/gemini/codex/copilot/grok; defaults to headless pipe mode) |
+| POST | `/api/orchestrator/spawn` | Spawn an AI CLI for a one-shot task. Body: `{ cli, prompt, cwd?, timeout?, from?, visible? }`; `cli: "auto"` selects a healthy compatible provider and records routing metadata. Manual CLI values remain explicit. |
+| GET | `/api/orchestrator/providers` | Read-only provider registry status: enabled/available, capabilities, health, cooldown and measurable usage (never secrets). |
 | GET | `/api/orchestrator/tasks` | List tasks. Query: `?state=running&from=main&cli=claude&limit=50` |
 | GET | `/api/orchestrator/task?id={id}` | Get a specific task's status and result |
 | POST | `/api/orchestrator/cancel` | Cancel a running task. Body: `{ taskId }` |

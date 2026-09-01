@@ -8,6 +8,7 @@
 const CIRCUIT_BREAKER_THRESHOLD = 3;     // failures before opening
 const CIRCUIT_BREAKER_COOLDOWN = 5 * 60 * 1000; // 5 min cooldown
 const CIRCUIT_BREAKER_HALF_OPEN_AFTER = 2 * 60 * 1000; // 2 min before trying one request
+const { classifyProviderError, isFailoverEligible, ERROR_TYPES } = require('./provider-health');
 
 class CircuitBreaker {
   constructor() {
@@ -100,12 +101,16 @@ function classifyError(error, cli) {
     modelError: isModelError,
     recoverable: !/not installed|not found|not recognized|billing/i.test(msg),
     retryable: isTransient && !isPermanent,
-    failover: isProviderOut || isAuthError || isFlagError || isModelError,
+    failover: isFailoverEligible(classifyProviderError(error)) || isAuthError || isFlagError || isModelError,
     failoverReason: isProviderOut ? 'out of credits / quota'
+                  : classifyProviderError(error) === ERROR_TYPES.RATE_LIMIT ? 'rate limit'
+                  : classifyProviderError(error) === ERROR_TYPES.TIMEOUT ? 'timeout'
+                  : classifyProviderError(error) === ERROR_TYPES.NETWORK_ERROR ? 'network error'
                   : isAuthError ? 'authentication failed'
                   : isModelError ? 'model not supported'
                   : isFlagError ? 'flag mismatch' : null,
     timestamp: Date.now(),
+    errorType: classifyProviderError(error),
   };
 }
 

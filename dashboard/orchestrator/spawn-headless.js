@@ -7,7 +7,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { STATE } = require('./state');
-const { HEADLESS_FLAGS, CLI_MODELS, ESCALATION_ORDER } = require('./cli-config');
+const { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER } = require('./cli-config');
 const { classifyError, retryDelay, MAX_RETRIES } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
@@ -57,7 +57,7 @@ module.exports = {
    * The prompt is sent via stdin and stdout is collected as the result.
    *
    * @param {Object} opts
-   * @param {string} opts.cli       — 'claude' | 'gemini' | 'codex' | 'copilot' | 'grok' | 'qwen'
+   * @param {string} opts.cli       — 'claude' | 'gemini' | 'codex' | 'antigravity' | 'copilot' | 'grok' | 'qwen'
    * @param {string} opts.prompt    — the prompt to send
    * @param {string} [opts.cwd]     — working directory
    * @param {number} [opts.timeout] — ms before killing (default 5 min)
@@ -69,6 +69,20 @@ module.exports = {
    * @returns {Task}
    */
   spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, _retryAttempt = 0 }) {
+    if (cli === 'gemini-api' && typeof this.spawnGeminiApi === 'function') {
+      return this.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space });
+    }
+    if (cli === 'jules' && typeof this.spawnJules === 'function') {
+      return this.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space });
+    }
+    if (CLI_CONFIG[cli] && CLI_CONFIG[cli].isRemote) {
+      if (cli === 'gemini-api' && typeof this.spawnGeminiApi === 'function') {
+        return this.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space });
+      }
+      if (typeof this.spawnJules === 'function') {
+        return this.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space });
+      }
+    }
     const cfg = HEADLESS_FLAGS[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(HEADLESS_FLAGS).join(', ')}`);
     const originalPrompt = prompt;
@@ -204,6 +218,7 @@ module.exports = {
       gemini:  ['GEMINI_API_KEY'],
       codex:   ['OPENAI_API_KEY'],
       copilot: [],  // uses GitHub auth, not API keys
+      antigravity: [], // uses local/cached Google authentication, not Gemini API keys
       grok:    ['XAI_API_KEY'],
       qwen:    ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY'],
     };
@@ -314,7 +329,7 @@ module.exports = {
           return; // don't complete the task yet
         }
 
-        task.state = STATE.FAILED;
+        task.state = task._needsAttention ? STATE.NEEDS_ATTENTION : STATE.FAILED;
         task.error = classified.flagError
           ? `CLI "${cli}" rejected flags ${JSON.stringify(finalArgs)}: ${errText.substring(0, 300)}. ` +
             `Update HEADLESS_FLAGS in orchestrator.js to match the CLI's current interface.`
@@ -329,7 +344,7 @@ module.exports = {
         // The actual failover event is broadcast by _tryEscalate after it
         // successfully spawns the next CLI. That keeps the UI from saying
         // "sent to Copilot" when Copilot is skipped and Gemini actually runs.
-        if (classified.failover) {
+        if (classified.failover && task._autoRouting) {
           if (!task._escalationChain || !task._escalationChain.length) {
             task._escalationChain = ESCALATION_ORDER
               .filter(c => c !== cli && this.circuitBreaker.isAvailable(c));
@@ -339,7 +354,7 @@ module.exports = {
         }
 
         // Try cross-model escalation before giving up
-        if (task._escalationChain && task._escalationChain.length && classified.recoverable) {
+        if (task._autoRouting && task._escalationChain && task._escalationChain.length && classified.recoverable) {
           if (this._tryEscalate(task)) return; // escalated to next CLI
         }
 

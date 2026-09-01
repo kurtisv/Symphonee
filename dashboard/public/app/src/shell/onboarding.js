@@ -319,7 +319,7 @@ const OB_STEPS = [
   title: `Welcome, ${esc(state._obData.displayName.split(' ')[0])}!`,
   subtitle: "Let's get Symphonee set up. We'll install the local AI it runs on, then you can add AI tools, plugins, and your repos. Almost everything here can be changed later from Settings.",
   html: `<div style="display:flex;flex-direction:column;gap:10px;margin-top:8px;">
-      <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="terminal" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>AI Terminal</strong><span>Launch Claude, Gemini, Copilot, Codex, Grok, or Qwen inline</span></div></div>
+      <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="terminal" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>AI Terminal</strong><span>Launch Claude, Gemini, Copilot, Codex, Grok, Qwen, or Antigravity inline</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="bot" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>AI Tools</strong><span>Detect and install AI assistants</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="folder-git-2" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Repositories</strong><span>Add local repos to browse and edit code</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="puzzle" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Plugins (optional)</strong><span>Azure DevOps, GitHub, Jira, Wrike, Builder.io, Sanity, WordPress, and more</span></div></div>
@@ -376,6 +376,7 @@ const OB_STEPS = [
         <option value="gemini"${state._obData.defaultCli === 'gemini' ? ' selected' : ''}>Gemini CLI</option>
         <option value="copilot"${state._obData.defaultCli === 'copilot' ? ' selected' : ''}>Copilot CLI</option>
         <option value="codex"${state._obData.defaultCli === 'codex' ? ' selected' : ''}>Codex CLI</option>
+        <option value="antigravity"${state._obData.defaultCli === 'antigravity' ? ' selected' : ''}>Antigravity</option>
 
         <option value="grok"${state._obData.defaultCli === 'grok' ? ' selected' : ''}>Grok Code</option>
         <option value="qwen"${state._obData.defaultCli === 'qwen' ? ' selected' : ''}>Qwen Code</option>

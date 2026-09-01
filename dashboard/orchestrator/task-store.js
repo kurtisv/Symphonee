@@ -7,13 +7,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { STATE } = require('./state');
+const { classifyProviderError, isFailoverEligible } = require('./provider-health');
 module.exports = {
   /** Persist all non-running tasks to disk */
   _saveTasks() {
     try {
       const serializable = [];
       for (const [, task] of this.tasks) {
-        const { _proc, _timer, _pollInterval, _spawnOpts, _escalationChain, _escalationPrompt, _escalationCwd, _retryAttempt, ...safe } = task;
+        const { _proc, _timer, _pollInterval, _spawnOpts, _escalationChain, _escalationPrompt, _escalationCwd, _retryAttempt, _abortController, ...safe } = task;
         serializable.push(safe);
       }
       fs.writeFileSync(this._tasksFile, JSON.stringify(serializable, null, 2));
@@ -76,6 +77,10 @@ module.exports = {
     if (task._proc) {
       try { task._proc.kill('SIGTERM'); } catch (_) {}
       task._proc = null;
+    }
+    if (task._abortController) {
+      try { task._abortController.abort(); } catch (_) {}
+      task._abortController = null;
     }
     if (task._timer) clearTimeout(task._timer);
     if (task._pollInterval) clearInterval(task._pollInterval);
@@ -144,7 +149,7 @@ module.exports = {
     return crypto.randomBytes(6).toString('hex');
   },
 
-  _createTask({ id, type, cli, prompt, from, timeout, targetTermId, model, space }) {
+  _createTask({ id, type, cli, prompt, from, timeout, targetTermId, model, space, routing }) {
     const task = {
       id: id || this._id(),
       type,              // 'headless' | 'dispatch' | 'handoff'
@@ -165,6 +170,18 @@ module.exports = {
       createdAt: Date.now(),
       startedAt: null,
       completedAt: null,
+      requestedCli: routing && routing.requestedCli || cli || null,
+      selectedProvider: routing && routing.selectedProvider || cli || null,
+      routingReason: routing && routing.routingReason || [],
+      routingScore: routing && routing.routingScore !== undefined ? routing.routingScore : null,
+      routingAttempt: routing && routing.routingAttempt || 1,
+      routingHistory: routing && routing.routingHistory ? routing.routingHistory : [],
+      selectedRole: routing && routing.selectedRole || null,
+      routingCandidates: routing && routing.routingCandidates || [],
+      routingPolicy: routing && routing.policy || null,
+      authorProvider: routing && routing.authorProvider || null,
+      reviewProvider: routing && routing.reviewProvider || null,
+      reviewIndependence: routing && routing.reviewIndependence,
       // Internal references (not serialized)
       _proc: null,
       _timer: null,
@@ -176,7 +193,7 @@ module.exports = {
 
   _serializeTask(task) {
     if (!task) return null;
-    const { _proc, _timer, _pollInterval, _spawnOpts, _retryAttempt, ...safe } = task;
+    const { _proc, _timer, _pollInterval, _spawnOpts, _retryAttempt, _abortController, ...safe } = task;
     return safe;
   },
 
@@ -190,6 +207,26 @@ module.exports = {
   },
 
   _broadcastTaskUpdate(task) {
+    if (task._needsAttention && task.state === STATE.FAILED) task.state = STATE.NEEDS_ATTENTION;
+    if (task.state !== STATE.COMPLETED && task._autoRouting && task._automaticFallback && task._escalationChain && task._escalationChain.length && !task._failoverStarted) {
+      const type = task.errorClassification && task.errorClassification.errorType || classifyProviderError(task.error || task.state);
+      if (isFailoverEligible(type) && typeof this._tryEscalate === 'function') {
+        task.errorClassification = task.errorClassification || { errorType: type, message: task.error || task.state };
+        task._failoverStarted = true;
+        if (this._tryEscalate(task)) return;
+      }
+    }
+    if ((task.state === STATE.COMPLETED || task.state === STATE.FAILED || task.state === STATE.TIMEOUT || task.state === STATE.NEEDS_ATTENTION) && task.selectedProvider) {
+      task.routingHistory = task.routingHistory || [];
+      if (!task._routingAttemptRecorded) {
+        const errorClassification = task.errorClassification && (task.errorClassification.errorType || task.errorClassification.type) || null;
+        const outcome = task.state === STATE.COMPLETED ? 'success' : task.state;
+        if (this.providerHealth) this.providerHealth.recordOutcome(task.selectedProvider, { ok: outcome === 'success', error: errorClassification || task.error, usage: task.geminiUsage || task.usage });
+        if (this.performance && task.selectedRole) this.performance.record(task.selectedProvider, task.selectedRole, { ok: outcome === 'success', errorType: errorClassification, durationMs: task.startedAt && task.completedAt ? task.completedAt - task.startedAt : undefined, inputTokens: (task.geminiUsage || task.usage || {}).inputTokens, outputTokens: (task.geminiUsage || task.usage || {}).outputTokens, testPassed: outcome === 'success' && task.selectedRole === 'tester' });
+        task.routingHistory.push({ provider: task.selectedProvider, startedAt: task.startedAt, endedAt: task.completedAt || Date.now(), outcome, errorClassification, usage: task.geminiUsage || task.usage || null });
+        task._routingAttemptRecorded = true;
+      }
+    }
     this._saveTasks();
     this.broadcast({
       type: 'orchestrator-event',
@@ -199,8 +236,8 @@ module.exports = {
     });
 
     // Release queued tasks whose dependencies are now met
-    const taskFinished = task.state === STATE.COMPLETED || task.state === STATE.FAILED || task.state === STATE.TIMEOUT;
-    if (taskFinished) this._releaseQueuedTasks();
+    const taskFinished = task.state === STATE.COMPLETED || task.state === STATE.FAILED || task.state === STATE.TIMEOUT || task.state === STATE.NEEDS_ATTENTION;
+    if (taskFinished && typeof this._releaseQueuedTasks === 'function') this._releaseQueuedTasks();
 
     // Mind: completed tasks become conversation nodes in the shared brain.
     // This is the "shared consciousness" mechanic - what each CLI figures
@@ -223,7 +260,7 @@ module.exports = {
     }
 
     // Auto-notify the requesting agent when a task finishes
-    const done = task.state === STATE.COMPLETED || task.state === STATE.FAILED || task.state === STATE.TIMEOUT;
+    const done = task.state === STATE.COMPLETED || task.state === STATE.FAILED || task.state === STATE.TIMEOUT || task.state === STATE.NEEDS_ATTENTION;
     if (done && task.from) {
       const delivery = (this.getConfig().OrchestrateResultDelivery) || 'inject';
       const stateLabel = task.state === STATE.COMPLETED ? 'completed successfully' : task.state;

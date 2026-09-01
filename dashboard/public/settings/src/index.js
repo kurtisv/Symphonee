@@ -280,11 +280,21 @@ function openSettings(tab) {
   document.getElementById('settingsXaiKey').value = aiKeys.XAI_API_KEY || '';
   renderBrowserCreds();
   // Populate orchestrator CLI checkboxes
-  var orchList = Array.isArray(state.configData.OrchestrateCliList) ? state.configData.OrchestrateCliList : ['claude', 'gemini', 'codex', 'copilot', 'grok', 'qwen'];
+  var orchList = Array.isArray(state.configData.OrchestrateCliList) ? state.configData.OrchestrateCliList : ['claude', 'gemini', 'codex', 'copilot', 'grok', 'qwen', 'antigravity', 'jules', 'gemini-api'];
   document.querySelectorAll('.orch-cli-cb').forEach(function (cb) {
     cb.checked = orchList.includes(cb.value);
   });
-  document.getElementById('settingsDefaultCli').value = state.configData.DefaultCli || state.activeCli || 'claude';
+    document.getElementById('settingsDefaultCli').value = state.configData.DefaultCli || state.activeCli || 'claude';
+    const routingDefaults = { AutoRoutingEnabled: true, AutomaticFallback: true, PreferCheaperProviders: false, PreservePremiumProviders: true, MaxFallbackAttempts: 3, AutoRoutingPolicy: 'BALANCED' };
+    const setRouting = (id, key) => { const el = document.getElementById(id); if (el) el.checked = state.configData[key] !== undefined ? state.configData[key] === true : routingDefaults[key]; };
+    setRouting('settingsAutoRoutingEnabled', 'AutoRoutingEnabled');
+    setRouting('settingsAutomaticFallback', 'AutomaticFallback');
+    setRouting('settingsPreferCheaperProviders', 'PreferCheaperProviders');
+    setRouting('settingsPreservePremiumProviders', 'PreservePremiumProviders');
+    const policy = document.getElementById('settingsAutoRoutingPolicy');
+    if (policy) policy.value = state.configData.AutoRoutingPolicy || routingDefaults.AutoRoutingPolicy;
+    const maxFallback = document.getElementById('settingsMaxFallbackAttempts');
+    if (maxFallback) maxFallback.value = Number.isFinite(Number(state.configData.MaxFallbackAttempts)) ? Number(state.configData.MaxFallbackAttempts) : routingDefaults.MaxFallbackAttempts;
   document.getElementById('settingsTeam').value = state.configData.DefaultTeam || '';
   // Initialize projects list from config
   const rawProjects = Array.isArray(state.configData.AzureDevOpsProjects) ? state.configData.AzureDevOpsProjects : [];
@@ -837,6 +847,13 @@ async function saveSettings() {
         model: _txt('settingsInAppAgentModel') || undefined
       },
       DefaultCli: defaultCli,
+      AutoRoutingEnabled: _chk('settingsAutoRoutingEnabled'),
+      AutomaticFallback: _chk('settingsAutomaticFallback'),
+      EnableAutomaticFallback: _chk('settingsAutomaticFallback'),
+      PreferCheaperProviders: _chk('settingsPreferCheaperProviders'),
+      PreservePremiumProviders: _chk('settingsPreservePremiumProviders'),
+      AutoRoutingPolicy: _txt('settingsAutoRoutingPolicy') || 'BALANCED',
+      MaxFallbackAttempts: Math.max(0, Math.min(3, Number(_txt('settingsMaxFallbackAttempts')) || 0)),
       Repos: state.configData.Repos || {}
     };
     const res = await fetch('/api/config', {

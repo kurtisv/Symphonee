@@ -28,6 +28,9 @@ module.exports = {
   spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space }) {
     const cfg = CLI_CONFIG[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(CLI_CONFIG).join(', ')}`);
+    if (cfg.isRemote || !cfg.cmd) {
+      throw new Error(`Worker "${cli}" is a remote API worker and cannot be spawned in a visible terminal.`);
+    }
     if (!this.createTerminal) throw new Error('createTerminal not available - cannot spawn visible terminals');
 
     // Verify CLI exists before spawning

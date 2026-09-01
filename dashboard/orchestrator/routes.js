@@ -47,12 +47,25 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
       orchestrating: orch.orchestrating,
       runningTasks: running.length,
       tasks: running.map(t => orch._serializeTask(t)),
+      providers: orch.providerHealth ? Object.fromEntries(Object.entries(orch.providerHealth.publicStatus()).map(([id, p]) => [id, { available: p.available && p.enabled, health: p.health, cooldownUntil: p.cooldownUntil }])) : {},
     });
   });
 
   // ── GET /api/orchestrator/agents ──────────────────────────────────────
   addRoute('GET', '/api/orchestrator/agents', (req, res) => {
     json(res, orch.getAgents());
+  });
+
+  addRoute('GET', '/api/orchestrator/providers', (req, res) => {
+    json(res, orch.providerHealth ? orch.providerHealth.publicStatus() : {});
+  });
+  addRoute('GET', '/api/orchestrator/provider-performance', (req, res) => {
+    json(res, orch.performance ? orch.performance.publicRecords() : {});
+  });
+  addRoute('POST', '/api/orchestrator/plan', async (req, res) => {
+    const body = await readBody(req); const task = body.task || body; const workflow = orch.taskRouter.selectProvider(task, { role: task.role || undefined, policy: task.routingPolicy, plan: true });
+    const steps = (workflow.workflow || []).map(step => ({ ...step, routing: orch.taskRouter.selectProvider({ ...task, role: step.role }, { role: step.role, policy: task.routingPolicy, authorProvider: step.role === 'reviewer' ? workflow.provider : undefined }) }));
+    json(res, { roles: workflow.roles, characteristics: workflow.characteristics, steps });
   });
 
   // ── GET /api/orchestrator/terminal-output ────────────────────────────
@@ -96,6 +109,18 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     const enriched = {};
     for (const [cli, meta] of Object.entries(CLI_MODELS)) {
       enriched[cli] = { ...meta };
+      if (cli === 'jules') {
+        enriched[cli].hasApiKey = !!process.env.JULES_API_KEY;
+        enriched[cli].isRemote = true;
+        enriched[cli].available = !!process.env.JULES_API_KEY;
+        continue;
+      }
+      if (cli === 'gemini-api') {
+        enriched[cli].hasApiKey = !!process.env.GEMINI_API_KEY;
+        enriched[cli].isRemote = true;
+        enriched[cli].available = !!process.env.GEMINI_API_KEY;
+        continue;
+      }
       // Indicate which API keys are set (boolean, not the actual key)
       const keyMap = { claude: 'ANTHROPIC_API_KEY', gemini: 'GEMINI_API_KEY', codex: 'OPENAI_API_KEY', grok: 'XAI_API_KEY', qwen: 'DASHSCOPE_API_KEY' };
       enriched[cli].hasApiKey = !!(keyMap[cli] && aiKeys[keyMap[cli]]);
@@ -112,8 +137,17 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
 
   // ── POST /api/orchestrator/spawn ──────────────────────────────────────
   addRoute('POST', '/api/orchestrator/spawn', async (req, res) => {
-    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space } = await readBody(req);
+    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, task: taskHints } = await readBody(req);
     if (!prompt) return json(res, { error: 'prompt required' }, 400);
+    const requestedCli = cli;
+    let routing = null;
+    if (cli === 'auto') {
+      if (getConfig && getConfig().AutoRoutingEnabled === false) return json(res, { error: 'Auto routing is disabled in Settings', requestedCli: 'auto' }, 400);
+      try {
+        routing = orch.taskRouter.selectProvider({ ...(taskHints || {}), prompt }, { role: taskHints && taskHints.role, policy: taskHints && taskHints.routingPolicy, authorProvider: taskHints && (taskHints.authorProvider || taskHints.writerProvider), plan: !!(taskHints && taskHints.plan), preferCheaper: !!(taskHints && taskHints.preferCheaper) });
+        cli = routing.provider;
+      } catch (err) { return json(res, { error: err.message, requestedCli: 'auto' }, 503); }
+    }
     // Symphonee brain consultation: when cli is omitted, the brain tries
     // to answer locally FIRST (Mind recall or gemma synthesis). Frontier
     // dispatch only happens if the brain says source === 'escalate'.
@@ -187,14 +221,45 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     try {
       // Auto-select best mode: pipe mode for CLIs that support it (fast, reliable),
       // visible PTY for interactive CLIs that need a terminal.
+      // Remote cloud workers (e.g. Jules, Gemini API) route to remote spawn methods without spawning a local CLI process.
       // The 'visible' param can override: visible=true forces PTY, visible=false forces headless.
       const cliCfg = CLI_CONFIG[cli];
-      const useVisible = visible === true || (visible !== false && cliCfg && !cliCfg.pipeMode);
+      const isRemote = cli === 'jules' || cli === 'gemini-api' || (cliCfg && cliCfg.isRemote);
+      const useVisible = !isRemote && (visible === true || (visible !== false && cliCfg && !cliCfg.pipeMode));
       const resolvedSpace = resolveSpace(space);
-      const task = useVisible
-        ? orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace })
-        : orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace });
+      let task;
+      if (cli === 'gemini-api' && typeof orch.spawnGeminiApi === 'function') {
+        task = orch.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space: resolvedSpace });
+      } else if (cli === 'jules' && typeof orch.spawnJules === 'function') {
+        task = orch.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
+      } else if (isRemote && typeof orch.spawnGeminiApi === 'function' && cli === 'gemini-api') {
+        task = orch.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space: resolvedSpace });
+      } else if (isRemote && typeof orch.spawnJules === 'function') {
+        task = orch.spawnJules({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
+      } else if (useVisible) {
+        task = orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
+      } else {
+        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace });
+      }
       const payload = orch._serializeTask(task);
+      if (requestedCli === 'auto' || routing) {
+        payload.requestedCli = 'auto';
+        payload.selectedProvider = cli;
+        payload.routingReason = routing.reason;
+        payload.routingScore = routing.score;
+        payload.routingAttempt = 1;
+        payload.routingHistory = [];
+        payload.selectedRole = routing.selectedRole; payload.routingCandidates = routing.routingCandidates; payload.routingPolicy = routing.policy; payload.reviewIndependence = routing.reviewIndependence;
+        const configuredFallback = getConfig && getConfig().MaxFallbackAttempts;
+        const maxFallback = Math.max(0, Math.min(3, Number(configuredFallback === undefined ? 3 : configuredFallback)));
+        task.requestedCli = 'auto'; task.selectedProvider = cli; task.selectedRole = routing.selectedRole; task.routingCandidates = routing.routingCandidates; task.routingPolicy = routing.policy; task.reviewIndependence = routing.reviewIndependence; task.routingReason = routing.reason; task.routingScore = routing.score; task.routingAttempt = 1; task.routingHistory = []; task._autoRouting = true;
+        task._automaticFallback = !getConfig || (getConfig().AutomaticFallback !== false && getConfig().EnableAutomaticFallback !== false);
+        task._needsAttention = !!(taskHints && (taskHints.destructive || taskHints.nonIdempotent || taskHints.ambiguousRepoState));
+        if (task._needsAttention) task._automaticFallback = false;
+        task._escalationChain = task._automaticFallback ? (routing.candidates || []).slice(1, maxFallback + 1).map(c => c.provider) : [];
+        task._escalationPrompt = prompt; task._escalationCwd = cwd;
+        if (typeof orch._saveTasks === 'function') orch._saveTasks();
+      }
       if (brainPickedCli) {
         payload.brainPickedCli = brainPickedCli;
         payload.brainDecision = brainDecision;
@@ -227,10 +292,15 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     if (!await gateSpawn(res, { cli, label: `Follow-up to ${parentTaskId.slice(0, 8)}`, wait: !autoPermit })) return;
     try {
       const cliCfg = CLI_CONFIG[cli];
-      const useVisible = cliCfg && !cliCfg.pipeMode;
+      const isRemote = cli === 'jules' || cli === 'gemini-api' || (cliCfg && cliCfg.isRemote);
+      const useVisible = !isRemote && cliCfg && !cliCfg.pipeMode;
       const inheritedSpace = space !== undefined ? space : ((parent && parent.space) || resolveSpace());
       let task;
-      if (useVisible) {
+      if (cli === 'gemini-api' && typeof orch.spawnGeminiApi === 'function') {
+        task = orch.spawnGeminiApi({ cli, prompt: combined, from: 'followup', model: parent.model, space: inheritedSpace });
+      } else if (cli === 'jules' && typeof orch.spawnJules === 'function') {
+        task = orch.spawnJules({ cli, prompt: combined, from: 'followup', space: inheritedSpace });
+      } else if (useVisible) {
         // Visible PTY spawn types the prompt into a live terminal character-by-character.
         // Embedded newlines in the combined context get interpreted as Enter keypresses
         // and submit partial content, so the worker loses the prior conversation.
@@ -499,7 +569,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         orch.broadcast({ type: 'orchestrator-event', event: 'agent-stale', taskId: beat.taskId, cli: beat.cli, idleMs: beat.idleMs, timestamp: Date.now() });
       }
     }
-  }, 30000);
+  }, 30000).unref();
 
 
 }

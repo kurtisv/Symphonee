@@ -23,6 +23,10 @@ const CLI_CONFIG = {
     cmd: 'codex',
     label: 'Codex CLI'
   },
+  antigravity: {
+    cmd: 'agy',
+    label: 'Antigravity'
+  },
   grok: {
     cmd: 'grok',
     label: 'Grok Code'
@@ -30,6 +34,16 @@ const CLI_CONFIG = {
   qwen: {
     cmd: 'qwen',
     label: 'Qwen Code'
+  },
+  jules: {
+    cmd: null,
+    label: 'Jules',
+    isRemote: true
+  },
+  'gemini-api': {
+    cmd: null,
+    label: 'Gemini API',
+    isRemote: true
   }
 };
 // Exposed on window so the extracted notifications module (loaded after app.js)
@@ -838,7 +852,8 @@ function connect() {
     document.getElementById('connectionStatus').textContent = 'Disconnected';
     state.reconnectTimer = setTimeout(connect, 2500);
   };
-}// ── Focus / context-awareness state push ────────────────────────────────
+}
+// ── Focus / context-awareness state push ────────────────────────────────
 // Thin wrapper that POSTs the latest user focus to the server. The server
 // keeps it so any AI worker can call GET /api/application-state/focus and
 // know what the user is currently looking at without needing to ask.
@@ -2722,7 +2737,7 @@ const OB_STEPS = [
   title: `Welcome, ${esc(state._obData.displayName.split(' ')[0])}!`,
   subtitle: "Let's get Symphonee set up. We'll install the local AI it runs on, then you can add AI tools, plugins, and your repos. Almost everything here can be changed later from Settings.",
   html: `<div style="display:flex;flex-direction:column;gap:10px;margin-top:8px;">
-      <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="terminal" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>AI Terminal</strong><span>Launch Claude, Gemini, Copilot, Codex, Grok, or Qwen inline</span></div></div>
+      <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="terminal" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>AI Terminal</strong><span>Launch Claude, Gemini, Copilot, Codex, Grok, Qwen, or Antigravity inline</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="bot" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>AI Tools</strong><span>Detect and install AI assistants</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="folder-git-2" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Repositories</strong><span>Add local repos to browse and edit code</span></div></div>
       <div class="onboarding-overview-item"><div class="onboarding-overview-icon"><i data-lucide="puzzle" style="width:16px;height:16px;"></i></div><div class="onboarding-overview-text"><strong>Plugins (optional)</strong><span>Azure DevOps, GitHub, Jira, Wrike, Builder.io, Sanity, WordPress, and more</span></div></div>
@@ -2779,6 +2794,7 @@ const OB_STEPS = [
         <option value="gemini"${state._obData.defaultCli === 'gemini' ? ' selected' : ''}>Gemini CLI</option>
         <option value="copilot"${state._obData.defaultCli === 'copilot' ? ' selected' : ''}>Copilot CLI</option>
         <option value="codex"${state._obData.defaultCli === 'codex' ? ' selected' : ''}>Codex CLI</option>
+        <option value="antigravity"${state._obData.defaultCli === 'antigravity' ? ' selected' : ''}>Antigravity</option>
 
         <option value="grok"${state._obData.defaultCli === 'grok' ? ' selected' : ''}>Grok Code</option>
         <option value="qwen"${state._obData.defaultCli === 'qwen' ? ' selected' : ''}>Qwen Code</option>
@@ -3682,7 +3698,8 @@ function richToast(msg, type = 'info', options = {}) {
     id,
     close
   };
-}// ── Re-focus terminal when window regains focus ─────────────────────────
+}
+// ── Re-focus terminal when window regains focus ─────────────────────────
 window.addEventListener('focus', () => {
   const activeTab = document.querySelector('.tab-btn.active')?.dataset?.tab;
   if (activeTab === 'terminal') {

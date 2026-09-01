@@ -19,6 +19,10 @@ const CLI_CONFIG = {
     cmd: 'codex',
     label: 'Codex CLI'
   },
+  antigravity: {
+    cmd: 'agy',
+    label: 'Antigravity'
+  },
   grok: {
     cmd: 'grok',
     label: 'Grok Code'
@@ -26,6 +30,16 @@ const CLI_CONFIG = {
   qwen: {
     cmd: 'qwen',
     label: 'Qwen Code'
+  },
+  jules: {
+    cmd: null,
+    label: 'Jules',
+    isRemote: true
+  },
+  'gemini-api': {
+    cmd: null,
+    label: 'Gemini API',
+    isRemote: true
   }
 };
 // Exposed on window so the extracted notifications module (loaded after app.js)

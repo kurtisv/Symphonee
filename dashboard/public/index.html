@@ -1434,6 +1434,16 @@
             </div>
           </div>
           <div class="settings-section">
+            <div class="settings-section-title">Multi-Agent Routing</div>
+            <div class="settings-section-desc">Let Symphonee select compatible providers and preserve manual provider choices.</div>
+            <div class="modal-field"><label>Automatic routing policy</label><select id="settingsAutoRoutingPolicy" style="width:180px;padding:6px 8px;background:var(--surface0);border:1px solid var(--surface1);border-radius:var(--radius);color:var(--text);font-size:12px;"><option value="BALANCED">Balanced</option><option value="QUALITY">Quality</option><option value="ECONOMY">Economy</option><option value="SPEED">Speed</option></select></div>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsAutoRoutingEnabled" type="checkbox"> Auto routing enabled</label>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsAutomaticFallback" type="checkbox"> Enable automatic fallback</label>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsPreferCheaperProviders" type="checkbox"> Prefer cheaper providers</label>
+            <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:8px;"><input id="settingsPreservePremiumProviders" type="checkbox"> Preserve premium providers for complex tasks</label>
+            <div class="modal-field"><label>Max fallback attempts</label><input id="settingsMaxFallbackAttempts" type="number" min="0" max="3" step="1" style="width:90px;padding:6px 8px;background:var(--surface0);border:1px solid var(--surface1);border-radius:var(--radius);color:var(--text);font-size:12px;"></div>
+          </div>
+          <div class="settings-section">
             <div class="settings-section-title">API Keys</div>
             <div class="settings-section-desc">Optional API keys unlock additional models. Without these, CLIs use your subscription login. With a key, the CLI uses API billing instead and all models become available.</div>
             <div class="modal-field" style="margin-bottom:6px;">
@@ -1748,6 +1758,15 @@
                 </label>
                 <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text);">
                   <input type="checkbox" class="orch-cli-cb" value="qwen" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;"> Qwen
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text);">
+                  <input type="checkbox" class="orch-cli-cb" value="antigravity" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;"> Antigravity
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text);">
+                  <input type="checkbox" class="orch-cli-cb" value="jules" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;"> Jules <span style="font-size:10px;color:var(--subtext0);">(Remote API)</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text);">
+                  <input type="checkbox" class="orch-cli-cb" value="gemini-api" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;"> Gemini API <span style="font-size:10px;color:var(--subtext0);">(Remote API)</span>
                 </label>
               </div>
             </div>

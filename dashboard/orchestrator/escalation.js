@@ -9,6 +9,7 @@ const { STATE } = require('./state');
 const { ESCALATION_ORDER } = require('./cli-config');
 const { scoreResult } = require('./reliability');
 const { MAX_CONCURRENT_SPAWNS, SPAWN_STAGGER_MS } = require('./constants');
+const { createContextPacket } = require('./context-packet');
 module.exports = {
   // ── Synchronous Handoff ─────────────────────────────────────────────────
 
@@ -181,8 +182,17 @@ module.exports = {
 
     try {
       const classified = task.errorClassification || {};
+      if (task._autoRouting && !task._routingAttemptRecorded) {
+        task.routingHistory = task.routingHistory || [];
+        const errorType = classified.errorType || classified.failoverReason || 'PROVIDER_ERROR';
+        if (this.providerHealth) this.providerHealth.recordOutcome(task.selectedProvider || task.cli, { ok: false, error: errorType });
+        task.routingHistory.push({ provider: task.selectedProvider || task.cli, startedAt: task.startedAt, endedAt: task.completedAt || Date.now(), outcome: 'failed', errorClassification: errorType, usage: task.geminiUsage || task.usage || null });
+        task._routingAttemptRecorded = true;
+      }
       const checkpoint = this.checkpoints.get(task.id);
-      const enhancedPrompt = classified.failover
+      const enhancedPrompt = classified.failover && task._autoRouting
+        ? `${createContextPacket({ taskGoal: task._escalationPrompt, originalPrompt: task._escalationPrompt, completedWork: checkpoint && checkpoint.partial, errors: [task.error], nextAction: 'Continue the task with the remaining provider.' })}\n\nContinue the task using this compact context.`
+        : classified.failover
         ? task._escalationPrompt
         : checkpoint
         ? `[Previous attempt by ${task.cli} produced partial results]:\n${checkpoint.partial.substring(0, 1000)}\n\n[Retry with ${nextCli}]:\n${task._escalationPrompt}`
@@ -193,6 +203,17 @@ module.exports = {
       newTask._escalationChain = task._escalationChain;
       newTask._escalationPrompt = task._escalationPrompt;
       newTask._escalationCwd = task._escalationCwd;
+      if (task._autoRouting) {
+        newTask.requestedCli = 'auto';
+        newTask.selectedProvider = nextCli;
+        newTask.routingReason = [`fallback after ${task.cli}`, classified.errorType || classified.failoverReason || 'provider unavailable'];
+        newTask.routingScore = null;
+        newTask.routingAttempt = (task.routingAttempt || 1) + 1;
+        newTask.routingHistory = task.routingHistory || [];
+        newTask._autoRouting = true;
+        newTask._automaticFallback = task._automaticFallback !== false;
+        newTask._escalationChain = task._escalationChain;
+      }
       this.broadcast({
         type: 'orchestrator-event',
         event: 'provider-failover',

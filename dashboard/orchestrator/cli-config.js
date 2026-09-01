@@ -10,6 +10,7 @@ const HEADLESS_FLAGS = {
   claude:  { cmd: 'claude',  args: ['-p'], promptMode: 'stdin' },
   gemini:  { cmd: 'gemini',  args: [],                   promptMode: 'stdin' },
   codex:   { cmd: 'codex',   args: ['exec'],             promptMode: 'stdin' },
+  antigravity: { cmd: 'agy', args: ['-p'],               promptMode: 'flag', shell: false },
   copilot: { cmd: process.platform === 'win32' ? 'copilot.cmd' : 'copilot', args: ['-p'],     promptMode: 'flag',  shell: false },
   grok:    { cmd: process.platform === 'win32' ? 'grok.cmd'    : 'grok',    args: ['--print'], promptMode: 'positional', shell: false },
   qwen:    { cmd: process.platform === 'win32' ? 'qwen.cmd'    : 'qwen',    args: ['-p'],      promptMode: 'flag',       shell: false },
@@ -63,6 +64,20 @@ const CLI_MODELS = {
     extraHeadless: [],
     notes: 'ChatGPT account: gpt-5.x models only. o3/o4-mini/gpt-4.1 require an OpenAI API key. gpt-4o is not available in Codex at all.',
   },
+  antigravity: {
+    models: [],
+    modelIds: [],
+    defaultModel: null,
+    modelFlag: '--model',
+    effortFlag: '--effort',
+    permissionFlag: '--dangerously-skip-permissions',
+    autoPermission: true,
+    outputFormatFlag: null,
+    systemPromptFlag: null,
+    worktreeFlag: null,
+    extraHeadless: [],
+    notes: 'Uses local Google authentication and lets Antigravity choose its default model when none is specified.',
+  },
   copilot: {
     models: ['claude-sonnet-4.6', 'gpt-5.4', 'gpt-4.1', 'gpt-5-mini'],
     modelIds: ['claude-opus-4.6', 'claude-sonnet-4.6', 'claude-haiku-4.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5-mini', 'gpt-4.1', 'gpt-5.3-codex', 'gemini-3-pro-preview'],
@@ -109,20 +124,53 @@ const CLI_MODELS = {
     extraHeadless: [],
     notes: 'Qwen Code is a Gemini CLI fork. Auth via DashScope (DASHSCOPE_API_KEY) or OpenAI-compatible endpoint. Qwen3-Coder models are code-specialized.',
   },
+  jules: {
+    models: ['default'],
+    modelIds: ['default'],
+    defaultModel: 'default',
+    modelFlag: null,
+    effortFlag: null,
+    permissionFlag: null,
+    autoPermission: true,
+    outputFormatFlag: null,
+    systemPromptFlag: null,
+    worktreeFlag: null,
+    extraHeadless: [],
+    isRemote: true,
+    notes: 'Google Jules remote worker (cloud REST API). Requires JULES_API_KEY environment variable.',
+  },
+  'gemini-api': {
+    models: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash', 'gemini-3-pro-preview'],
+    modelIds: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash', 'gemini-3-pro-preview'],
+    defaultModel: 'gemini-3.5-flash-lite',
+    modelFlag: null,
+    effortFlag: null,
+    permissionFlag: null,
+    autoPermission: true,
+    outputFormatFlag: null,
+    systemPromptFlag: null,
+    worktreeFlag: null,
+    extraHeadless: [],
+    isRemote: true,
+    notes: 'Google Gemini Developer API remote worker (cloud REST API). Requires GEMINI_API_KEY environment variable.',
+  },
 };
 
 // Provider abstraction: launch config, cost tier, idle-detection patterns.
 //   tier: 1=basic, 2=mid, 3=premium ; costRank: 1=cheapest .. 5=most expensive
 const CLI_CONFIG = {
-  claude:  { cmd: 'claude',  label: 'Claude Code', pipeMode: true, tier: 3, costRank: 5, idlePattern: /[❯>]\s*$/ },
-  gemini:  { cmd: 'gemini',  label: 'Gemini CLI',  pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
-  codex:   { cmd: 'codex',   label: 'Codex CLI',   pipeMode: true, tier: 2, costRank: 3, idlePattern: /[❯>$]\s*$/ },
-  copilot: { cmd: 'copilot', label: 'Copilot CLI', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>]\s*$/ },
-  grok:    { cmd: 'grok',    label: 'Grok Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
-  qwen:    { cmd: 'qwen',    label: 'Qwen Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  claude:      { cmd: 'claude',  label: 'Claude Code', pipeMode: true, tier: 3, costRank: 5, idlePattern: /[❯>]\s*$/ },
+  gemini:      { cmd: 'gemini',  label: 'Gemini CLI',  pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  codex:       { cmd: 'codex',   label: 'Codex CLI',   pipeMode: true, tier: 2, costRank: 3, idlePattern: /[❯>$]\s*$/ },
+  antigravity: { cmd: 'agy',     label: 'Antigravity', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>$]\s*$/ },
+  copilot:     { cmd: 'copilot', label: 'Copilot CLI', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>]\s*$/ },
+  grok:        { cmd: 'grok',    label: 'Grok Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  qwen:        { cmd: 'qwen',    label: 'Qwen Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  jules:       { cmd: null,      label: 'Jules',       pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
+  'gemini-api': { cmd: null,     label: 'Gemini API',  pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
 };
 
 // Cross-model escalation chain (cheapest first); skips circuit-broken / uninstalled CLIs.
-const ESCALATION_ORDER = ['copilot', 'gemini', 'grok', 'qwen', 'codex', 'claude'];
+const ESCALATION_ORDER = ['copilot', 'gemini', 'grok', 'qwen', 'antigravity', 'codex', 'claude'];
 
 module.exports = { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER };

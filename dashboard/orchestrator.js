@@ -17,6 +17,9 @@ const path = require('path');
 const EventEmitter = require('events');
 const { pretrustFolderForCli } = require('./orchestrator/pretrust');
 const { CircuitBreaker } = require('./orchestrator/reliability');
+const { ProviderHealthManager } = require('./orchestrator/provider-health');
+const { TaskRouter } = require('./orchestrator/task-router');
+const { ProviderPerformanceStore } = require('./orchestrator/provider-performance');
 const { registerOrchestratorRoutes } = require('./orchestrator/routes');
 
 // ── Orchestrator class ───────────────────────────────────────────────────────
@@ -57,6 +60,9 @@ class Orchestrator extends EventEmitter {
 
     /** @type {CircuitBreaker} per-CLI circuit breaker */
     this.circuitBreaker = new CircuitBreaker();
+    this.providerHealth = new ProviderHealthManager({ getConfig: this.getConfig });
+    this.performance = new ProviderPerformanceStore({ file: path.join(workspaceDir, 'provider-performance.json') });
+    this.taskRouter = new TaskRouter({ health: this.providerHealth, performance: this.performance, getConfig: this.getConfig });
 
     /** @type {Map<string, number>} task heartbeat timestamps (taskId -> lastActivity) */
     this.heartbeats = new Map();
@@ -88,6 +94,8 @@ Object.assign(
   require('./orchestrator/escalation'),     // escalation, fan-out, aggregation, worktree, lineage, handoff
   require('./orchestrator/spawn-headless'), // headless spawn, PTY injection, dispatch
   require('./orchestrator/spawn-visible'),  // visible PTY spawn with interactive watcher
+  require('./orchestrator/spawn-jules'),    // Google Jules cloud remote worker
+  require('./orchestrator/spawn-gemini-api'), // Google Gemini Developer API remote worker
 );
 
 // ── Route mounting ───────────────────────────────────────────────────────────
@@ -108,7 +116,7 @@ function mountOrchestrator(addRoute, json, { terminals, broadcast, repoRoot, cre
   orch.getLearnings = getLearnings || null;
 
   // Auto-cleanup tasks older than 1 hour every 30 minutes (preserves recent results)
-  setInterval(() => orch.cleanup(60 * 60 * 1000), 30 * 60 * 1000);
+  setInterval(() => orch.cleanup(60 * 60 * 1000), 30 * 60 * 1000).unref();
 
   registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast, getUiContext, repoRoot });
   return orch;
