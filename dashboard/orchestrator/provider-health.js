@@ -68,6 +68,7 @@ function buildProviderRegistry({ config = {}, availability = {}, now = Date.now(
       usage: { ...(prior.usage || {}) },
       health: prior.health || 'healthy', cooldownUntil: cooldownUntil > now ? cooldownUntil : 0,
       consecutiveFailures: Number(prior.consecutiveFailures || 0), lastFailure: prior.lastFailure || null, lastSuccess: prior.lastSuccess || null,
+      roles: { ...((config.ProviderRoleProfiles && config.ProviderRoleProfiles[id]) || {}), ...((prior.roles) || {}) },
     };
   }
   return result;

@@ -59,6 +59,14 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
   addRoute('GET', '/api/orchestrator/providers', (req, res) => {
     json(res, orch.providerHealth ? orch.providerHealth.publicStatus() : {});
   });
+  addRoute('GET', '/api/orchestrator/provider-performance', (req, res) => {
+    json(res, orch.performance ? orch.performance.publicRecords() : {});
+  });
+  addRoute('POST', '/api/orchestrator/plan', async (req, res) => {
+    const body = await readBody(req); const task = body.task || body; const workflow = orch.taskRouter.selectProvider(task, { role: task.role || undefined, policy: task.routingPolicy, plan: true });
+    const steps = (workflow.workflow || []).map(step => ({ ...step, routing: orch.taskRouter.selectProvider({ ...task, role: step.role }, { role: step.role, policy: task.routingPolicy, authorProvider: step.role === 'reviewer' ? workflow.provider : undefined }) }));
+    json(res, { roles: workflow.roles, characteristics: workflow.characteristics, steps });
+  });
 
   // ── GET /api/orchestrator/terminal-output ────────────────────────────
   // Lets the AI read what's on a spawned terminal's screen (ANSI-stripped)
@@ -136,7 +144,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     if (cli === 'auto') {
       if (getConfig && getConfig().AutoRoutingEnabled === false) return json(res, { error: 'Auto routing is disabled in Settings', requestedCli: 'auto' }, 400);
       try {
-        routing = orch.taskRouter.selectProvider({ ...(taskHints || {}), prompt }, { preferCheaper: !!(taskHints && taskHints.preferCheaper) });
+        routing = orch.taskRouter.selectProvider({ ...(taskHints || {}), prompt }, { role: taskHints && taskHints.role, policy: taskHints && taskHints.routingPolicy, authorProvider: taskHints && (taskHints.authorProvider || taskHints.writerProvider), plan: !!(taskHints && taskHints.plan), preferCheaper: !!(taskHints && taskHints.preferCheaper) });
         cli = routing.provider;
       } catch (err) { return json(res, { error: err.message, requestedCli: 'auto' }, 503); }
     }
@@ -241,9 +249,10 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         payload.routingScore = routing.score;
         payload.routingAttempt = 1;
         payload.routingHistory = [];
+        payload.selectedRole = routing.selectedRole; payload.routingCandidates = routing.routingCandidates; payload.routingPolicy = routing.policy; payload.reviewIndependence = routing.reviewIndependence;
         const configuredFallback = getConfig && getConfig().MaxFallbackAttempts;
         const maxFallback = Math.max(0, Math.min(3, Number(configuredFallback === undefined ? 3 : configuredFallback)));
-        task.requestedCli = 'auto'; task.selectedProvider = cli; task.routingReason = routing.reason; task.routingScore = routing.score; task.routingAttempt = 1; task.routingHistory = []; task._autoRouting = true;
+        task.requestedCli = 'auto'; task.selectedProvider = cli; task.selectedRole = routing.selectedRole; task.routingCandidates = routing.routingCandidates; task.routingPolicy = routing.policy; task.reviewIndependence = routing.reviewIndependence; task.routingReason = routing.reason; task.routingScore = routing.score; task.routingAttempt = 1; task.routingHistory = []; task._autoRouting = true;
         task._automaticFallback = !getConfig || (getConfig().AutomaticFallback !== false && getConfig().EnableAutomaticFallback !== false);
         task._needsAttention = !!(taskHints && (taskHints.destructive || taskHints.nonIdempotent || taskHints.ambiguousRepoState));
         if (task._needsAttention) task._automaticFallback = false;

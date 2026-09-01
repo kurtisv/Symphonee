@@ -176,6 +176,12 @@ module.exports = {
       routingScore: routing && routing.routingScore !== undefined ? routing.routingScore : null,
       routingAttempt: routing && routing.routingAttempt || 1,
       routingHistory: routing && routing.routingHistory ? routing.routingHistory : [],
+      selectedRole: routing && routing.selectedRole || null,
+      routingCandidates: routing && routing.routingCandidates || [],
+      routingPolicy: routing && routing.policy || null,
+      authorProvider: routing && routing.authorProvider || null,
+      reviewProvider: routing && routing.reviewProvider || null,
+      reviewIndependence: routing && routing.reviewIndependence,
       // Internal references (not serialized)
       _proc: null,
       _timer: null,
@@ -216,6 +222,7 @@ module.exports = {
         const errorClassification = task.errorClassification && (task.errorClassification.errorType || task.errorClassification.type) || null;
         const outcome = task.state === STATE.COMPLETED ? 'success' : task.state;
         if (this.providerHealth) this.providerHealth.recordOutcome(task.selectedProvider, { ok: outcome === 'success', error: errorClassification || task.error, usage: task.geminiUsage || task.usage });
+        if (this.performance && task.selectedRole) this.performance.record(task.selectedProvider, task.selectedRole, { ok: outcome === 'success', errorType: errorClassification, durationMs: task.startedAt && task.completedAt ? task.completedAt - task.startedAt : undefined, inputTokens: (task.geminiUsage || task.usage || {}).inputTokens, outputTokens: (task.geminiUsage || task.usage || {}).outputTokens, testPassed: outcome === 'success' && task.selectedRole === 'tester' });
         task.routingHistory.push({ provider: task.selectedProvider, startedAt: task.startedAt, endedAt: task.completedAt || Date.now(), outcome, errorClassification, usage: task.geminiUsage || task.usage || null });
         task._routingAttemptRecorded = true;
       }

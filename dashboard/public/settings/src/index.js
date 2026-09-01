@@ -285,12 +285,14 @@ function openSettings(tab) {
     cb.checked = orchList.includes(cb.value);
   });
     document.getElementById('settingsDefaultCli').value = state.configData.DefaultCli || state.activeCli || 'claude';
-    const routingDefaults = { AutoRoutingEnabled: true, AutomaticFallback: true, PreferCheaperProviders: false, PreservePremiumProviders: true, MaxFallbackAttempts: 3 };
+    const routingDefaults = { AutoRoutingEnabled: true, AutomaticFallback: true, PreferCheaperProviders: false, PreservePremiumProviders: true, MaxFallbackAttempts: 3, AutoRoutingPolicy: 'BALANCED' };
     const setRouting = (id, key) => { const el = document.getElementById(id); if (el) el.checked = state.configData[key] !== undefined ? state.configData[key] === true : routingDefaults[key]; };
     setRouting('settingsAutoRoutingEnabled', 'AutoRoutingEnabled');
     setRouting('settingsAutomaticFallback', 'AutomaticFallback');
     setRouting('settingsPreferCheaperProviders', 'PreferCheaperProviders');
     setRouting('settingsPreservePremiumProviders', 'PreservePremiumProviders');
+    const policy = document.getElementById('settingsAutoRoutingPolicy');
+    if (policy) policy.value = state.configData.AutoRoutingPolicy || routingDefaults.AutoRoutingPolicy;
     const maxFallback = document.getElementById('settingsMaxFallbackAttempts');
     if (maxFallback) maxFallback.value = Number.isFinite(Number(state.configData.MaxFallbackAttempts)) ? Number(state.configData.MaxFallbackAttempts) : routingDefaults.MaxFallbackAttempts;
   document.getElementById('settingsTeam').value = state.configData.DefaultTeam || '';
@@ -850,6 +852,7 @@ async function saveSettings() {
       EnableAutomaticFallback: _chk('settingsAutomaticFallback'),
       PreferCheaperProviders: _chk('settingsPreferCheaperProviders'),
       PreservePremiumProviders: _chk('settingsPreservePremiumProviders'),
+      AutoRoutingPolicy: _txt('settingsAutoRoutingPolicy') || 'BALANCED',
       MaxFallbackAttempts: Math.max(0, Math.min(3, Number(_txt('settingsMaxFallbackAttempts')) || 0)),
       Repos: state.configData.Repos || {}
     };
