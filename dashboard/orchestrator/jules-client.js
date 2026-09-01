@@ -462,9 +462,16 @@ function formatJulesResult({ session, activities = [], owner, repo, branch, jule
     );
   }
 
-  const summary = session?.output || session?.summary || session?.description || session?.result;
+  const summary = extractJulesSummary(session, activities);
   if (summary) {
     lines.push(`## Summary`, '', String(summary).trim(), '');
+  } else {
+    lines.push(
+      `## Summary`,
+      '',
+      `Jules reported a terminal state but did not return a textual result. Review the activity log or reopen the Jules session for the full output.`,
+      ''
+    );
   }
 
   if (session?.artifacts && session.artifacts.length > 0) {
@@ -496,7 +503,7 @@ function formatJulesResult({ session, activities = [], owner, repo, branch, jule
     for (const act of activities) {
       const time = act.createTime ? new Date(act.createTime).toLocaleTimeString() : '';
       const type = act.type || act.kind || 'Activity';
-      const desc = act.description || act.summary || act.message || act.name || '';
+      const desc = extractActivityText(act) || act.name || '';
       lines.push(`- **[${time || type}]** ${desc}`);
     }
     lines.push('');
@@ -509,6 +516,47 @@ function formatJulesResult({ session, activities = [], owner, repo, branch, jule
   }
 
   return lines.join('\n');
+}
+
+// Jules has returned the final answer in several payload shapes over time.
+// Keep the adapter permissive, but only promote textual fields to Summary so
+// IDs, timestamps and opaque API objects never become a fake report.
+function extractJulesSummary(session, activities = []) {
+  const direct = firstText(session, ['output', 'result', 'summary', 'description']);
+  if (direct) return direct;
+
+  const preferred = [...activities].reverse()
+    .map((activity) => firstText(activity, ['agentMessage', 'agent_message', 'finalMessage', 'final_message', 'output', 'result', 'content', 'message', 'text', 'data', 'payload', 'event']))
+    .find(Boolean);
+  if (preferred) return preferred;
+
+  const fallback = [...activities].reverse()
+    .map((activity) => firstText(activity, ['description', 'summary']))
+    .find((text) => text && text.trim().length >= 24);
+  return fallback || '';
+}
+
+function extractActivityText(activity) {
+  return firstText(activity, [
+    'agentMessage', 'agent_message', 'finalMessage', 'final_message',
+    'output', 'result', 'content', 'message', 'text', 'description', 'summary', 'data', 'payload', 'event',
+  ]) || '';
+}
+
+function firstText(value, keys, seen = new Set()) {
+  if (value == null || seen.has(value)) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value !== 'object') return '';
+  seen.add(value);
+
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const candidate = value[key];
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    const nested = firstText(candidate, keys, seen);
+    if (nested) return nested;
+  }
+  return '';
 }
 
 module.exports = {
