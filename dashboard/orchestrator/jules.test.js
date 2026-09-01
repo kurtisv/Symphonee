@@ -338,6 +338,29 @@ test('JULES_API_KEY is never leaked in error messages or task results', async ()
   assert.match(formatted, /https:\/\/jules\.google\.com\/session\/123/);
 });
 
+test('formatJulesResult promotes nested final activity text when session has no output', () => {
+  const formatted = formatJulesResult({
+    session: { name: 'sessions/real-shape', state: 'COMPLETED' },
+    activities: [
+      { type: 'PLAN', description: 'Planning complete' },
+      { type: 'AGENT_MESSAGE', data: { agentMessage: { text: 'Final audit: all checks passed.' } } },
+    ],
+  });
+
+  assert.match(formatted, /## Summary/);
+  assert.match(formatted, /Final audit: all checks passed\./);
+  assert.match(formatted, /## Activity Log \(2\)/);
+});
+
+test('formatJulesResult makes a terminal response without text explicit', () => {
+  const formatted = formatJulesResult({
+    session: { name: 'sessions/empty', state: 'COMPLETED' },
+    activities: [{ type: 'INFO', description: 'Working' }],
+  });
+
+  assert.match(formatted, /did not return a textual result/);
+});
+
 // ── 10. Route Spawn with CLI Jules ────────────────────────────────────────────
 test('POST /api/orchestrator/spawn routes cli: "jules" to Jules remote worker', async () => {
   const savedKey = process.env.JULES_API_KEY;
