@@ -8,6 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { STATE } = require('./state');
 const { classifyProviderError, isFailoverEligible } = require('./provider-health');
+const { estimateTokens } = require('./token-economy');
 module.exports = {
   /** Persist all non-running tasks to disk */
   _saveTasks() {
@@ -182,6 +183,15 @@ module.exports = {
       authorProvider: routing && routing.authorProvider || null,
       reviewProvider: routing && routing.reviewProvider || null,
       reviewIndependence: routing && routing.reviewIndependence,
+      promptMetrics: {
+        originalChars: String(prompt || '').length,
+        finalChars: String(prompt || '').length,
+        originalEstimatedTokens: estimateTokens(prompt),
+        finalEstimatedTokens: estimateTokens(prompt),
+        contextEstimatedTokens: 0,
+        contextParts: 0,
+      },
+      duplicateHits: 0,
       // Internal references (not serialized)
       _proc: null,
       _timer: null,

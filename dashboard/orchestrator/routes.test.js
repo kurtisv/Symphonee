@@ -105,3 +105,42 @@ test('POST /api/orchestrator/spawn persists explainable AUTO routing metadata', 
   assert.equal(task.routingPolicy, 'QUALITY');
   assert.ok(saved > 0, 'AUTO metadata should be persisted immediately');
 });
+
+test('POST /api/orchestrator/spawn reuses an active identical task', async () => {
+  const routes = {};
+  const addRoute = (m, p, h) => { routes[`${m} ${p}`] = h; };
+  let spawned = 0;
+  const orch = {
+    brain: null,
+    tasks: new Map(),
+    spawnHeadless({ cli, prompt }) {
+      spawned++;
+      const task = { id: 'same-task', cli, prompt, state: 'running', createdAt: Date.now() };
+      this.tasks.set(task.id, task);
+      return task;
+    },
+    _serializeTask(value) { return { ...value }; },
+    _saveTasks() {}, providerHealth: null, getAgents() { return []; },
+  };
+  const json = (res, payload, status = 200) => { res.status = status; res.payload = payload; };
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-orch-dedupe-'));
+  fs.mkdirSync(path.join(repoRoot, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, 'config', 'config.json'), JSON.stringify({ Permissions: { mode: 'bypass' } }));
+  registerOrchestratorRoutes(addRoute, json, orch, {
+    getConfig: () => ({ OrchestrateCliList: ['claude'] }), broadcast: () => {}, getUiContext: () => ({}), repoRoot,
+  });
+  const call = async () => {
+    const body = JSON.stringify({ cli: 'claude', prompt: 'same expensive work', autoPermit: true });
+    const req = { on(ev, cb) { if (ev === 'data') cb(Buffer.from(body)); if (ev === 'end') cb(); return req; } };
+    const res = {};
+    await routes['POST /api/orchestrator/spawn'](req, res);
+    return res;
+  };
+  const first = await call();
+  const second = await call();
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(second.payload.deduplicated, true);
+  assert.equal(second.payload.originalTaskId, 'same-task');
+  assert.equal(spawned, 1);
+});

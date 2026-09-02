@@ -46,6 +46,8 @@ test('_createTask registers a PENDING task in the map', () => {
   assert.equal(t.state, STATE.PENDING);
   assert.equal(o.tasks.get(t.id), t);
   assert.equal(o.getTask(t.id).cli, 'claude');
+  assert.equal(t.promptMetrics.originalEstimatedTokens, 1);
+  assert.equal(t.duplicateHits, 0);
 });
 
 test('_serializeTask strips internal references', () => {
