@@ -11,6 +11,7 @@ const { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER } = require('./
 const { classifyError, retryDelay, MAX_RETRIES } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
+const { estimateTokens, capContext } = require('./token-economy');
 module.exports = {
   // ── PTY Injection (Tier 1) ───────────────────────────────────────────────
 
@@ -86,6 +87,13 @@ module.exports = {
     const cfg = HEADLESS_FLAGS[cli];
     if (!cfg) throw new Error(`Unknown CLI: "${cli}". Use: ${Object.keys(HEADLESS_FLAGS).join(', ')}`);
     const originalPrompt = prompt;
+    const economyConfig = (this.getConfig && this.getConfig().TokenEconomy) || {};
+    const contextParts = [];
+    const prependContext = (label, value, defaultLimit) => {
+      const limit = Number(economyConfig[`${label}MaxChars`]) || defaultLimit;
+      const capped = capContext(value, limit);
+      if (capped) { contextParts.push(capped); prompt = `${capped}\n\n${prompt}`; }
+    };
 
     // Mind hint: prepend the metadata stamp + L0+L1 wake-up. Pass the
     // worker's own prompt to the hint so L1 becomes the BFS sub-graph
@@ -98,9 +106,7 @@ module.exports = {
         const hint = (this.getMindHint.length >= 1)
           ? this.getMindHint({ question: typeof prompt === 'string' ? prompt : '' })
           : this.getMindHint();
-        if (hint && typeof prompt === 'string' && !prompt.startsWith('[mind:')) {
-          prompt = `${hint}\n\n${prompt}`;
-        }
+        if (hint && typeof prompt === 'string' && !prompt.startsWith('[mind:')) prependContext('mind', hint, 4000);
       } catch (_) {}
     }
 
@@ -110,9 +116,7 @@ module.exports = {
     if (typeof this.getSkillsHint === 'function' && _retryAttempt === 0) {
       try {
         const sh = this.getSkillsHint();
-        if (sh && typeof prompt === 'string' && !prompt.includes('[skills:')) {
-          prompt = `${sh}\n\n${prompt}`;
-        }
+        if (sh && typeof prompt === 'string' && !prompt.includes('[skills:')) prependContext('skills', sh, 2500);
       } catch (_) {}
     }
 
@@ -122,9 +126,7 @@ module.exports = {
     if (typeof this.getLedgerHint === 'function' && _retryAttempt === 0) {
       try {
         const lh = this.getLedgerHint();
-        if (lh && typeof prompt === 'string' && !prompt.includes('[recent activity:')) {
-          prompt = `${lh}\n\n${prompt}`;
-        }
+        if (lh && typeof prompt === 'string' && !prompt.includes('[recent activity:')) prependContext('ledger', lh, 2000);
       } catch (_) {}
     }
 
@@ -153,6 +155,14 @@ module.exports = {
       timeout: 0,  // Never timeout — AI runs as long as it needs
     });
     task._originalPrompt = originalPrompt;
+    task.promptMetrics = {
+      originalChars: String(originalPrompt || '').length,
+      finalChars: String(prompt || '').length,
+      originalEstimatedTokens: estimateTokens(originalPrompt),
+      finalEstimatedTokens: estimateTokens(prompt),
+      contextEstimatedTokens: estimateTokens(contextParts.join('\n\n')),
+      contextParts: contextParts.length,
+    };
 
     // Build final args based on how this CLI expects the prompt
     const finalArgs = [...cfg.args];
