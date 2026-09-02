@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const permissions = require('../permissions');
 const { CLI_MODELS, CLI_CONFIG } = require('./cli-config');
+const { requestFingerprint, summarizeTasks } = require('./token-economy');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -61,6 +62,9 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
   });
   addRoute('GET', '/api/orchestrator/provider-performance', (req, res) => {
     json(res, orch.performance ? orch.performance.publicRecords() : {});
+  });
+  addRoute('GET', '/api/orchestrator/economy', (req, res) => {
+    json(res, summarizeTasks(orch.tasks));
   });
   addRoute('POST', '/api/orchestrator/plan', async (req, res) => {
     const body = await readBody(req); const task = body.task || body; const workflow = orch.taskRouter.selectProvider(task, { role: task.role || undefined, policy: task.routingPolicy, plan: true });
@@ -137,9 +141,20 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
 
   // ── POST /api/orchestrator/spawn ──────────────────────────────────────
   addRoute('POST', '/api/orchestrator/spawn', async (req, res) => {
-    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, task: taskHints } = await readBody(req);
+    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, idempotencyKey, task: taskHints } = await readBody(req);
     if (!prompt) return json(res, { error: 'prompt required' }, 400);
     const requestedCli = cli;
+    const fingerprint = idempotencyKey || requestFingerprint({ cli: cli || 'brain', prompt, cwd, model, space, role: taskHints && taskHints.role });
+    const dedupeWindow = Math.max(1000, Number(getConfig && getConfig().DuplicateTaskWindowMs) || 10 * 60 * 1000);
+    const now = Date.now();
+    const duplicate = orch.tasks && [...orch.tasks.values()].find(t => t.requestFingerprint === fingerprint &&
+      (t.state === 'running' || t.state === 'pending' || t.state === 'queued' || (idempotencyKey && t.state === 'completed')) &&
+      now - Number(t.createdAt || 0) <= dedupeWindow);
+    if (duplicate) {
+      duplicate.duplicateHits = (Number(duplicate.duplicateHits) || 0) + 1;
+      if (typeof orch._saveTasks === 'function') orch._saveTasks();
+      return json(res, { ...orch._serializeTask(duplicate), deduplicated: true, originalTaskId: duplicate.id });
+    }
     let routing = null;
     if (cli === 'auto') {
       if (getConfig && getConfig().AutoRoutingEnabled === false) return json(res, { error: 'Auto routing is disabled in Settings', requestedCli: 'auto' }, 400);
@@ -242,6 +257,10 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace });
       }
       const payload = orch._serializeTask(task);
+      task.requestFingerprint = fingerprint;
+      task.idempotencyKey = idempotencyKey || null;
+      task.duplicateHits = Number(task.duplicateHits) || 0;
+      payload.requestFingerprint = fingerprint;
       if (requestedCli === 'auto' || routing) {
         payload.requestedCli = 'auto';
         payload.selectedProvider = cli;
@@ -260,6 +279,9 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         task._escalationPrompt = prompt; task._escalationCwd = cwd;
         if (typeof orch._saveTasks === 'function') orch._saveTasks();
       }
+      // Persist deduplication metadata for manual and AUTO tasks alike so a
+      // caller retry after a server/UI reconnect cannot silently spend twice.
+      if (typeof orch._saveTasks === 'function') orch._saveTasks();
       if (brainPickedCli) {
         payload.brainPickedCli = brainPickedCli;
         payload.brainDecision = brainDecision;
