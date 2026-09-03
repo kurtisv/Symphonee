@@ -56,10 +56,8 @@ module.exports = {
       prompt,
       from: from || null,
       space: space || null,
-      timeout: timeout || 0,
+      timeout,
     });
-
-    task.timeout = Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
     task.state = STATE.RUNNING;
     task.startedAt = Date.now();
     task._isRemote = true;

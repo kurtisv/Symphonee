@@ -40,12 +40,8 @@ module.exports = {
       prompt,
       from: from || null,
       space: space || null,
-      timeout: timeout || 0,
+      timeout,
     });
-
-    // _createTask intentionally defaults ordinary local workers to unlimited
-    // execution. Jules is remote and must retain the caller's deadline.
-    task.timeout = Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
 
     task.state = STATE.RUNNING;
     task.startedAt = Date.now();

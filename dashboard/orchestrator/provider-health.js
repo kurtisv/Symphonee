@@ -96,7 +96,12 @@ class ProviderHealthManager {
     p.lastFailure = this.now();
     if (isFailoverEligible(errorClassification)) {
       p.consecutiveFailures += 1; p.health = 'cooling_down'; p.cooldownUntil = this.now() + this.cooldownMs;
-    } else { p.health = errorClassification === ERROR_TYPES.AUTH_ERROR ? 'auth_error' : 'task_error'; }
+    } else {
+      p.health = errorClassification === ERROR_TYPES.AUTH_ERROR ? 'auth_error' : 'task_error';
+      // Non-transient provider failures still need a bounded recovery window;
+      // otherwise auto-routing retries the same broken provider forever.
+      p.cooldownUntil = this.now() + this.cooldownMs;
+    }
     return errorClassification;
   }
   publicStatus() { return Object.fromEntries(Object.entries(this.providers).map(([id, p]) => [id, { ...p, usage: { ...p.usage } }])); }

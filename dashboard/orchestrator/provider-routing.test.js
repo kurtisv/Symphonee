@@ -28,6 +28,14 @@ test('quota/rate limit cool down, auth and task errors do not', () => {
   h.recordOutcome('codex', { ok: false, error: 'syntax error' });
   assert.equal(h.get('codex').cooldownUntil > 0, true);
 });
+test('task errors are excluded briefly, then recover after cooldown', () => {
+  let now = 1000;
+  const h = new ProviderHealthManager({ getConfig: () => ({}), availability: { codex: { available: true } }, cooldownMs: 1000, now: () => now });
+  h.recordOutcome('codex', { ok: false, error: 'syntax error' });
+  assert.equal(h.isAvailable('codex'), false);
+  now = 2001;
+  assert.equal(h.isAvailable('codex'), true);
+});
 test('routing preferences cover review, long-running, cheap and complex work', () => {
   const h = health({}, Object.fromEntries(['codex', 'claude', 'gemini-api', 'jules'].map(id => [id, { available: true }])));
   const r = new TaskRouter({ health: h, getConfig: () => ({}) });

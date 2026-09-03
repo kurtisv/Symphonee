@@ -6,7 +6,8 @@
   "license": "AGPL-3.0-only",
   "main": "dashboard/electron-main.js",
   "scripts": {
-    "start": "node dashboard/server.js",
+    "start": "npm run electron",
+    "start:server": "node dashboard/server.js",
     "electron": "electron .",
     "dist": "electron-builder --win",
     "build:renderer": "node scripts/build-renderer.js",
@@ -17,8 +18,8 @@
     "test:all": "npm run test:renderer && npm run test:server"
   },
   "dependencies": {
-    "@browserbasehq/stagehand": "^3.2.1",
-    "@google/gemini-cli": "^0.35.0",
+    "@browserbasehq/stagehand": "^4.0.2",
+    "@google/gemini-cli": "^0.57.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-unicode11": "^0.9.0",
@@ -38,7 +39,7 @@
     "three-spritetext": "^1.10.0",
     "vis-data": "^8.0.3",
     "vis-network": "^10.0.2",
-    "ws": "^8.19.0"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",

@@ -8,6 +8,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { STATE } = require('./state');
 const { classifyProviderError, isFailoverEligible } = require('./provider-health');
+
+// A task must have a bounded lifetime unless the caller supplies a longer
+// explicit timeout. Zero used to mean "forever", which left stalled workers
+// permanently active after a provider stopped producing output.
+const DEFAULT_TASK_TIMEOUT_MS = 15 * 60 * 1000;
 module.exports = {
   /** Persist all non-running tasks to disk */
   _saveTasks() {
@@ -166,7 +171,7 @@ module.exports = {
       resultFile: null,
       dependsOn: null,       // task IDs this depends on (DAG)
       worktree: null,        // { path, branch, repoPath } if using worktree isolation
-      timeout: 0,  // Never timeout — AI runs as long as it needs
+      timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TASK_TIMEOUT_MS,
       createdAt: Date.now(),
       startedAt: null,
       completedAt: null,

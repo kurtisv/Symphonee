@@ -55,8 +55,19 @@ module.exports = {
   /** Check queued tasks and release those whose dependencies are met */
   _checkAndRelease(task) {
     if (task.state !== STATE.QUEUED || !task.dependsOn) return false;
-    const allMet = task.dependsOn.every(depId => {
-      const dep = this.tasks.get(depId);
+    const dependencies = task.dependsOn.map(depId => this.tasks.get(depId));
+    const failedDependency = dependencies.find(dep => dep && [STATE.FAILED, STATE.TIMEOUT, STATE.CANCELLED, STATE.NEEDS_ATTENTION].includes(dep.state));
+    const missingDependency = dependencies.some(dep => !dep);
+    if (failedDependency || missingDependency) {
+      task.state = STATE.FAILED;
+      task.error = failedDependency
+        ? `Dependency failed: ${failedDependency.id} (${failedDependency.state})`
+        : 'Dependency not found';
+      task.completedAt = Date.now();
+      this._broadcastTaskUpdate(task);
+      return true;
+    }
+    const allMet = dependencies.every(dep => {
       return dep && dep.state === STATE.COMPLETED;
     });
     if (allMet) {
@@ -104,7 +115,7 @@ module.exports = {
     const now = Date.now();
     const result = [];
     for (const [, task] of this.tasks) {
-      if (task.state !== STATE.RUNNING) continue;
+      if (task.state !== STATE.RUNNING && task.state !== STATE.PENDING) continue;
       const lastBeat = this.heartbeats.get(task.id);
       const age = lastBeat ? now - lastBeat : now - (task.startedAt || task.createdAt);
       let status = 'active';

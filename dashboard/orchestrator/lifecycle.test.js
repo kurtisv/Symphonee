@@ -80,6 +80,21 @@ test('getHeartbeats classifies running tasks by idle time', () => {
   assert.equal(hb.length, 1);
   assert.equal(hb[0].status, 'active');
 });
+test('getHeartbeats includes pending tasks', () => {
+  const o = inst();
+  const t = o._createTask({ type: 'headless', cli: 'claude', prompt: 'x' });
+  t.state = STATE.PENDING;
+  t.createdAt = Date.now();
+  assert.equal(o.getHeartbeats().length, 1);
+});
+test('failed dependencies fail queued tasks instead of leaving them blocked', () => {
+  const o = inst();
+  const dep = o._createTask({ type: 'headless', cli: 'claude', prompt: 'dep' });
+  dep.state = STATE.FAILED;
+  const queued = o.spawnWithDependencies({ cli: 'gemini', prompt: 'child', dependsOn: [dep.id] });
+  assert.equal(o.tasks.get(queued.id).state, STATE.FAILED);
+  assert.match(o.tasks.get(queued.id).error, /Dependency failed/);
+});
 
 test('waitFor resolves when a task reaches a terminal state', async () => {
   const o = inst();
