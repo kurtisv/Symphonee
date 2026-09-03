@@ -40,6 +40,7 @@ const DEFAULT_CHAT_MODEL = process.env.SYMPHONEE_CHAT_MODEL || 'qwen2.5:1.5b';
 const DEFAULT_TRIAGE_MODEL = process.env.SYMPHONEE_TRIAGE_MODEL || 'qwen2.5:1.5b';
 const DEFAULT_REASONING_MODEL = process.env.SYMPHONEE_REASONING_MODEL || 'gemma4:26b';
 const { PREFERRED_CHAT_MODELS, isEmbeddingModel } = require('./llm');
+const ollamaHealth = require('./ollama-health');
 
 function getHttp(urlStr, timeoutMs = 1500) {
   return new Promise((resolve, reject) => {
@@ -154,29 +155,10 @@ async function detect({ model = DEFAULT_MODEL, chatModel = DEFAULT_CHAT_MODEL } 
 }
 
 async function ensureRunning({ installPath }) {
-  // Best-effort spawn. Ollama's `ollama serve` daemonizes itself on most
-  // platforms; we detach the child so it survives the Node process. If
-  // the spawn fails the user just has to launch Ollama manually — we
-  // surface a clear hint.
-  if (!installPath) return { ok: false, step: 'ensureRunning', reason: 'not-installed' };
-  try {
-    const child = spawn(installPath, ['serve'], {
-      detached: true, stdio: 'ignore', windowsHide: true,
-    });
-    child.unref();
-  } catch (e) {
-    return { ok: false, step: 'ensureRunning', reason: 'spawn-failed', error: e.message };
-  }
-  // Wait up to ~6s for the daemon to accept connections.
-  const deadline = Date.now() + 6_000;
-  while (Date.now() < deadline) {
-    try {
-      const r = await getHttp(OLLAMA_BASE + '/api/tags', 500);
-      if (r.status === 200) return { ok: true, step: 'ensureRunning' };
-    } catch (_) { /* still starting */ }
-    await new Promise(r => setTimeout(r, 300));
-  }
-  return { ok: false, step: 'ensureRunning', reason: 'timeout', hint: 'Ollama did not respond after launch. Try opening Ollama from your Start menu.' };
+  const r = await ollamaHealth.ensureReady({ installPath });
+  return r.ok
+    ? { ok: true, step: 'ensureRunning' }
+    : { ok: false, step: 'ensureRunning', reason: r.error || 'unavailable', hint: 'Ollama did not become ready. Try opening Ollama from your Start menu.' };
 }
 
 async function ensureModel({ model = DEFAULT_MODEL, broadcast } = {}) {

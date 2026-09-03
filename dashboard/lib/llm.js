@@ -20,6 +20,7 @@
 
 const http = require('http');
 const { URL } = require('url');
+const ollamaHealth = require('./ollama-health');
 
 const OLLAMA_BASE = process.env.OLLAMA_URL || 'http://localhost:11434';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -206,6 +207,8 @@ function chatOllamaStream(messages, opts = {}, onToken = () => {}) {
 }
 
 async function chatOllama(messages, opts = {}) {
+  const health = await ollamaHealth.ensureReady();
+  if (!health.ok) throw new Error('ollama-unavailable');
   const model = opts.model || pickChatModel();
   if (!model) throw new Error('no-chat-model-available');
   const format = opts.format === undefined ? 'json' : opts.format;

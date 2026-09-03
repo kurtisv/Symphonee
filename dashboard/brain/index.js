@@ -44,6 +44,7 @@ const promptStoreModule = require('./prompt-store');
 const selfIterateModule = require('./self-iterate');
 const perfModule = require('./perf');
 const ollamaSetup = require('../lib/ollama-setup');
+const ollamaHealth = require('../lib/ollama-health');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -58,6 +59,17 @@ function readBody(req) {
 
 function mountBrain(addRoute, json, ctx) {
   const { repoRoot, broadcast, getUiContext } = ctx;
+  const brainStatusStop = ollamaHealth.health.subscribe((status) => {
+    if (!broadcast) return;
+    const labels = { READY: 'Brain: Ready', STARTING: 'Brain: Starting', DEGRADED: 'Brain: Degraded - fallback active', UNAVAILABLE: 'Brain: Unavailable', UNKNOWN: 'Brain: Starting' };
+    const label = labels[status.state] || labels.UNKNOWN;
+    broadcast({ type: 'symphonee-brain-status', payload: { ...status, label } });
+    if (status.state !== 'UNKNOWN') broadcast({
+      type: 'notification', title: label,
+      body: status.state === 'READY' ? 'Local Brain is ready.' : 'Local Brain fallback remains active.',
+      level: status.state === 'READY' ? 'success' : 'warning', icon: 'cpu',
+    });
+  });
 
   // Singleton intent manager bound to onRecompute -> planner.recomputeIntent
   const intent = intentModule.createIntentManager({
@@ -562,6 +574,7 @@ function mountBrain(addRoute, json, ctx) {
       intent: intent.get(),
       decisionCount: decisionLog.length,
       setup,
+      brainStatus: ollamaHealth.getStatus(),
     });
   });
 
@@ -882,6 +895,7 @@ function mountBrain(addRoute, json, ctx) {
     acceptRulesEdit: (rules, opts) => selfIterateModule.accept(repoRoot, rules, opts || {}),
     revertRulesEdit: () => selfIterateModule.revert(repoRoot),
     getRules: () => promptStoreModule.loadRules(repoRoot),
+    stopBrainStatus: brainStatusStop,
   };
 }
 

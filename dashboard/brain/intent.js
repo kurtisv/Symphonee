@@ -92,6 +92,7 @@ function createIntentManager({ repoRoot, onRecompute, broadcast, getUiContext })
   let pendingEvidence = [];
   let pendingTimer = null;
   let inFlight = false;
+  let inFlightPromise = null;
   let pausedReason = null;
 
   function _pushEvidence(ev) {
@@ -106,9 +107,10 @@ function createIntentManager({ repoRoot, onRecompute, broadcast, getUiContext })
     // skip this call. The events we would have processed STAY in
     // pendingEvidence so the post-run drain picks them up. Without
     // this, events arriving during a gemma run got silently dropped.
-    if (inFlight && !force) return;
+    if (inFlight) return inFlightPromise;
     if (pausedReason && !force) return;
     inFlight = true;
+    inFlightPromise = (async () => {
     let writtenState = null;
     try {
       // Pull whatever is queued NOW. New events that arrive while
@@ -161,6 +163,8 @@ function createIntentManager({ repoRoot, onRecompute, broadcast, getUiContext })
       }
     }
     return writtenState;
+    })();
+    try { return await inFlightPromise; } finally { inFlightPromise = null; }
   }
 
   function notify(evidence) {

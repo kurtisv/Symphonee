@@ -28,6 +28,10 @@
 const llm = require('../lib/llm');
 const promptStore = require('./prompt-store');
 const perf = require('./perf');
+const ollamaHealth = require('../lib/ollama-health');
+
+let lastRecomputeDiagnostic = { message: null, at: 0 };
+const RECOMPUTE_DIAGNOSTIC_GAP_MS = 30_000;
 
 const TRIAGE_MODEL = process.env.SYMPHONEE_TRIAGE_MODEL || 'qwen2.5:1.5b';
 const REASONING_MODEL = process.env.SYMPHONEE_REASONING_MODEL || 'gemma4:26b';
@@ -222,6 +226,10 @@ function classifyRoute(plan) {
  *      is layered defence.
  */
 async function planRoute(input, context = {}) {
+  const health = await ollamaHealth.ensureReady();
+  if (!health.ok) {
+    return { ok: false, stage: 'health', error: 'ollama-unavailable', escalated: false, decision: null };
+  }
   const messages = _buildPlannerMessages(input, context);
   let triage;
   const triageStart = Date.now();
@@ -301,6 +309,8 @@ async function planRoute(input, context = {}) {
  */
 async function recomputeIntent({ ui, current, evidence }) {
   if (!evidence || !evidence.length) return null;
+  const health = await ollamaHealth.ensureReady();
+  if (!health.ok) return null;
   const start = Date.now();
   const lines = evidence.slice(-12).map(ev => {
     const kind = ev.kind || 'event';
@@ -347,7 +357,11 @@ async function recomputeIntent({ ui, current, evidence }) {
   } catch (err) {
     perf.recordLatency('intent.recompute.error', Date.now() - start);
     perf.bump('intent.recompute.errors');
-    console.warn('[brain/planner] recomputeIntent error:', err.message);
+    const now = Date.now();
+    if (lastRecomputeDiagnostic.message !== err.message || now - lastRecomputeDiagnostic.at >= RECOMPUTE_DIAGNOSTIC_GAP_MS) {
+      console.warn('[brain/planner] recomputeIntent error:', err.message);
+      lastRecomputeDiagnostic = { message: err.message, at: now };
+    }
     return null;
   }
 }
