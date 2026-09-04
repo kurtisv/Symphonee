@@ -23,18 +23,18 @@ const PWSH_WINGET_CMD = 'winget install Microsoft.PowerShell --accept-source-agr
 // check the typical npm global bin directories directly (same strategy as detectPwsh).
 // Returns { installed, path, inPath } - `inPath` indicates if `where` found it (ready to use)
 // vs found via fallback (installed but may need terminal restart).
-function detectCli(cli) {
+function detectCli(cli, { cwd = process.cwd(), env = process.env } = {}) {
   // 1. Try `where` (checks current PATH - means it's ready to use right now)
   const whereCmd = `where ${cli}.cmd 2>nul || where ${cli} 2>nul`;
   try {
-    const where = execSync(whereCmd, { encoding: 'utf8', timeout: 5000 }).trim();
+      const where = execSync(whereCmd, { encoding: 'utf8', timeout: 5000, env }).trim();
     if (where) return { installed: true, path: where.split('\n')[0].trim(), inPath: true };
   } catch (_) {}
 
   // 2. Fallback: check common npm global install locations
   const npmPrefixes = [];
   try {
-    const prefix = execSync('npm config get prefix', { encoding: 'utf8', timeout: 5000 }).trim();
+    const prefix = execSync('npm config get prefix', { encoding: 'utf8', timeout: 5000, env }).trim();
     if (prefix) npmPrefixes.push(prefix);
   } catch (_) {}
   const appData = process.env.APPDATA || '';
@@ -51,6 +51,11 @@ function detectCli(cli) {
       const candidate = path.join(prefix, cli + ext);
       try { if (fs.existsSync(candidate)) return { installed: true, path: candidate, inPath: false }; } catch (_) {}
     }
+  }
+  const localBin = path.join(cwd, 'node_modules', '.bin');
+  for (const ext of ['.cmd', '.ps1', '']) {
+    const candidate = path.join(localBin, cli + ext);
+    try { if (fs.existsSync(candidate)) return { installed: true, path: candidate, inPath: false, source: 'local-project' }; } catch (_) {}
   }
   return { installed: false, path: '', inPath: false };
 }

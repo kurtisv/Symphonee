@@ -36,6 +36,15 @@ test('task errors are excluded briefly, then recover after cooldown', () => {
   now = 2001;
   assert.equal(h.isAvailable('codex'), true);
 });
+
+test('Gemini runtime incompatibility is unavailable without affecting Gemini API', () => {
+  const h = new ProviderHealthManager({ getConfig: () => ({}), cooldownMs: 1000 });
+  h.recordOutcome('gemini', { ok: false, error: 'Gemini CLI requires Node.js >=20' });
+  assert.equal(h.get('gemini').available, false);
+  assert.equal(h.get('gemini').reason, 'RUNTIME_INCOMPATIBLE');
+  assert.equal(h.get('gemini-api').available, true);
+  assert.equal(h.get('gemini-api').health, 'healthy');
+});
 test('routing preferences cover review, long-running, cheap and complex work', () => {
   const h = health({}, Object.fromEntries(['codex', 'claude', 'gemini-api', 'jules'].map(id => [id, { available: true }])));
   const r = new TaskRouter({ health: h, getConfig: () => ({}) });

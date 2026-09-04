@@ -5,7 +5,7 @@ const { CLI_CONFIG, HEADLESS_FLAGS } = require('./cli-config');
 const ERROR_TYPES = Object.freeze({
   AUTH_ERROR: 'AUTH_ERROR', RATE_LIMIT: 'RATE_LIMIT', QUOTA_EXHAUSTED: 'QUOTA_EXHAUSTED',
   TIMEOUT: 'TIMEOUT', NETWORK_ERROR: 'NETWORK_ERROR', PROVIDER_ERROR: 'PROVIDER_ERROR',
-  TASK_ERROR: 'TASK_ERROR',
+  TASK_ERROR: 'TASK_ERROR', RUNTIME_INCOMPATIBLE: 'RUNTIME_INCOMPATIBLE', STARTUP_ERROR: 'STARTUP_ERROR',
 });
 
 const DEFAULT_CAPABILITIES = {
@@ -38,6 +38,7 @@ function classifyProviderError(error) {
   if (/429|rate.?limit|too many requests|throttl/i.test(message)) return ERROR_TYPES.RATE_LIMIT;
   if (/quota|resource_exhausted|usage limit|out of credits|insufficient.{0,10}(credit|quota)|billing|payment required/i.test(message)) return ERROR_TYPES.QUOTA_EXHAUSTED;
   if (/timeout|timed out|deadline exceeded/i.test(message)) return ERROR_TYPES.TIMEOUT;
+  if (/requires? node|unsupported engine|node\.js version|minimum.*node|ebadengine|runtime incompatible/i.test(message)) return ERROR_TYPES.RUNTIME_INCOMPATIBLE;
   if (/ECONNRESET|ECONNREFUSED|ENOTFOUND|EPIPE|network|socket|fetch failed/i.test(message)) return ERROR_TYPES.NETWORK_ERROR;
   if (/provider|service unavailable|503|502|500/i.test(message)) return ERROR_TYPES.PROVIDER_ERROR;
   return ERROR_TYPES.TASK_ERROR;
@@ -66,7 +67,7 @@ function buildProviderRegistry({ config = {}, availability = {}, now = Date.now(
       supportsRepo: prior.supportsRepo !== undefined ? !!prior.supportsRepo : id !== 'gemini-api',
       supportsLongRunning: prior.supportsLongRunning !== undefined ? !!prior.supportsLongRunning : id === 'jules',
       usage: { ...(prior.usage || {}) },
-      health: prior.health || 'healthy', cooldownUntil: cooldownUntil > now ? cooldownUntil : 0,
+      health: prior.health || 'healthy', reason: prior.reason || null, cooldownUntil: cooldownUntil > now ? cooldownUntil : 0,
       consecutiveFailures: Number(prior.consecutiveFailures || 0), lastFailure: prior.lastFailure || null, lastSuccess: prior.lastSuccess || null,
       roles: { ...((config.ProviderRoleProfiles && config.ProviderRoleProfiles[id]) || {}), ...((prior.roles) || {}) },
     };
@@ -91,10 +92,13 @@ class ProviderHealthManager {
   recordOutcome(id, { ok, error, usage } = {}) {
     const p = this.providers[id]; if (!p) return null;
     if (usage) this.recordUsage(id, usage);
-    if (ok) { p.health = 'healthy'; p.consecutiveFailures = 0; p.lastSuccess = this.now(); p.cooldownUntil = 0; return null; }
+    if (ok) { p.health = 'healthy'; p.reason = null; p.available = true; p.consecutiveFailures = 0; p.lastSuccess = this.now(); p.cooldownUntil = 0; return null; }
     const errorClassification = typeof error === 'string' && Object.values(ERROR_TYPES).includes(error) ? error : classifyProviderError(error);
     p.lastFailure = this.now();
-    if (isFailoverEligible(errorClassification)) {
+    p.reason = errorClassification;
+    if (errorClassification === ERROR_TYPES.RUNTIME_INCOMPATIBLE) {
+      p.available = false; p.health = 'unavailable'; p.cooldownUntil = this.now() + this.cooldownMs;
+    } else if (isFailoverEligible(errorClassification)) {
       p.consecutiveFailures += 1; p.health = 'cooling_down'; p.cooldownUntil = this.now() + this.cooldownMs;
     } else {
       p.health = errorClassification === ERROR_TYPES.AUTH_ERROR ? 'auth_error' : 'task_error';

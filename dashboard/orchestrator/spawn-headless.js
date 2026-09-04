@@ -11,6 +11,7 @@ const { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER } = require('./
 const { classifyError, retryDelay, MAX_RETRIES } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
+const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync } = require('./gemini-runtime');
 module.exports = {
   // ── PTY Injection (Tier 1) ───────────────────────────────────────────────
 
@@ -133,12 +134,24 @@ module.exports = {
       throw new Error(`CLI "${cli}" circuit breaker is OPEN (too many recent failures). Try again later or use a different CLI.`);
     }
 
-    // Verify CLI exists before spawning (fail fast instead of timing out)
-    try {
-      const { execSync } = require('child_process');
-      execSync(`where ${cfg.cmd} 2>nul || which ${cfg.cmd} 2>/dev/null`, { encoding: 'utf8', timeout: 3000 });
-    } catch (_) {
-      throw new Error(`CLI "${cli}" (${cfg.cmd}) is not installed. Install it first.`);
+    let command = cfg.cmd;
+    if (cli === 'gemini') {
+      const detected = resolveGeminiCommand({ cwd: cwd || process.cwd(), env: process.env, detect: require('../lib/detect-cli').detectCli });
+      if (!detected || !detected.path && detected.source !== 'path') {
+        throw new Error('Gemini CLI is not installed (NOT_INSTALLED).');
+      }
+      command = detected.path || detected.command;
+      const preflight = probeGeminiSync({ cwd: cwd || process.cwd(), env: process.env, command });
+      if (preflight.state !== 'READY') {
+        throw new Error(`Gemini CLI preflight failed (${preflight.reason}): ${String(preflight.details || '').substring(0, 300)}`);
+      }
+    } else {
+      try {
+        const { execSync } = require('child_process');
+        execSync(`where ${cfg.cmd} 2>nul || which ${cfg.cmd} 2>/dev/null`, { encoding: 'utf8', timeout: 3000 });
+      } catch (_) {
+        throw new Error(`CLI "${cli}" (${cfg.cmd}) is not installed. Install it first.`);
+      }
     }
 
     const resolvedModel = model || (CLI_MODELS[cli] && CLI_MODELS[cli].defaultModel) || null;
@@ -211,7 +224,9 @@ module.exports = {
 
     const useShell = cfg.shell !== undefined ? cfg.shell : true;
     // Inject API keys from config as environment variables (unlocks additional models)
-    const spawnEnv = { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' };
+    const spawnEnv = cli === 'gemini'
+      ? { ...buildGeminiEnv(process.env), FORCE_COLOR: '0', NO_COLOR: '1' }
+      : { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' };
     const aiKeys = this.getConfig().AiApiKeys || {};
     const CLI_ENV_KEYS = {
       claude:  ['ANTHROPIC_API_KEY'],
@@ -230,7 +245,7 @@ module.exports = {
     // "this folder isn't trusted". This is independent of full bypass mode.
     try { pretrustFolderForCli(cli, cwd || process.cwd()); } catch (_) {}
 
-    const proc = spawn(cfg.cmd, finalArgs, {
+    const proc = spawn(command, finalArgs, {
       cwd: cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
