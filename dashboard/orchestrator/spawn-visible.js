@@ -75,10 +75,34 @@ module.exports = {
     const resultFile = path.join(this.workspaceDir, 'results', `${task.id}.md`);
     task.resultFile = resultFile;
 
-    // Build single-line prompt (multi-line pastes don't auto-submit in most CLIs)
+    // The full prompt goes to a task file; only a short single-line pointer is
+    // typed into the PTY. Typing the whole prompt raced CLI startup and could
+    // drop its head (or submit early on embedded newlines), losing the task.
     const resultPath = resultFile.replace(/\\/g, '/');
-    const wrappedPrompt = `[ORCHESTRATOR TASK ${task.id}] ${prompt} ` +
-      `IMPORTANT: When done, write your result to ${resultPath} with "TASK_COMPLETE" on the first line followed by your response.`;
+    const taskFile = path.join(this.workspaceDir, 'tasks', `${task.id}.md`);
+    const taskPath = taskFile.replace(/\\/g, '/');
+    task.taskFile = taskFile;
+    let wrappedPrompt;
+    try {
+      fs.mkdirSync(path.dirname(taskFile), { recursive: true });
+      fs.writeFileSync(taskFile, [
+        `# Orchestrator task ${task.id}`,
+        '',
+        String(prompt),
+        '',
+        '---',
+        'When you are done, write your complete result to this file:',
+        `  ${resultPath}`,
+        'Start the file with "TASK_COMPLETE" on the first line, then put your response on the lines after it.',
+        '',
+      ].join('\n'), 'utf8');
+      wrappedPrompt = `[ORCHESTRATOR TASK ${task.id}] Read the task file ${taskPath} and follow its instructions exactly. ` +
+        `When done, write your result to ${resultPath} with "TASK_COMPLETE" on the first line followed by your response.`;
+    } catch (_) {
+      // Fall back to inline, but flattened: a newline in a PTY is Enter.
+      wrappedPrompt = `[ORCHESTRATOR TASK ${task.id}] ${String(prompt).replace(/\s*[\r\n]+\s*/g, ' ')} ` +
+        `IMPORTANT: When done, write your result to ${resultPath} with "TASK_COMPLETE" on the first line followed by your response.`;
+    }
 
     // ── Terminal Watcher ────────────────────────────────────────────────
     // Continuously monitors PTY output and reacts to what it sees.
@@ -92,8 +116,25 @@ module.exports = {
     let _lastActivityAt = Date.now();
     let _nudgeCount = 0;
 
-    const _stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+    const _stripAnsi = (s) => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
     const _write = (text) => { const term = this.terminals.get(termId); if (term) term.pty.write(text); };
+    // Prompt injection: wait for the CLI's ready prompt to hold with no further
+    // output before typing, then only press Enter once the task id echoes back.
+    // A missing echo means the input was eaten (e.g. CLI still booting), so the
+    // line is cleared and retyped rather than submitting a truncated prompt.
+    const READY_QUIET_MS = 800;
+    const MAX_INJECT_ATTEMPTS = 3;
+    let _readyTimer = null;
+    let _injectAttempts = 0;
+    const _inject = () => {
+      if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
+      _injectAttempts++;
+      _phase = 'PROMPT_INJECTING';
+      _buf = '';
+      _lastActivityAt = Date.now();
+      if (_injectAttempts > 1) _write('\x15'); // Ctrl+U: clear any partial input first
+      _write(wrappedPrompt);
+    };
     const _log = (action) => {
       this.broadcast({ type: 'orchestrator-event', event: 'watcher', taskId: task.id, termId, action, phase: _phase, timestamp: Date.now() });
     };
@@ -246,24 +287,26 @@ module.exports = {
             }
           }
           // Detect CLI ready prompt
-          if (_stripAnsi(_buf).length > 20 && /[❯>$✦⟩]\s*$/.test(tail)) {
-            _log('CLI ready, injecting prompt');
-            _phase = 'PROMPT_INJECTING';
-            _buf = '';
-            _lastActivityAt = Date.now();
-            // Write the prompt text. The watcher will detect echo-back
-            // in PROMPT_INJECTING phase and send Enter immediately.
-            _write(wrappedPrompt);
+          // Any new output restarts the quiet window; the shell's own "PS ...>"
+          // prompt (seen before the CLI has taken over) never counts as ready.
+          if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
+          if (_stripAnsi(_buf).length > 20 && /[❯>$✦⟩]\s*$/.test(tail) && !/PS [^>\n]*>\s*$/.test(tail)) {
+            _readyTimer = setTimeout(() => {
+              _readyTimer = null;
+              if (_phase !== 'CLI_LAUNCH' || task.state !== STATE.RUNNING) return;
+              _log('CLI ready, injecting prompt');
+              _inject();
+            }, READY_QUIET_MS);
           }
           break;
         }
 
         case 'PROMPT_INJECTING': {
-          // Prompt text was written. Watch for it to appear in the output
-          // (echo-back), then immediately send Enter. No timers needed.
+          // Prompt text was written. Send Enter only once the head of the line
+          // (which carries the task id) has echoed back; the health check
+          // retypes it if the echo never arrives.
           const clean = _stripAnsi(_buf);
-          // The prompt contains ORCHESTRATOR TASK - check if we see it echoed
-          if (clean.includes('ORCHESTRATOR TASK') || clean.includes('TASK_COMPLETE') || clean.length > 100) {
+          if (clean.includes(task.id)) {
             _write('\r');
             _phase = 'PROMPT_SENT';
             _lastActivityAt = Date.now();
@@ -364,12 +407,17 @@ module.exports = {
       }
       if (_phase === 'CLI_LAUNCH' && idleMs > 20000) {
         _log('CLI launch stalled, forcing prompt injection');
-        _phase = 'PROMPT_INJECTING';
-        _buf = '';
-        _write(wrappedPrompt);
+        _inject();
       }
-      // If PROMPT_INJECTING stalls (no echo), force Enter
+      // If PROMPT_INJECTING stalls (no echo), the input was likely dropped:
+      // clear and retype a few times, then fall back to forcing Enter.
       if (_phase === 'PROMPT_INJECTING' && idleMs > 3000) {
+        if (_injectAttempts < MAX_INJECT_ATTEMPTS) {
+          _log('Prompt echo not seen, retyping (attempt ' + (_injectAttempts + 1) + ')');
+          _inject();
+          return;
+        }
+        _log('Prompt echo never seen, forcing Enter');
         _write('\r');
         _phase = 'PROMPT_SENT';
         _lastActivityAt = Date.now();
