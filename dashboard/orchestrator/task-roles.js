@@ -92,7 +92,7 @@ const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for
 // Connectors that hand the agent a further action. The action must follow the
 // connector DIRECTLY (only fillers / object pronouns in between): "then delete
 // the unused ones" is an order, "then Alice will deploy" is narration.
-const CONNECTOR_CORE = String.raw`\bthen\b|\bafterwards?\b|\bafter (?:that|this|it|summari[sz]ing|you'?re done|which)\b|\bonce (?:done|finished|you'?re done)\b|\bwhen (?:done|finished)\b|\bnext step\b|\balso\b|\bfinally\b|\bwe need you to\b|\byou (?:should|must|need to|have to)\b|§puis\b|§ensuite\b|§apr[èe]s (?:[çc]a|cela|quoi)\b|§au passage\b|§il faudra\b|§il faut\b|§aussi\b|§enfin\b`;
+const CONNECTOR_CORE = String.raw`\bthen\b|\bafterwards?\b|\bafter (?:that|this|it|summari[sz]ing|you'?re done|which)\b|\bonce (?:done|finished|you'?re done)\b|\bwhen (?:done|finished)\b|\bnext step\b|\balso\b|\bfinally\b|\b(?:i|we) (?:need|want|would like|'d like) you to\b|\byou (?:should|must|need to|have to)\b|\bplease make sure to\b|§j'ai besoin que (?:tu|vous)\b|§je (?:veux|voudrais|souhaite) que (?:tu|vous)\b|§(?:tu|vous) (?:dois|devez|peux|pouvez)\b|§il faut que (?:tu|vous)\b|§puis\b|§ensuite\b|§apr[èe]s (?:[çc]a|cela|quoi)\b|§au passage\b|§il faudra\b|§il faut\b|§aussi\b|§enfin\b`;
 const CONNECTOR_POLITE = String.raw`|\bcould you\b|\bcan you\b|\bplease\b|§peux-tu\b|§pourrais-tu\b|§merci de\b|§tu peux\b`;
 const FILLERS = String.raw`(?:(?:also|please|just|then|now|immediately|simply|aussi|ensuite|juste|le|la|les|lui|leur|l'|s'il te pla[iî]t|stp)[\s,]+){0,3}`;
 const chainRe = (connectors) => re(String.raw`(?:` + connectors + String.raw`)[\s,:;.\-—]+` + FILLERS + ACTION_VERB_SRC);
@@ -104,9 +104,9 @@ const DATA_CHAIN_RE = chainRe(String.raw`\bthen\b|\bafterwards?\b|\bonce done\b|
 const INSTR_AND_CHAIN_RE = chainRe(String.raw`\band\b|§et\b`);
 // Object pronouns bound to an action: "supprime-les", "commit it", "send them".
 const PRONOUN_VERBS = String.raw`(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite|merge|close|approve|resolve|archive|fix|patch|share|post|assign|forward|rotate|change|reset|revoke|restart|kill|update|rewrite|revert|roll back|rollback|undo|disable|enable|block|ban|empty|scale|mitigate|remediate|harden|sanitize|quarantine|isolate|lock|suspend|handle|take care of|clean up|get rid of|drop|wipe|purge|stop|replace|move|rename|install|apply|run|execute|redeploy)`;
-const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|(?:^|[.!?;:,—-]\s*|\b(?:then|and|also|please|now|just|so|afterwards)\s+)` + PRONOUN_VERBS + String.raw`\s+(?:it|them|this|that|the result|everything)\b|\b(?:roll|shut|turn|take|tear|wipe|clean|back) (?:it|them|this|that|everything) (?:back|down|off|out|up)\b`);
+const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|(?:^|[.!?;:,—-]\s*|\b(?:then|and|also|please|now|just|so|afterwards)\s+|\b(?:need|want|like) you to\s+)` + PRONOUN_VERBS + String.raw`\s+(?:it|them|this|that|the result|everything)\b|\b(?:roll|shut|turn|take|tear|wipe|clean|back) (?:it|them|this|that|everything) (?:back|down|off|out|up)\b`);
 // A payload line addressed to the agent (not a bulleted / numbered item).
-const IMPERATIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|could you\s+|can you\s+|would you\s+|now,?\s+|you (?:should|must|need to)\s+|we need you to\s+|peux-tu\s+|pourrais-tu\s+|merci de\s+|tu peux\s+|il (?:faut|faudra)\s+)?` + ACTION_VERB_SRC);
+const IMPERATIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|could you\s+|can you\s+|would you\s+|now,?\s+|you (?:should|must|need to)\s+|(?:i|we) (?:need|want|would like|'d like) you to\s+|j'ai besoin que (?:tu|vous)\s+|je (?:veux|voudrais) que (?:tu|vous)\s+|(?:tu|vous) (?:dois|devez)\s+|il faut que (?:tu|vous)\s+|peux-tu\s+|pourrais-tu\s+|merci de\s+|tu peux\s+|il (?:faut|faudra)\s+)?` + ACTION_VERB_SRC);
 const DESTRUCTIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|now,?\s+)?(?:` + DESTRUCTIVE_SRC + String.raw`)`);
 const LIST_ITEM_RE = /^([-*•]|\d+[.)])\s/;
 // Repo-wide scope must be the OBJECT (end of the instruction / the whole
@@ -161,54 +161,49 @@ function payloadClass(instr, payload, depth) {
 }
 
 // "Summarize this ticket: <ticket>. Then fix it" -- the document is data, but
-// an order placed at its END is not (both reviewers, rounds 6-7):
-//  - the LAST SENTENCE is always checked: a then/puis/ensuite chain or a
-//    pronoun-bound action ("fix it", "corrige-le", "rotate it") is an order,
-//    with or without a file path;
-//  - trailing sign-offs ("Thanks!", "-- sent from my phone", a lone name) are
-//    skipped first so they cannot hide the order;
-//  - a BARE imperative on its own last line counts only for operational
-//    documents (ticket / issue / log / trace / error / incident); for e-mails,
-//    chats, READMEs... it is part of the text ("Please review the attached draft").
-const SIGN_OFF_RE = re(String.raw`^(?:thanks?(?: you)?|thx|cheers|regards|best(?: regards)?|kind regards|merci(?: beaucoup)?|cordialement|bien [àa] (?:toi|vous)|bonne journ[ée]e|--.*|—.*|sent from .*|envoy[ée] de(?:puis)? .*)(?:[,\s]+[a-zà-öø-ÿ'-]{2,20}(?: [a-zà-öø-ÿ'-]{2,20})?)?[!.,\s]*$`);
-const NAME_ONLY_RE = /^[a-zà-öø-ÿ'-]{2,20}(?: [a-zà-öø-ÿ'-]{2,20})?[.,!]*$/;
+// an order placed at its END is not (both reviewers, rounds 6-9). The end
+// window (see dataNounTailClass) is scanned for an order: a then/puis/ensuite
+// chain or a pronoun-bound action ("fix it", "corrige-le", "rotate it") counts
+// anywhere; a BARE imperative counts only for operational documents (ticket /
+// issue / log / trace / error / incident) -- for e-mails, chats, READMEs it is
+// part of the text ("Please review the attached draft").
 const OPERATIONAL_NOUN_RE = re(String.raw`\b(?:tickets?|issues?|bugs?|logs?|log lines?|traces?|stack ?traces?|errors?|incidents?|alerts?|outputs?)\b|§(?:tickets?|logs?|journal|journaux|traces?|erreurs?|incidents?|alertes?|sorties?)(?![a-zà-öø-ÿ])`);
 
 function dataNounTailClass(instr, payload, depth) {
-  let lines = payload.split('\n').map(l => l.trim()).filter(Boolean).filter(l => !LIST_ITEM_RE.test(l));
-  if (!lines.length) return 'simple';
-  const carriesAction = (l) => IMPERATIVE_LINE_RE.test(l.replace(/^[-—–\s]+/, '')) || PRONOUN_ACTION_RE.test(l) || AGENT_CHAIN_RE.test(l);
-  let end = lines.length - 1;
-  for (let steps = 0; steps < 3 && end > 0; steps++) {
-    const l = lines[end];
-    if (carriesAction(l)) break;
-    if (SIGN_OFF_RE.test(l)) { end--; continue; }
-    if (NAME_ONLY_RE.test(l) && SIGN_OFF_RE.test(lines[end - 1].replace(/[,\s]+$/, '')) && end - 1 > 0) { end -= 2; continue; }
-    break;
-  }
-  lines = lines.slice(0, end + 1);
-  const lastLine = lines[lines.length - 1];
-  const sentences = lastLine.split(/(?<=[.!?;])\s+/).filter(Boolean);
-  const lastSentence = sentences[sentences.length - 1] || lastLine;
+  // Round 9 (Claude): instead of trimming sign-offs line by line -- which a
+  // real signature block ("Thanks!\nBob Smith\nACME Corp", "Let me know if you
+  // need anything.") always defeats -- look for an order anywhere in a short
+  // END WINDOW: the last 6 prose lines (room for a signature block), split into
+  // sentences, last 6 checked.
+  // Signature lines and closing courtesies carry no action, so they are simply
+  // not orders; bounded work, linear time.
+  const allLines = payload.split('\n').map(l => l.trim()).filter(Boolean).filter(l => !LIST_ITEM_RE.test(l));
+  if (!allLines.length) return 'simple';
+  const windowLines = allLines.slice(-6);
+  const sentences = windowLines.flatMap(l => l.split(/(?<=[.!?;])\s+/)).map(x => x.trim()).filter(Boolean).slice(-6);
   const dataVerb = LEADING_DATA_RE.test(instr);
   const operational = OPERATIONAL_NOUN_RE.test(instr);
-  const ownLine = lines.length >= 2;
-  // Explicit hand-over in the final sentence is an order -- except for data
-  // verbs (translate / rephrase / classify / extract) on a one-line payload,
-  // where that sentence is itself the text being processed.
-  const tailText = dataVerb && !ownLine ? '' : lastSentence;
-  let order = !!tailText && (DATA_CHAIN_RE.test(tailText) || PRONOUN_ACTION_RE.test(tailText));
-  // Operational documents (ticket, log...): an own last line opened by
-  // "also / please / could you" + action is an order too.
-  if (!order && operational && ownLine && !dataVerb) order = AGENT_CHAIN_RE.test(lastLine) || IMPERATIVE_LINE_RE.test(lastLine.replace(/^(?:also|aussi|and|et)[\s,]+/, ''));
-  if (!order && !dataVerb) {
-    // An imperative final sentence aimed at a concrete file, or starting a new
-    // sentence of a single-line operational payload ("Auth bypass possible. Fix the login").
-    const imperativeLast = IMPERATIVE_LINE_RE.test(lastSentence);
-    if (imperativeLast && FILE_PATH_RE.test(lastSentence)) order = true;
-    else if (imperativeLast && operational && (ownLine || sentences.length >= 2)) order = true;
+  const multiLine = allLines.length >= 2;
+  const totalSentences = allLines.join(' ').split(/(?<=[.!?;])\s+/).filter(Boolean).length;
+  // Data verbs (translate / classify / ...) on a one-line payload: that line is
+  // the text being processed, not an order.
+  const candidates = dataVerb && !multiLine ? [] : sentences;
+  let orderSentence = null;
+  for (const sent of candidates) {
+    const bare = sent.replace(/^[-—–\s]+/, '');
+    let order = DATA_CHAIN_RE.test(sent) || PRONOUN_ACTION_RE.test(sent);
+    if (!order && !dataVerb) {
+      const imperative = IMPERATIVE_LINE_RE.test(bare) || (operational && AGENT_CHAIN_RE.test(sent));
+      // An imperative aimed at a concrete file is an order anywhere; for
+      // operational documents (ticket / log / issue...) an imperative sentence
+      // that follows other text is an order too. For e-mails / chats / READMEs
+      // a bare imperative is part of the text ("Please review the draft.").
+      if (imperative && FILE_PATH_RE.test(sent)) order = true;
+      else if (imperative && operational && (multiLine || totalSentences >= 2)) order = true;
+    }
+    if (order) { orderSentence = sent; break; }
   }
-  if (!order) {
+  if (!orderSentence) {
     // Short one-line payload asking a security question about OUR system.
     if (payload.length < 240 && SECURITY_RE.test(payload) && SECURITY_QUESTION_RE.test(payload) && re(String.raw`\b(?:our|my|we|us)\b|§(?:notre|nos|mon|ma|mes|on)\b`).test(payload)) return 'security';
     return 'simple';
@@ -216,7 +211,7 @@ function dataNounTailClass(instr, payload, depth) {
   // An order exists: judge the whole request (the document may be about XSS...).
   const sub = depth < 2 ? classifyTask({ prompt: payload }, depth + 1).taskClass : 'small-edit';
   let cls = stricter('small-edit', sub === 'simple' ? 'small-edit' : sub);
-  if (DESTRUCTIVE_RE.test(lastSentence)) cls = stricter(cls, 'complex');
+  if (DESTRUCTIVE_RE.test(orderSentence)) cls = stricter(cls, 'complex');
   if (SECURITY_RE.test(payload)) cls = stricter(cls, 'security');
   return cls;
 }
