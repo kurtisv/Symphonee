@@ -73,15 +73,30 @@ function killStaleProcesses(port) {
   // Synchronous on purpose: callers are a second instance that is about to exit
   // (no window, no server) or startup before the server listens, so blocking
   // here cannot freeze anything the user sees; the relaunch must follow the kill.
-  const pidsToKill = new Set(planKill({ portPids, electronProcs, myPid, myStartMs, exePath: process.execPath }).map(String));
-  if (pidsToKill.size) {
-    try {
-      execSync(`taskkill /F ${[...pidsToKill].map(p => '/PID ' + p).join(' ')}`, { encoding: 'utf8', timeout: 5000 });
-      console.log('Killed stale process(es):', [...pidsToKill].join(', '));
-      return true;
-    } catch (_) {}
-  }
-  return false;
+  const targets = planKill({ portPids, electronProcs, myPid, myStartMs, exePath: process.execPath });
+  return killAndVerify(targets, {
+    kill: (pid) => execSync(`taskkill /F /PID ${pid}`, { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }),
+  });
+}
+
+/**
+ * Kill each target separately and report success from VERIFICATION, not from
+ * taskkill's exit code: taskkill exits non-zero as soon as one PID is already
+ * gone, which is the normal case (Chromium children die with their main
+ * process) and used to make every relaunch report "could not close".
+ */
+function killAndVerify(targets, { kill, isAlive = pidAlive, sleepMs = (ms) => { try { require('child_process').execSync(`ping -n 1 -w ${ms} 127.0.0.1 >nul`, { timeout: ms + 2000 }); } catch (_) {} } } = {}) {
+  if (!targets.length) return false;
+  for (const pid of targets) { try { kill(pid); } catch (_) { /* already gone or access denied: verified below */ } }
+  for (let i = 0; i < 10 && targets.some(isAlive); i++) sleepMs(200);
+  const survivors = targets.filter(isAlive);
+  if (survivors.length) { console.log('Could not stop process(es):', survivors.join(', ')); return false; }
+  console.log('Stopped stale process(es):', targets.join(', '));
+  return true;
+}
+
+function pidAlive(pid) {
+  try { process.kill(Number(pid), 0); return true; } catch (e) { return e && e.code === 'EPERM'; }
 }
 
 /** Relaunch bookkeeping: how many automatic relaunches in a row (argv flag). */
@@ -97,4 +112,4 @@ function relaunchArgs(argv = process.argv) {
 /** Relaunch only after a successful kill, and never more than twice in a row. */
 function shouldRelaunch({ killed, count, max = 2 }) { return !!killed && count < max; }
 
-module.exports = { killStaleProcesses, selectStaleElectron, listElectronProcesses, planKill, relaunchCount, relaunchArgs, shouldRelaunch };
+module.exports = { killStaleProcesses, selectStaleElectron, listElectronProcesses, planKill, killAndVerify, pidAlive, relaunchCount, relaunchArgs, shouldRelaunch };

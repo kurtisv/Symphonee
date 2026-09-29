@@ -11,6 +11,33 @@ const { scoreResult } = require('./reliability');
 const { MAX_CONCURRENT_SPAWNS, SPAWN_STAGGER_MS } = require('./constants');
 const { createContextPacket } = require('./context-packet');
 const { isLocalProvider } = require('./local-providers');
+
+/**
+ * Permission decision for an automatic fallback spawn.
+ * permissions.loadSettings() silently turns an unreadable / corrupt config into
+ * edit-mode defaults, which would let a fallback through (both reviewers, round
+ * 5). Here: a MISSING config keeps the app-wide defaults (same as every other
+ * gate), but a config that exists and cannot be read or parsed denies.
+ */
+function fallbackPermission(configPath, cli, worktree, { readFile = (p) => require('fs').readFileSync(p, 'utf8'), exists = (p) => require('fs').existsSync(p) } = {}) {
+  const permissions = require('../permissions');
+  let settings;
+  try {
+    if (exists(configPath)) {
+      const cfg = JSON.parse(readFile(configPath));
+      const p = cfg && cfg.Permissions;
+      if (p !== undefined && (p === null || typeof p !== 'object' || Array.isArray(p))) return 'deny';
+    }
+    settings = permissions.loadSettings(configPath);
+  } catch (_) {
+    return 'deny';
+  }
+  try {
+    return permissions.evaluate({ type: 'cli', value: `${cli}:spawn` }, settings, { worktree }).decision;
+  } catch (_) {
+    return 'deny';
+  }
+}
 module.exports = {
   // ── Synchronous Handoff ─────────────────────────────────────────────────
 
@@ -187,12 +214,7 @@ module.exports = {
     // review mode) is never started as a fallback. "ask" stays covered by the
     // approval of the original spawn and by the AutomaticFallback setting.
     if (this.permissionsConfigPath) {
-      let decision = 'allow';
-      try {
-        const permissions = require('../permissions');
-        decision = permissions.evaluate({ type: 'cli', value: `${nextCli}:spawn` }, permissions.loadSettings(this.permissionsConfigPath),
-          { worktree: String(task._escalationCwd || '').includes('worktree') }).decision;
-      } catch (_) { decision = 'deny'; /* cannot read the rules: fail closed */ }
+      const decision = fallbackPermission(this.permissionsConfigPath, nextCli, String(task._escalationCwd || '').includes('worktree'));
       if (decision === 'deny') {
         this.broadcast({ type: 'orchestrator-event', event: 'fallback-blocked', taskId: task.id, from: task.cli, to: nextCli, reason: 'permission rules deny this CLI', timestamp: Date.now() });
         return this._tryEscalate(task);
@@ -377,3 +399,6 @@ module.exports = {
     return this.spawnHeadless({ ...opts, prompt: enhancedPrompt });
   },
 };
+
+// Non-enumerable: not mixed into Orchestrator.prototype; exported for tests.
+Object.defineProperty(module.exports, '_fallbackPermission', { value: fallbackPermission, enumerable: false });
