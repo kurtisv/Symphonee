@@ -34,7 +34,7 @@ const ROLE_PATTERNS = [
   ['coder', re(String.raw`implement|§impl[ée]ment|\bcode\b|\bcoding\b|§modif|\bedit|§[ée]dite?\b|refactor|\bbuild\b|\bchanges?\b|\bwrite\b|§[ée]cri[st]\b|§ajout|§faute|typo|§coquille|§renomm|rename|\bupdate|mets? [àa] jour|\bbump\b|upgrade`)],
 ];
 
-const COMPLEX_RE = re(String.raw`architect|complex|production|\bprod\b|critical|migrat|multi.?(file|fichier)|plusieurs fichiers|refactor(ing)? (global|complet|large|massi)|ambigu|large context|gros contexte|\bwhole\b|\bentire\b|§tout le (repo|d[ée]p[ôo]t|projet|code)|all (the )?dependencies|§toutes les d[ée]pendances|upgrade all|race condition|condition de course|concurren|deadlock|corrupt|§corromp|data loss|perte de donn|memory leak|fuite m[ée]moire|design (a|an|the|new|our)\b|§con[çc]oi[st]|sharding|scalab|§complet|§compl[èe]te|exhaustive|end.to.end`);
+const COMPLEX_RE = re(String.raw`architect|complex|production|\bprod\b|critical|migrat|multi.?(file|fichier)|plusieurs fichiers|refactor(ing)? (global|complet|large|massi)|ambigu|large context|gros contexte|\bwhole\b|\bentire\b|§tout le (repo|d[ée]p[ôo]t|projet|code)|all (the )?dependencies|§toutes les d[ée]pendances|upgrade all|race condition|\brace\b|\bdata races?\b|thread.?safe|condition de course|concurren|deadlock|corrupt|§corromp|data loss|perte de donn|memory leak|fuite m[ée]moire|design (a|an|the|new|our)\b|§con[çc]oi[st]|sharding|scalab|§complet|§compl[èe]te|exhaustive|end.to.end`);
 const SHELL_RE = re(String.raw`\brun\b|§lance\b|§lancer\b|§ex[ée]cute|execute|\bnpm\b|\bnpx\b|\bnode\b|jest|pytest|\bshell\b|\bcommand\b|§commande|\bscripts?\b|\blint\b|\bbuild\b`);
 const SEARCH_RE = re(String.raw`\bsearch|§cherche|§recherch|\bgrep\b|find (all|every|where)|§trouve (tous|toutes|o[uù])|dans (le|tout le) (repo|d[ée]p[ôo]t|projet)|across the (repo|codebase)`);
 // Writing is decided by verbs, not by the noun "code": "explique ce code" is read-only.
@@ -56,28 +56,72 @@ function taskText(task) {
   return [task.goal, task.prompt, task.description, ...(task.capabilities || [])].filter(Boolean).join(' ').toLowerCase();
 }
 
-// For "summarize/classify/extract/...: <payload>" only the instruction is
-// analysed; the payload (tickets, logs, text) must not change the route.
+// "summarize/classify/extract/...: <payload>". The payload is treated as DATA
+// (tickets, logs, pasted text) only when it carries no instruction for the
+// agent; otherwise it is analysed like a task. Both reviewers showed that
+// ignoring it blindly let "Rewrite: src/pay.js ...", "Summarize: review auth.js
+// for JWT leaks" or "..., then delete them" through as simple local work.
 function instructionOf(text) {
-  if (!LEADING_SIMPLE_RE.test(text)) return { instruction: text, leadingSimple: false };
+  if (!LEADING_SIMPLE_RE.test(text)) return { instruction: text, payload: '', leadingSimple: false };
   const cut = text.search(/[:\n]/);
-  return { instruction: cut > 0 ? text.slice(0, cut) : text, leadingSimple: true };
+  return cut > 0
+    ? { instruction: text.slice(0, cut), payload: text.slice(cut + 1), leadingSimple: true }
+    : { instruction: text, payload: '', leadingSimple: true };
 }
 
-function leadingSimpleClass(instr) {
+const CLASS_RANK = { simple: 0, 'readonly-review': 1, 'small-edit': 2, complex: 3, security: 4 };
+const stricter = (a, b) => (CLASS_RANK[b] > CLASS_RANK[a] ? b : a);
+
+// Imperative verbs a user addresses to the agent (EN + FR).
+const ACTION_VERB_SRC = String.raw`(review|audit|check|inspect|verify|§v[ée]rifie|look for|find|§cherche|§trouve|rewrite|§r[ée][ée]cri[st]|fix|§corrige|repair|§r[ée]pare|delete|remove|§supprime|§efface|§retire|update|§mets? [àa] jour|add|§ajoute|create|§cr[ée]e|move|§d[ée]place|rename|§renomme|commit|push|§pousse|save|§sauvegarde|§enregistre|apply|§applique|install|§installe|refactor|implement|§impl[ée]mente|edit|§[ée]dite|modify|§modifie|write|§[ée]cri[st]|run|§lance|execute|§ex[ée]cute|deploy|§d[ée]ploie|merge|§fusionne|replace|§remplace|patch|upgrade|migrate|§migre)`;
+// "..., then delete them" / "puis supprime-les" / "and commit it" / "save it as ..."
+const AGENT_CHAIN_RE = re(String.raw`(\bthen\b|\bafterwards\b|\bafter that\b|§puis\b|§ensuite\b|§apr[èe]s [çc]a\b|\band\b|§et\b)\s+(\w+\s+){0,2}` + ACTION_VERB_SRC + String.raw`|` + ACTION_VERB_SRC + String.raw`-(les|le|la|moi)\b|\b(save|commit|push|write) (it|them|this|that|the result)\b`);
+// A payload line that starts with an imperative (not a bulleted list item).
+const IMPERATIVE_LINE_RE = re(String.raw`^\s*(please\s+|peux-tu\s+)?` + ACTION_VERB_SRC + String.raw`\b`);
+const PAYLOAD_SCOPE_RE = re(String.raw`\bwhole\b|\bentire\b|every file|all (the )?files|§tout le (repo|d[ée]p[ôo]t|projet|code)|§tous les fichiers|the (repo|codebase|repository)\b`);
+
+function payloadClass(instr, payload, depth) {
+  const p = payload.trim();
+  if (!p) return 'simple';
+  let cls = 'simple';
+  // Instructions hidden in the payload: chained actions or an imperative line
+  // that is not a list item ("- fix login bug" in a ticket list stays data).
+  const lines = p.split('\n').map(l => l.trim()).filter(Boolean);
+  const imperative = lines.find(l => !/^([-*•]|\d+[.)])\s/.test(l) && IMPERATIVE_LINE_RE.test(l));
+  if (AGENT_CHAIN_RE.test(p) || imperative) {
+    const sub = depth < 2 ? classifyTask({ prompt: imperative || p }, depth + 1).taskClass : 'small-edit';
+    cls = stricter(cls, sub === 'simple' ? 'small-edit' : sub);
+    if (DESTRUCTIVE_RE.test(p)) cls = stricter(cls, 'complex');
+  }
+  // Short, single-subject payloads are part of the request, not pasted data.
+  const short = p.length < 240 && lines.length <= 2;
+  if (short) {
+    const fileTarget = FILE_TARGET_RE.test(p);
+    if (SECURITY_RE.test(p) && (fileTarget || READONLY_WORDS_RE.test(p))) cls = stricter(cls, 'security');
+    if (PAYLOAD_SCOPE_RE.test(p)) cls = stricter(cls, 'complex');
+    if (NEW_FILE_RE.test(p)) cls = stricter(cls, 'small-edit');
+    if (LEADING_TRANSFORM_RE.test(instr) && fileTarget) cls = stricter(cls, 'small-edit');
+    if (LEADING_EXTRACT_RE.test(instr) && CODE_UNIT_RE.test(p) && fileTarget) cls = stricter(cls, 'small-edit');
+  }
+  return cls;
+}
+
+function leadingSimpleClass(instr, payload = '', depth = 0) {
   const afterVerb = instr.replace(LEADING_SIMPLE_RE, ' ');
-  if (SECURITY_RE.test(instr) && (FILE_TARGET_RE.test(instr) || READONLY_WORDS_RE.test(afterVerb))) return 'security';
-  if (COMPLEX_RE.test(instr)) return 'complex';
-  if (DESTRUCTIVE_RE.test(afterVerb)) return 'complex';
-  if (WRITE_RE.test(afterVerb) || NEW_FILE_RE.test(instr)) return 'small-edit';
-  if (LEADING_TRANSFORM_RE.test(instr) && FILE_TARGET_RE.test(instr)) return 'small-edit';
-  if (LEADING_EXTRACT_RE.test(instr) && CODE_UNIT_RE.test(instr)) return 'small-edit';
-  return 'simple';
+  let cls = 'simple';
+  // Security named in the instruction itself ("summarize our threat model").
+  if (SECURITY_RE.test(instr)) cls = 'security';
+  else if (COMPLEX_RE.test(instr)) cls = 'complex';
+  else if (DESTRUCTIVE_RE.test(afterVerb)) cls = 'complex';
+  else if (WRITE_RE.test(afterVerb) || NEW_FILE_RE.test(instr)) cls = 'small-edit';
+  else if (LEADING_TRANSFORM_RE.test(instr) && FILE_TARGET_RE.test(instr)) cls = 'small-edit';
+  else if (LEADING_EXTRACT_RE.test(instr) && CODE_UNIT_RE.test(instr)) cls = 'small-edit';
+  return stricter(cls, payloadClass(instr, payload, depth));
 }
 
 function deriveTaskClass(task, roles, ch, text) {
   if (task.taskClass && TASK_CLASSES.includes(task.taskClass)) return task.taskClass;
-  if (ch.leadingSimple) return leadingSimpleClass(text);
+  if (ch.leadingSimple) return ch.leadingClass;
   if (SECURITY_RE.test(text) || (roles.has('security-reviewer') && roles.has('reviewer'))) return 'security';
   if (ch.complexity === 'high' || ch.longRunning || ch.destructiveRisk === 'high') return 'complex';
   if (ch.repoWriteRequired || ch.shellRequired) return 'small-edit';
@@ -88,19 +132,21 @@ function deriveTaskClass(task, roles, ch, text) {
   return 'readonly-review';
 }
 
-function classifyTask(task = {}) {
+function classifyTask(task = {}, depth = 0) {
   const fullText = taskText(task);
-  const { instruction, leadingSimple } = instructionOf(fullText);
-  const text = instruction; // everything below reasons on the instruction only
+  const { instruction, payload, leadingSimple } = instructionOf(fullText);
+  const leadingClass = leadingSimple ? leadingSimpleClass(instruction, payload, depth) : null;
+  // A leading-simple request whose payload is only data is reasoned about on
+  // its instruction; if the payload turned out to carry work, on everything.
+  const text = leadingSimple && leadingClass === 'simple' ? instruction : fullText;
   const roles = new Set(Array.isArray(task.roles) ? task.roles.filter(r => ROLES.includes(r)) : []);
   for (const [role, pattern] of ROLE_PATTERNS) if (pattern.test(text)) roles.add(role);
   const noRoleMatched = !roles.size;
   if (!roles.size) roles.add(task.repoWriteRequired ? 'coder' : 'investigator');
 
-  const leadingClass = leadingSimple ? leadingSimpleClass(text) : null;
   const complexityHigh = leadingSimple ? ['complex', 'security'].includes(leadingClass) : (COMPLEX_RE.test(text) || SECURITY_RE.test(text));
   const characteristics = {
-    leadingSimple,
+    leadingSimple, leadingClass,
     complexity: task.complexity || (complexityHigh ? 'high' : 'normal'),
     repoReadRequired: task.repoReadRequired !== undefined ? !!task.repoReadRequired : re(String.raw`\brepo|repository|§d[ée]p[ôo]t|\bfiles?\b|§fichiers?\b|working tree|\bcode\b`).test(text) || FILE_TARGET_RE.test(text),
     repoWriteRequired: task.repoWriteRequired !== undefined ? !!task.repoWriteRequired
@@ -133,8 +179,11 @@ function classifyTask(task = {}) {
   // A short prompt that matched no role at all ("réponds OK", "donne la date
   // ISO de demain") is simple text work -- unless it writes, deletes, touches
   // security or is complex.
-  const shortPlain = noRoleMatched && !characteristics.toolsRequired && characteristics.complexity !== 'high'
-    && characteristics.destructiveRisk !== 'high' && !WRITE_RE.test(text) && !SECURITY_RE.test(text) && fullText.length < 600 && !task.taskClass;
+  // A question that names a file ("is there a race in scheduler.js?") is code
+  // analysis, not simple text work.
+  const shortPlain = !leadingSimple && noRoleMatched && !characteristics.toolsRequired && characteristics.complexity !== 'high'
+    && characteristics.destructiveRisk !== 'high' && !WRITE_RE.test(text) && !SECURITY_RE.test(text) && !FILE_TARGET_RE.test(fullText)
+    && fullText.length < 600 && !task.taskClass;
   characteristics.taskClass = shortPlain ? 'simple' : deriveTaskClass(task, roles, characteristics, text);
   return { roles: ordered, characteristics, taskClass: characteristics.taskClass };
 }
