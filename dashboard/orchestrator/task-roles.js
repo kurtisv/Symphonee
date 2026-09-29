@@ -41,7 +41,7 @@ const SEARCH_RE = re(String.raw`\bsearch|§cherche|§recherch|\bgrep\b|find (all
 const WRITE_RE = re(String.raw`implement|§impl[ée]ment|§modif|\bedit|§[ée]dite?\b|refactor|\bchange\b|\bwrite\b|§[ée]cri[st]\b|§r[ée][ée]cri[st]\b|\brewrite\b|§ajout|\badd\b|§corrig|\bfix|repair|§r[ée]pare|§faute|typo|§coquille|§renomm|rename|\bcreate\b|§cr[ée]e[rz]?\b|\bupdate|mets? [àa] jour|\bbump\b|upgrade|\binstall|\bpatch\b|\bapply\b|§applique|\bcommit (?:it|them|this|that|the|these|those|all|changes|everything|to)\b|§commit(?:e|er|ez)\b|\bsave\b|§sauvegarde|§enregistre|\bdelete\b|\bremove\b|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§retire|§efface|\bmove\b|§d[ée]place|\bdeploy\b|§d[ée]plo[iy]|\bpublish\b|§publi[ea]|\boverwrite\b|§[ée]cras|\bmerge (?:it|them|this|that|the|these|those|into)\b|\bclose (?:it|them|this|that|the|these|those|all)\b|\bapprove\b|\b(?:share|post|send|assign|forward|upload) (?:it|them|this|that|the|these|those|to)\b|§(?:partage|envoie|transf[èe]re|assigne|attribue)[rz]? (?:le|la|les|ce|ces|[àa])\b|\bresolve (?:it|them|this|that|the|these|those|all)\b|\brotate (?:the )?(?:keys?|secrets?|tokens?|credentials?)\b|\barchive (?:it|them|this|that|the|these|those|all)\b|§ferme[rz]? (?:le|la|les|ce|ces)\b|§approuve|§r[ée]sou[st] (?:le|la|les|ce|ces)\b|§archive[rz]? (?:le|la|les|ce|ces)\b`);
 // Destructive intent, including shell / database forms. Present / imperative
 // forms only: a log line saying "deleted" / "supprimé" is a report, not an order.
-const DESTRUCTIVE_SRC = String.raw`\bdelete\b|\bremove\b|\breset --hard|\bdiscard\b|\bdestroy\b|\bwipe\b|\bpurge\b|\bnuke\b|\brm\s+-\w*r|\brm\b|\bdrop (?:the |a |le |la |les )?(?:\w+ )?(?:table|database|db|schema|collection|index|base)\b|\btruncate\b|force[- ]?push|push (?:--force|-f)\b|\bkill\b|\bchmod\b|\bchown\b|\boverwrite\b|\bget rid of\b|\berase\b|\bdel\b|\brmdir\b|\brd /s\b|remove-item|\bformat (?:c:|the (?:disk|drive))|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§effac(?:e|er|ez)(?![a-zà-öø-ÿ])|§d[ée]trui[st]?(?![a-zà-öø-ÿ])|§[ée]cras(?:e|er|ez)(?![a-zà-öø-ÿ])|§vir(?:e|er|ez)(?![a-zà-öø-ÿ])|§vide[rz]? (?:la |le |les )?(?:base|cache|dossier|r[ée]pertoire)`;
+const DESTRUCTIVE_SRC = String.raw`\bdelete\b|\bremove\b|\breset --hard|\bdiscard\b|\bdestroy\b|\bwipe\b|\bpurge\b|\bnuke\b|\brm\s+-\w*r|\brm\b|\bdrop (?:the |a |le |la |les )?(?:\w+ )?(?:table|database|db|schema|collection|index|base)\b|\btruncate\b|force[- ]?push|push (?:--force|-f)\b|\bkill\b|\bchmod\b|\bchown\b|\boverwrite\b|\bget rid of\b|\bempty (?:the )?(?:\/\S*|~\S*|[a-z]:\\\S*|trash|bin|recycle bin|cache|caches|folder|directory|dir|table|database|db|bucket|queue|logs?)\b|\berase\b|\bdel\b|\brmdir\b|\brd /s\b|remove-item|\bformat (?:c:|the (?:disk|drive))|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§effac(?:e|er|ez)(?![a-zà-öø-ÿ])|§d[ée]trui[st]?(?![a-zà-öø-ÿ])|§[ée]cras(?:e|er|ez)(?![a-zà-öø-ÿ])|§vir(?:e|er|ez)(?![a-zà-öø-ÿ])|§vide[rz]? (?:la |le |les )?(?:base|cache|dossier|r[ée]pertoire)`;
 const DESTRUCTIVE_RE = re(DESTRUCTIVE_SRC);
 const NEW_FILE_RE = re(String.raw`(dans|into|to|vers|as|sous) (un|une|a|an) (nouveau|nouvelle|new|autre|separate|§s[ée]par[ée]e?) (fichier|file|module)`);
 // Path token anchored at a token start and bounded: an unanchored [..]+\.ext retried from every position of a long run (Codex round 5: 63s on 200k chars).
@@ -88,7 +88,7 @@ const stricter = (a, b) => (CLASS_RANK[b] > CLASS_RANK[a] ? b : a);
 // Imperative verbs a user addresses to the agent (EN exact, FR stems), each
 // ending on a word boundary ("reviewed", "added", "supprimé" do not count).
 const VERB_END = '(?![a-zà-öø-ÿ])';
-const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|overwrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|kill|restart|reboot|stop|chmod|chown|get rid of|erase|del|rmdir|close|approve|resolve|rotate|archive|assign|forward|change|reset|revoke|§chang\w*|§r[ée]initialis\w*|§r[ée]voqu\w*|§assign\w*|§attribu\w*|§transf[èe]r\w*|§ferm\w*|§approuv\w*|§r[ée]sou[ds]\w*|§archiv\w*|label|tag|put|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets?|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§[ée]cras\w*|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§vir\w*|§nettoi\w*|§red[ée]marr\w*|§arr[êe]t\w*|§tu\w*|§[ée]tiquet\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
+const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|overwrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|kill|restart|reboot|stop|chmod|chown|get rid of|erase|del|rmdir|close|approve|resolve|rotate|archive|assign|forward|change|reset|revoke|revert|roll ?back|undo|disable|enable|block|unblock|ban|unban|empty|scale(?: up| down)?|mitigate|remediate|harden|sanitize|quarantine|isolate|lock|unlock|suspend|handle|take care of|§chang\w*|§r[ée]initialis\w*|§r[ée]voqu\w*|§annul\w*|§d[ée]sactiv\w*|§r[ée]activ\w*|§activ\w*|§bloqu\w*|§d[ée]bloqu\w*|§bann\w*|§s[ée]curis\w*|§verrouill\w*|§suspend\w*|§g[èe]r\w*|§occupe-toi|§restaur\w*|§assign\w*|§attribu\w*|§transf[èe]r\w*|§ferm\w*|§approuv\w*|§r[ée]sou[ds]\w*|§archiv\w*|label|tag|put|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets?|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§[ée]cras\w*|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§vir\w*|§nettoi\w*|§red[ée]marr\w*|§arr[êe]t\w*|§tu\w*|§[ée]tiquet\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
 // Connectors that hand the agent a further action. The action must follow the
 // connector DIRECTLY (only fillers / object pronouns in between): "then delete
 // the unused ones" is an order, "then Alice will deploy" is narration.
@@ -103,7 +103,8 @@ const DATA_CHAIN_RE = chainRe(String.raw`\bthen\b|\bafterwards?\b|\bonce done\b|
 // the duplicates", "Résume ce log et supprime-le").
 const INSTR_AND_CHAIN_RE = chainRe(String.raw`\band\b|§et\b`);
 // Object pronouns bound to an action: "supprime-les", "commit it", "send them".
-const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|\b(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite|merge|close|approve|resolve|archive|fix|patch|share|post|assign|forward|rotate|change|reset|revoke|restart|kill|update|rewrite)\s+(?:it|them|this|that|the result|everything)\b`);
+const PRONOUN_VERBS = String.raw`(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite|merge|close|approve|resolve|archive|fix|patch|share|post|assign|forward|rotate|change|reset|revoke|restart|kill|update|rewrite|revert|roll back|rollback|undo|disable|enable|block|ban|empty|scale|mitigate|remediate|harden|sanitize|quarantine|isolate|lock|suspend|handle|take care of|clean up|get rid of|drop|wipe|purge|stop|replace|move|rename|install|apply|run|execute|redeploy)`;
+const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|(?:^|[.!?;:,—-]\s*|\b(?:then|and|also|please|now|just|so|afterwards)\s+)` + PRONOUN_VERBS + String.raw`\s+(?:it|them|this|that|the result|everything)\b|\b(?:roll|shut|turn|take|tear|wipe|clean|back) (?:it|them|this|that|everything) (?:back|down|off|out|up)\b`);
 // A payload line addressed to the agent (not a bulleted / numbered item).
 const IMPERATIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|could you\s+|can you\s+|would you\s+|now,?\s+|you (?:should|must|need to)\s+|we need you to\s+|peux-tu\s+|pourrais-tu\s+|merci de\s+|tu peux\s+|il (?:faut|faudra)\s+)?` + ACTION_VERB_SRC);
 const DESTRUCTIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|now,?\s+)?(?:` + DESTRUCTIVE_SRC + String.raw`)`);
@@ -169,14 +170,23 @@ function payloadClass(instr, payload, depth) {
 //  - a BARE imperative on its own last line counts only for operational
 //    documents (ticket / issue / log / trace / error / incident); for e-mails,
 //    chats, READMEs... it is part of the text ("Please review the attached draft").
-const SIGN_OFF_RE = re(String.raw`^(?:thanks?(?: you)?|thx|cheers|regards|best(?: regards)?|kind regards|merci(?: beaucoup)?|cordialement|bien [àa] (?:toi|vous)|bonne journ[ée]e|--.*|—.*|sent from .*|envoy[ée] de(?:puis)? .*)[!.,\s]*$`);
+const SIGN_OFF_RE = re(String.raw`^(?:thanks?(?: you)?|thx|cheers|regards|best(?: regards)?|kind regards|merci(?: beaucoup)?|cordialement|bien [àa] (?:toi|vous)|bonne journ[ée]e|--.*|—.*|sent from .*|envoy[ée] de(?:puis)? .*)(?:[,\s]+[a-zà-öø-ÿ'-]{2,20}(?: [a-zà-öø-ÿ'-]{2,20})?)?[!.,\s]*$`);
 const NAME_ONLY_RE = /^[a-zà-öø-ÿ'-]{2,20}(?: [a-zà-öø-ÿ'-]{2,20})?[.,!]*$/;
 const OPERATIONAL_NOUN_RE = re(String.raw`\b(?:tickets?|issues?|bugs?|logs?|log lines?|traces?|stack ?traces?|errors?|incidents?|alerts?|outputs?)\b|§(?:tickets?|logs?|journal|journaux|traces?|erreurs?|incidents?|alertes?|sorties?)(?![a-zà-öø-ÿ])`);
 
 function dataNounTailClass(instr, payload, depth) {
   let lines = payload.split('\n').map(l => l.trim()).filter(Boolean).filter(l => !LIST_ITEM_RE.test(l));
-  while (lines.length > 1 && (SIGN_OFF_RE.test(lines[lines.length - 1]) || (NAME_ONLY_RE.test(lines[lines.length - 1]) && !IMPERATIVE_LINE_RE.test(lines[lines.length - 1])))) lines = lines.slice(0, -1);
   if (!lines.length) return 'simple';
+  const carriesAction = (l) => IMPERATIVE_LINE_RE.test(l.replace(/^[-—–\s]+/, '')) || PRONOUN_ACTION_RE.test(l) || AGENT_CHAIN_RE.test(l);
+  let end = lines.length - 1;
+  for (let steps = 0; steps < 3 && end > 0; steps++) {
+    const l = lines[end];
+    if (carriesAction(l)) break;
+    if (SIGN_OFF_RE.test(l)) { end--; continue; }
+    if (NAME_ONLY_RE.test(l) && SIGN_OFF_RE.test(lines[end - 1].replace(/[,\s]+$/, '')) && end - 1 > 0) { end -= 2; continue; }
+    break;
+  }
+  lines = lines.slice(0, end + 1);
   const lastLine = lines[lines.length - 1];
   const sentences = lastLine.split(/(?<=[.!?;])\s+/).filter(Boolean);
   const lastSentence = sentences[sentences.length - 1] || lastLine;
