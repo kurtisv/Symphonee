@@ -159,7 +159,7 @@ test('8. context larger than local capacity -> no local launch at all', async ()
   let calls = 0;
   const orch = makeOrch({ post: async () => { calls++; return { choices: [{ message: { content: 'x' } }] }; } });
   await orch.localHealth.refresh({ force: true });
-  const task = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: huge });
+  const task = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: huge, noFallback: true });
   const done = await waitDone(orch, task.id);
   assert.equal(done.state, STATE.FAILED);
   assert.match(done.error, /context-exceeds-local/);
@@ -238,6 +238,9 @@ test('10. telemetry distinguishes LOCAL_DIRECT / LOCAL_CODEX / CLOUD_DIRECT / LO
     post: async (url, body) => { directCalls++; assert.match(url, /^http:\/\/127\.0\.0\.1:1234\//); return { model: body.model, choices: [{ message: { content: 'résumé local' }, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 10 } }; },
     script: { 'codex-oss-local': [{ code: 0, stdout: 'edited' }, { code: 1, stderr: 'tool call failed' }] },
   });
+  // The successful codex-oss-local run really changes the repo (fingerprint moves).
+  let treeVersion = 0;
+  orch._gitTreeFingerprint = () => `tree-${treeVersion++}`;
   const a = await autoSpawn(orch, 'résume ce texte: Symphonee route les tâches.');
   assert.equal(a.done.state, STATE.COMPLETED); assert.equal(a.done.cli, 'lmstudio-qwen-small'); assert.equal(directCalls, 1);
   const b = await autoSpawn(orch, 'corrige cette faute dans README.md');
@@ -477,11 +480,11 @@ test('22. direct local refuses blind reviews and truncated answers (-> cloud), a
   let calls = 0;
   const orch = makeOrch({ post: async () => { calls++; return { choices: [{ message: { content: 'partial…' }, finish_reason: 'length' }] }; } });
   await orch.localHealth.refresh({ force: true });
-  const blind = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: 'Why does the app crash on startup?', requiresRepoContent: true });
+  const blind = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: 'Why does the app crash on startup?', requiresRepoContent: true, noFallback: true });
   const b = await waitDone(orch, blind.id);
   assert.equal(b.state, STATE.FAILED); assert.match(b.error, /local-cannot-read-repo/); assert.equal(calls, 0);
   assert.equal(b.errorClassification.noCooldown, true);
-  const inline = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: 'review: function add(a,b){return a+b}', requiresRepoContent: true });
+  const inline = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: 'review: function add(a,b){return a+b}', requiresRepoContent: true, noFallback: true });
   const i = await waitDone(orch, inline.id);
   assert.equal(calls, 1, 'inline code is enough to run locally');
   assert.equal(i.state, STATE.FAILED); assert.match(i.error, /truncated/);
@@ -547,7 +550,7 @@ test('25. refilled escalation chain respects OrchestrateCliList and MaxFallbackA
   assert.equal(d.state, STATE.FAILED);
   const clis = orch.spawns.map(s => s.cli);
   assert.equal(clis[0], 'codex-oss-local');
-  assert.ok(clis.length <= 2, `at most MaxFallbackAttempts(1) cloud attempt, got ${clis.join(',')}`);
+  assert.equal(clis.length, 2, `exactly MaxFallbackAttempts(1) cloud attempt, got ${clis.join(',')}`);
   assert.ok(clis.slice(1).every(c => ['codex', 'claude'].includes(c)), `only enabled CLIs, got ${clis.join(',')}`);
 });
 
@@ -562,8 +565,28 @@ test('26. cancelling or timing out a local agent kills its whole process tree', 
   };
   await orch.localHealth.refresh({ force: true });
   const t = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'x', cwd: os.tmpdir() });
+  assert.ok(t._escalationChain && t._escalationChain.length, 'has a cloud chain (so a failover WOULD be possible)');
   assert.deepEqual(orch.cancelTask(t.id), { ok: true });
   assert.deepEqual(killed, [4242]);
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(orch.tasks.get(t.id).state, STATE.CANCELLED, 'cancel did not turn into a cloud task');
+  // Timeout path: tree kill, then exactly one failover to cloud.
+  const o2 = makeOrch({ cfg: { LocalFirst: { timeouts: { 'codex-oss-local': 30 } } } });
+  const killed2 = [];
+  o2._killTreeImpl = (pid) => killed2.push(pid);
+  const cloudSpawn = o2._spawnImpl;
+  o2._spawnImpl = (command, args, opts) => {
+    if (!args.includes('--oss')) return cloudSpawn(command, args, opts);
+    const p = new EventEmitter(); p.pid = 5151; p.stdin = { write() {}, end() {} }; p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
+    p.kill = () => { throw new Error('plain kill must not be used for local agents'); };
+    return p; // never exits on its own
+  };
+  await o2.localHealth.refresh({ force: true });
+  const t2 = o2.spawnHeadless({ cli: 'codex-oss-local', prompt: 'explique ce code', cwd: os.tmpdir() });
+  const d2 = await waitDone(o2, t2.id);
+  assert.deepEqual(killed2, [5151], 'timed-out local agent killed as a tree');
+  assert.ok(!isLocalProvider(d2.cli), `timeout failed over to cloud, got ${d2.cli}`);
+  assert.equal(o2.spawns.length, 1, 'exactly one cloud spawn after the timeout');
 });
 
 test('27. Ollama embed breaker keeps backing off for a flapping runner', async () => {
@@ -577,4 +600,115 @@ test('27. Ollama embed breaker keeps backing off for a flapping runner', async (
   now += 60_001; await ollamaEmbed(['x'], { _post: ok }); // one lucky success
   await trip(); assert.equal(emb.getEmbedBreakerState().retryInMs, 120_000, 'cooldown still escalates');
   setNow(null); reset();
+});
+
+// ── Round 3: payload evasions, relaunch safety, fallback for every caller ─────
+test('28. instructions hidden after ":" / newline are analysed; pure data payloads stay simple', () => {
+  const notSimple = [
+    'Classify: every file in the repo by risk, then delete the unused ones',
+    'Résume en 3 points :\nsupprime ensuite le dossier build',
+    'Compress: the whole repo context into a packet and push it to origin',
+    'Rewrite: src/pay.js to use the new Stripe API',
+    "Réécris ceci : le module src/pay.js pour qu'il utilise la nouvelle API",
+    'Translate to French: README.md, then save it as README.fr.md',
+    'Summarize: the diff below, then commit it with that summary',
+    'Donne-moi la liste: des fichiers à supprimer, et supprime-les',
+    'Extract: parseConfig from server.js into a new file',
+    'Is there a race in scheduler.js?',
+  ];
+  for (const prompt of notSimple) assert.notEqual(classifyTask({ prompt }).taskClass, 'simple', prompt);
+  for (const prompt of ['Summarize: the security audit of auth.js and list every vulnerability you find', 'Summarize: Review auth.js for JWT token leak', 'Summarize the authz middleware', 'Summarize our threat model']) {
+    assert.equal(classifyTask({ prompt }).taskClass, 'security', prompt);
+  }
+  for (const prompt of ['Classify: every file in the repo by risk, then delete the unused ones', 'Donne-moi la liste: des fichiers à supprimer, et supprime-les']) {
+    assert.equal(classifyTask({ prompt }).taskClass, 'complex', prompt);
+  }
+  for (const prompt of [
+    'Classe ces tickets : bug critique, security issue, crash en production',
+    'Classe ces tickets :\n- fix login bug\n- add dark mode\n- delete button broken',
+    'Résume ce log:\nERROR 2026-09-28 connection refused\nWARN retry 3/5',
+    'Traduis en anglais : Bonjour, je voudrais réserver une table.',
+    'Extrais les emails : jean@x.com, marie@y.fr',
+  ]) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+});
+
+test('29. a relaunch only kills older instances of the same executable (never a newer one, never other apps)', () => {
+  const { selectStaleElectron } = require('../electron/process-guard');
+  const exe = 'C:\\apps\\Symphonee\\node_modules\\electron\\dist\\electron.exe';
+  const procs = [
+    { pid: 10, startedAtMs: 1000, exePath: exe },                 // dead primary (older) -> stale
+    { pid: 11, startedAtMs: 1001, exePath: exe.toUpperCase() },   // its child, same exe -> stale
+    { pid: 20, startedAtMs: 5000, exePath: exe },                 // started after us (another relaunch) -> keep
+    { pid: 30, startedAtMs: 500, exePath: 'C:\\Other\\electron.exe' }, // other Electron app -> keep
+    { pid: 99, startedAtMs: 100, exePath: exe },                  // ourselves -> keep
+    { pid: 40, startedAtMs: NaN, exePath: exe },                  // unknown start -> keep
+  ];
+  assert.deepEqual(selectStaleElectron(procs, { myPid: 99, myStartMs: 3000, exePath: exe }).sort(), [10, 11]);
+});
+
+test('30. local runs from any caller get the cloud safety net; read-only local questions need no diff', async () => {
+  // A caller that bypasses /spawn (followup, graph run, dependency queue...).
+  const orch = makeOrch({ post: async () => { throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1234'), { code: 'ECONNREFUSED' }); } });
+  await orch.localHealth.refresh({ force: true });
+  const t = orch.spawnHeadless({ cli: 'lmstudio-qwen-small', prompt: 'résume ce texte: abc' });
+  const d = await waitDone(orch, t.id);
+  assert.ok(!isLocalProvider(d.cli), `failed over to cloud, got ${d.cli}`);
+  assert.equal(d.state, STATE.COMPLETED);
+  // noFallback keeps it local-only.
+  const t2 = orch.spawnHeadless({ cli: 'lmstudio-qwen-small', prompt: 'résume ce texte: abc', noFallback: true });
+  assert.equal((await waitDone(orch, t2.id)).state, STATE.FAILED);
+  // Read-only question to codex-oss-local, outside git: must not be failed for "no diff".
+  const o2 = makeOrch({ script: { 'codex-oss-local': [{ code: 0, stdout: 'It parses the config.' }] } });
+  o2._gitTreeFingerprint = () => null;
+  await o2.localHealth.refresh({ force: true });
+  const q = o2.spawnHeadless({ cli: 'codex-oss-local', prompt: 'explique ce code', cwd: tmpDir() });
+  const qd = await waitDone(o2, q.id);
+  assert.equal(qd.cli, 'codex-oss-local'); assert.equal(qd.state, STATE.COMPLETED);
+  assert.equal(q.execution.changeCheck, undefined, 'no write expected, no change check');
+});
+
+test('31. circuit-open local launch fails over via HTTP, and the fallback CLI goes through the permission gate', async () => {
+  const orch = makeOrch({ cfg: OPT_IN });
+  for (let i = 0; i < 3; i++) orch.circuitBreaker.recordFailure('codex-oss-local', 'timed out');
+  const ok = await httpSpawn(orch, { cli: 'auto', prompt: 'corrige cette faute dans README.md' });
+  assert.equal(ok.code, 200, JSON.stringify(ok.payload));
+  assert.match(ok.payload.failedOverFrom.reason, /circuit breaker is OPEN/);
+  assert.equal(orch.spawns.filter(s => s.cli === 'codex-oss-local').length, 0);
+  // Same, but every cloud spawn is denied: the fallback must be gated (403), not run silently.
+  const { registerOrchestratorRoutes } = require('./routes');
+  const o2 = makeOrch({ cfg: OPT_IN });
+  for (let i = 0; i < 3; i++) o2.circuitBreaker.recordFailure('codex-oss-local', 'timed out');
+  const repoRoot = tmpDir();
+  fs.mkdirSync(path.join(repoRoot, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, 'config', 'config.json'), JSON.stringify({ Permissions: { mode: 'bypass', deny: ['cli:claude:spawn', 'cli:codex:spawn', 'cli:gemini:spawn', 'cli:copilot:spawn', 'cli:gemini-api:spawn'], ask: [], allow: [] } }));
+  const routes = {};
+  let status = null;
+  registerOrchestratorRoutes((m, p, h) => { routes[`${m} ${p}`] = h; }, (res, data, code) => { res.payload = data; status = code || 200; }, o2, { getConfig: o2.getConfig, broadcast: () => {}, getUiContext: () => ({}), repoRoot });
+  const raw = JSON.stringify({ cli: 'auto', prompt: 'corrige cette faute dans README.md', cwd: os.tmpdir(), autoPermit: true });
+  const req = { on(ev, cb) { if (ev === 'data') cb(Buffer.from(raw)); if (ev === 'end') cb(); return req; } };
+  const res = { writeHead(code) { status = code; return this; }, end() {} };
+  await routes['POST /api/orchestrator/spawn'](req, res);
+  assert.equal(status, 403, 'fallback cloud CLI was checked by the permission gate');
+  assert.equal(o2.spawns.length, 0, 'nothing spawned');
+});
+
+test('32. explicit local request with no usable cloud provider still runs locally (no crash)', async () => {
+  const orch = makeOrch({ cfg: { OrchestrateCliList: ['nonexistent-cli'] }, post: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:1234'); } });
+  await orch.localHealth.refresh({ force: true });
+  const res = await httpSpawn(orch, { cli: 'lmstudio-qwen-small', prompt: 'résume ce texte: abc' });
+  assert.equal(res.code, 200, JSON.stringify(res.payload));
+  const d = await waitDone(orch, res.payload.id);
+  assert.equal(d.state, STATE.FAILED, 'no cloud to fail over to: reported as failed, not hidden');
+  assert.equal(orch.spawns.length, 0);
+});
+
+test('33. routed read-only review with nothing to read never calls the local model (routes sets requiresRepoContent)', async () => {
+  let calls = 0;
+  const orch = makeOrch({ lmstudio: up({ small: { state: 'not-loaded', loaded_context_length: undefined } }), post: async () => { calls++; return { choices: [{ message: { content: 'guess' }, finish_reason: 'stop' }] }; } });
+  const res = await httpSpawn(orch, { cli: 'auto', prompt: 'review why the app crashes on startup' });
+  assert.equal(res.code, 200, JSON.stringify(res.payload));
+  assert.equal(res.payload.taskClass, 'readonly-review');
+  const d = await waitDone(orch, res.payload.id);
+  assert.equal(calls, 0, 'blind local review refused before calling the model');
+  assert.ok(!isLocalProvider(d.cli), `answered by cloud, got ${d.cli}`);
 });
