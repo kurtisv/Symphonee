@@ -96,6 +96,14 @@ Rules the code enforces:
   keyword analysis; an unusual phrasing can still reach the local 1.5B, which can only answer in
   text (it cannot perform the action). A model-side "reply NEEDS_TOOLS" guard was measured on the
   real 1.5B and rejected (it refused 5 of 9 plain text tasks).
+- Pasted documents ("summarize this ticket / email / log: <document>"): an imperative INSIDE the
+  document (its author's words, e.g. "Delete old logs." above the author's signature) is DATA; only
+  an order placed at the END of the paste (then/also/please + action, "fix it", "I need you to ...",
+  or an imperative aimed at a concrete file) is treated as the user's instruction. Safe today
+  because direct local models have no tools; if a local path ever gains tools, content being
+  summarized must never become an action (both reviewers, round 10). The reverse choice would be
+  worse: promoting imperatives from pasted third-party content into orders for a cloud agent WITH
+  write tools is prompt injection by design (a ticket saying "Rotate the keys" would get executed).
 - Automatic fallbacks never start a CLI that the permission rules DENY (explicit deny rule or
   review mode); a blocked candidate emits a `fallback-blocked` event.
 - `LocalFirst.enabled: false` in config turns the whole local tier off.

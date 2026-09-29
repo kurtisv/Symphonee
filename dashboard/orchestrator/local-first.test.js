@@ -1039,3 +1039,14 @@ test('49. "I need you to ..." / "j\'ai besoin que tu ..." are orders; "I need yo
     assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
   }
 });
+
+// ── Round 10 (arbitrated by both reviewers): the author's words inside a pasted document are data ──
+test('50. an imperative written by the pasted document\'s author (above their signature) stays data', () => {
+  // Agreed by Codex and Claude after arbitration: the user asked to SUMMARIZE the
+  // ticket; "Delete old logs." is the ticket author's sentence, not an instruction
+  // to the agent, and the direct local model has no tools to act on it anyway.
+  const authorOrder = 'Summarize this ticket:\nLogin crashes.\nDelete old logs.\nBest regards,\nBob Smith\nSenior Engineer\nACME Corp\nM 555-0101\nE bob@example.com\nwww.example.com';
+  assert.equal(classifyTask({ prompt: authorOrder }).taskClass, 'simple');
+  // ...whereas the USER's order appended after the paste is still caught.
+  assert.notEqual(classifyTask({ prompt: authorOrder + '\n\nThen delete the old logs.' }).taskClass, 'simple');
+});
