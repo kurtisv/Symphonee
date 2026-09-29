@@ -17,7 +17,7 @@ const TASK_CLASSES = ['simple', 'readonly-review', 'small-edit', 'complex', 'sec
 const NL = '(?<![a-z0-9à-öø-ÿ])';
 const re = (src) => new RegExp(src.replace(/§/g, NL));
 
-const SECURITY_SRC = String.raw`security|§s[ée]curit[ée]|vulnerab|vuln[ée]rab|§faille|§threat|pentest|\bcve\b|injection|\bxss\b|\bcsrf\b|\bssrf\b|\bjwt\b|password|passwd|mots? de passe|credential|identifiants?\b|\bsecrets?\b|token leak|leak(s|ed|age)? (of )?(the )?(tokens?|secrets?|keys?|credentials?)|access[- ]tokens?|bearer|oauth|traversal|\brce\b|privil[eè]ge|sanitiz|\bcors\b|\bcsp\b|encrypt|§chiffr|cryptograph|\bauth(entication|orization|entification|z|n)?\b|exploit|backdoor|fuite de (mots? de passe|donn[ée]es|secrets?|cl[ée]s?|tokens?)|session tokens?|session hijack|account takeover`;
+const SECURITY_SRC = String.raw`security|§s[ée]curit[ée]|vulnerab|vuln[ée]rab|§faille|§threat|pentest|\bcve\b|injection|\bxss\b|\bcsrf\b|\bssrf\b|\bjwt\b|password|passwd|mots? de passe|credential|identifiants?\b|\bsecrets?\b|token leak|leak(s|ed|age)? (of )?(the )?(tokens?|secrets?|keys?|credentials?)|access[- ]tokens?|bearer|oauth|traversal|\brce\b|privil[eè]ge|sanitiz|\bcors\b|\bcsp\b|encrypt|cryptograph|\bauth(entication|orization|entification|z|n)?\b|exploit|backdoor|fuite de (mots? de passe|donn[ée]es|secrets?|cl[ée]s?|tokens?)|session tokens?|session hijack|account takeover|(?:refresh|access|auth|api|bearer|id|csrf)[- ]tokens?|api[- ]keys?|\bcookies?\b.{0,60}\b(?:stolen|steal|theft|hijack\w*|httponly|samesite)|\b(?:stolen|steal\w*|theft|hijack\w*)\b.{0,60}\bcookies?\b|httponly|samesite|\battackers?\b|bypass(?:ing)? (?:the )?(?:login|auth\w*|2fa|mfa|check|permission)|§attaquant|§contourn\w* (?:l.|la |le )?(?:authentification|connexion|login|contr[ôo]le)|§chiffr(?:e[rz]?|ement)\b(?! d)`;
 const SECURITY_RE = re(SECURITY_SRC);
 
 const ROLE_PATTERNS = [
@@ -38,11 +38,15 @@ const COMPLEX_RE = re(String.raw`architect|complex|production|\bprod\b|critical|
 const SHELL_RE = re(String.raw`\brun\b|§lance\b|§lancer\b|§ex[ée]cute|execute|\bnpm\b|\bnpx\b|\bnode\b|jest|pytest|\bshell\b|\bcommand\b|§commande|\bscripts?\b|\blint\b|\bbuild\b`);
 const SEARCH_RE = re(String.raw`\bsearch|§cherche|§recherch|\bgrep\b|find (all|every|where)|§trouve (tous|toutes|o[uù])|dans (le|tout le) (repo|d[ée]p[ôo]t|projet)|across the (repo|codebase)`);
 // Writing is decided by verbs, not by the noun "code": "explique ce code" is read-only.
-const WRITE_RE = re(String.raw`implement|§impl[ée]ment|§modif|\bedit|§[ée]dite?\b|refactor|\bchange\b|\bwrite\b|§[ée]cri[st]\b|§r[ée][ée]cri[st]\b|\brewrite\b|§ajout|\badd\b|§corrig|\bfix|repair|§r[ée]pare|§faute|typo|§coquille|§renomm|rename|\bcreate\b|§cr[ée]e[rz]?\b|\bupdate|mets? [àa] jour|\bbump\b|upgrade|\binstall|\bpatch\b|\bapply\b|§applique|\bcommit (?:it|them|this|that|the|these|those|all|changes|everything|to)\b|§commit(?:e|er|ez)\b|\bsave\b|§sauvegarde|§enregistre|\bdelete|\bremove|§supprim|§retire|§efface|\bmove\b|§d[ée]place|\bdeploy|§d[ée]plo[iy]|\bpublish|§publi[ea]`);
-// Destructive intent, including shell / database forms (Codex round 4).
-const DESTRUCTIVE_RE = re(String.raw`\bdelete|\bremove|\breset --hard|discard|destroy|\bwipe|\bpurge|\bnuke|\brm\s+-\w*r|\brm\b|drop (the |a |le |la |les )?(\w+ )?(table|database|db|schema|collection|index|base)|\btruncate|force[- ]?push|push (--force|-f)\b|§supprim|§efface|§d[ée]trui|§vide[rz]? (la |le |les )?(base|cache|dossier|r[ée]pertoire)`);
+const WRITE_RE = re(String.raw`implement|§impl[ée]ment|§modif|\bedit|§[ée]dite?\b|refactor|\bchange\b|\bwrite\b|§[ée]cri[st]\b|§r[ée][ée]cri[st]\b|\brewrite\b|§ajout|\badd\b|§corrig|\bfix|repair|§r[ée]pare|§faute|typo|§coquille|§renomm|rename|\bcreate\b|§cr[ée]e[rz]?\b|\bupdate|mets? [àa] jour|\bbump\b|upgrade|\binstall|\bpatch\b|\bapply\b|§applique|\bcommit (?:it|them|this|that|the|these|those|all|changes|everything|to)\b|§commit(?:e|er|ez)\b|\bsave\b|§sauvegarde|§enregistre|\bdelete\b|\bremove\b|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§retire|§efface|\bmove\b|§d[ée]place|\bdeploy\b|§d[ée]plo[iy]|\bpublish\b|§publi[ea]|\boverwrite\b|§[ée]cras`);
+// Destructive intent, including shell / database forms. Present / imperative
+// forms only: a log line saying "deleted" / "supprimé" is a report, not an order.
+const DESTRUCTIVE_SRC = String.raw`\bdelete\b|\bremove\b|\breset --hard|\bdiscard\b|\bdestroy\b|\bwipe\b|\bpurge\b|\bnuke\b|\brm\s+-\w*r|\brm\b|\bdrop (?:the |a |le |la |les )?(?:\w+ )?(?:table|database|db|schema|collection|index|base)\b|\btruncate\b|force[- ]?push|push (?:--force|-f)\b|\bkill\b|\bchmod\b|\bchown\b|\boverwrite\b|\bget rid of\b|\berase\b|\bdel\b|\brmdir\b|\brd /s\b|remove-item|\bformat (?:c:|the (?:disk|drive))|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§effac(?:e|er|ez)(?![a-zà-öø-ÿ])|§d[ée]trui[st]?(?![a-zà-öø-ÿ])|§[ée]cras(?:e|er|ez)(?![a-zà-öø-ÿ])|§vir(?:e|er|ez)(?![a-zà-öø-ÿ])|§vide[rz]? (?:la |le |les )?(?:base|cache|dossier|r[ée]pertoire)`;
+const DESTRUCTIVE_RE = re(DESTRUCTIVE_SRC);
 const NEW_FILE_RE = re(String.raw`(dans|into|to|vers|as|sous) (un|une|a|an) (nouveau|nouvelle|new|autre|separate|§s[ée]par[ée]e?) (fichier|file|module)`);
-const FILE_TARGET_RE = re(String.raw`[\w@~./\\-]+\.(js|mjs|cjs|ts|tsx|jsx|py|json|md|ya?ml|toml|css|scss|html|java|go|rs|cs|cpp|c|h|sh|ps1|rb|php|sql)\b|\b(files?|folder|directory|module|function|class|method|readme|repo|codebase|component)\b|§(fichiers?|dossier|r[ée]pertoire|fonction|m[ée]thode|composant|d[ée]p[ôo]t)\b`);
+// Path token anchored at a token start and bounded: an unanchored [..]+\.ext retried from every position of a long run (Codex round 5: 63s on 200k chars).
+const FILE_TARGET_RE = re(String.raw`(?<![\w@~./\\-])[\w@~./\\-]{1,260}\.(js|mjs|cjs|ts|tsx|jsx|py|json|md|ya?ml|toml|css|scss|html|java|go|rs|cs|cpp|c|h|sh|ps1|rb|php|sql)\b|\b(files?|folder|directory|module|function|class|method|readme|repo|codebase|component)\b|§(fichiers?|dossier|r[ée]pertoire|fonction|m[ée]thode|composant|d[ée]p[ôo]t)\b`);
+const FILE_PATH_RE = re(String.raw`(?<![\w@~./\\-])[\w@~./\\-]{1,260}\.(js|mjs|cjs|ts|tsx|jsx|py|json|md|ya?ml|toml|css|scss|html|java|go|rs|cs|cpp|c|h|sh|ps1|rb|php|sql)\b`);
 const CODE_UNIT_RE = re(String.raw`\b(function|method|class|component)\b|§(fonction|m[ée]thode|classe (?!ces|ce |les)|composant)\b`);
 
 // The INSTRUCTION verb decides, not words inside the payload: "Classe ces
@@ -52,6 +56,11 @@ const LEADING_TRANSFORM_RE = /^\s*(please\s+|peux-tu\s+|merci de\s+)?(reformule|
 const LEADING_EXTRACT_RE = /^\s*(please\s+|peux-tu\s+|merci de\s+)?(extrai[st]|extract)/;
 // Verbs whose payload is, by nature, items / text to process (not orders).
 const LEADING_DATA_RE = /^\s*(please\s+|peux-tu\s+|merci de\s+)?(classe[rz]?\b|classifie|classify|categori[sz]e|cat[ée]gorise|extrai[st]|extract|reformule|rephrase|paraphrase|traduis|translate)/;
+// The instruction names its payload as a document to process ("this email",
+// "ce log", "these tickets"): the payload is DATA, whatever it says. This is
+// the structural answer to the false positives (a log saying "rm -rf", a mail
+// saying "please delete my account", a chat asking "can you check...").
+const DATA_NOUN_RE = re(String.raw`\b(?:this|these|the following|the below|below|following)\s+(?:\w+\s+){0,2}(?:e-?mails?|mails?|messages?|chats?|conversations?|threads?|logs?|log lines?|traces?|stack ?traces?|tickets?|issues?|comments?|reviews?|notes?|minutes|transcripts?|texts?|paragraphs?|sentences?|articles?|posts?|documents?|docs?|reports?|changelogs?|release notes|incidents?|summaries|replies|feedback|survey|list|items?|lines?|entries|records|outputs?|errors?)\b|§(?:ce|cet|cette|ces)\s+(?:\w+\s+){0,2}(?:e-?mails?|mails?|courriels?|messages?|conversations?|fils?|journaux|journal|logs?|traces?|tickets?|commentaires?|avis|notes?|comptes? rendus?|transcriptions?|textes?|paragraphes?|phrases?|articles?|documents?|rapports?|incidents?|r[ée]ponses?|retours?|listes?|lignes?|entr[ée]es?|erreurs?|sorties?)(?![a-zà-öø-ÿ])`);
 const SIMPLE_RE = /r[ée]sum|summar|extract|extrai|classif|cat[ée]goris|reformul|rephrase|paraphras|rewrite|compress|compact|condens|translat|tradui|synth[èe]s/;
 const READONLY_WORDS_RE = re(String.raw`review|§revue|explain|§explique|analy|§investig|§comprend|understand|\bwhy\b|§pourquoi|§d[ée]cri[st]|describe`);
 
@@ -60,11 +69,11 @@ function taskText(task) {
 }
 
 // "summarize/classify/extract/...: <payload>". The payload is treated as DATA
-// (tickets, logs, pasted text) only when it carries no instruction for the
-// agent; otherwise it is analysed like a task. Keyword analysis is not
-// exhaustive. A model-side "reply NEEDS_TOOLS" guard was tried on the real
-// Qwen 1.5B and rejected: it refused 5 of 9 plain text tasks (classify a
-// ticket, extract emails...), which would send most simple work to cloud.
+// (tickets, logs, pasted text) when the instruction says so ("this email: ...")
+// or when it carries no order for the agent; otherwise it is analysed like a
+// task. Keyword analysis is not exhaustive (documented residual risk). A
+// model-side "reply NEEDS_TOOLS" guard was tried on the real Qwen 1.5B and
+// rejected: it refused 5 of 9 plain text tasks.
 function instructionOf(text) {
   if (!LEADING_SIMPLE_RE.test(text)) return { instruction: text, payload: '', leadingSimple: false };
   const cut = text.search(/[:\n]/);
@@ -77,19 +86,29 @@ const CLASS_RANK = { simple: 0, 'readonly-review': 1, 'small-edit': 2, complex: 
 const stricter = (a, b) => (CLASS_RANK[b] > CLASS_RANK[a] ? b : a);
 
 // Imperative verbs a user addresses to the agent (EN exact, FR stems), each
-// ending on a word boundary ("reviewed", "added" do not count).
+// ending on a word boundary ("reviewed", "added", "supprimé" do not count).
 const VERB_END = '(?![a-zà-öø-ÿ])';
-const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets? [àa] jour|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§nettoi\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
-// Connectors that hand the agent a further action ("then", "also", "once
-// done", "next step:", "we need you to", "puis", "il faudra", "au passage"...).
-const CONNECTOR_SRC = String.raw`(?:\bthen\b|\bafterwards?\b|\bafter (?:that|this|it|summari[sz]ing|you'?re done|which)\b|\bonce (?:done|finished|you'?re done)\b|\bwhen (?:done|finished)\b|\bnext step\b|\balso\b|\bfinally\b|\bwe need you to\b|\byou (?:should|must|need to|have to)\b|\bcould you\b|\bcan you\b|\bplease\b|§puis\b|§ensuite\b|§apr[èe]s (?:[çc]a|cela|quoi)\b|§au passage\b|§il faudra\b|§il faut\b|§aussi\b|§enfin\b|§peux-tu\b|§pourrais-tu\b|§merci de\b)`;
-const AGENT_CHAIN_RE = re(CONNECTOR_SRC + String.raw`[\s,:;.-]+(?:\w+[\s,]+){0,3}` + ACTION_VERB_SRC);
+const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|overwrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|kill|restart|reboot|stop|chmod|chown|get rid of|erase|del|rmdir|label|tag|put|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets?|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§[ée]cras\w*|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§vir\w*|§nettoi\w*|§red[ée]marr\w*|§arr[êe]t\w*|§tu\w*|§[ée]tiquet\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
+// Connectors that hand the agent a further action. The action must follow the
+// connector DIRECTLY (only fillers / object pronouns in between): "then delete
+// the unused ones" is an order, "then Alice will deploy" is narration.
+const CONNECTOR_CORE = String.raw`\bthen\b|\bafterwards?\b|\bafter (?:that|this|it|summari[sz]ing|you'?re done|which)\b|\bonce (?:done|finished|you'?re done)\b|\bwhen (?:done|finished)\b|\bnext step\b|\balso\b|\bfinally\b|\bwe need you to\b|\byou (?:should|must|need to|have to)\b|§puis\b|§ensuite\b|§apr[èe]s (?:[çc]a|cela|quoi)\b|§au passage\b|§il faudra\b|§il faut\b|§aussi\b|§enfin\b`;
+const CONNECTOR_POLITE = String.raw`|\bcould you\b|\bcan you\b|\bplease\b|§peux-tu\b|§pourrais-tu\b|§merci de\b|§tu peux\b`;
+const FILLERS = String.raw`(?:(?:also|please|just|then|now|immediately|simply|aussi|ensuite|juste|le|la|les|lui|leur|l'|s'il te pla[iî]t|stp)[\s,]+){0,3}`;
+const chainRe = (connectors) => re(String.raw`(?:` + connectors + String.raw`)[\s,:;.\-—]+` + FILLERS + ACTION_VERB_SRC);
+const AGENT_CHAIN_RE = chainRe(CONNECTOR_CORE + CONNECTOR_POLITE);
+const DATA_CHAIN_RE = chainRe(String.raw`\bthen\b|\bafterwards?\b|\bonce done\b|§puis\b|§ensuite\b|§il faudra\b`);
 // Object pronouns bound to an action: "supprime-les", "commit it", "send them".
-const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|\b(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish)\s+(?:it|them|this|that|the result|everything)\b`);
+const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|\b(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite)\s+(?:it|them|this|that|the result|everything)\b`);
 // A payload line addressed to the agent (not a bulleted / numbered item).
-const IMPERATIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|could you\s+|can you\s+|would you\s+|now,?\s+|you (?:should|must|need to)\s+|we need you to\s+|peux-tu\s+|pourrais-tu\s+|merci de\s+|il (?:faut|faudra)\s+)?` + ACTION_VERB_SRC);
+const IMPERATIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|could you\s+|can you\s+|would you\s+|now,?\s+|you (?:should|must|need to)\s+|we need you to\s+|peux-tu\s+|pourrais-tu\s+|merci de\s+|tu peux\s+|il (?:faut|faudra)\s+)?` + ACTION_VERB_SRC);
+const DESTRUCTIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|now,?\s+)?(?:` + DESTRUCTIVE_SRC + String.raw`)`);
 const LIST_ITEM_RE = /^([-*•]|\d+[.)])\s/;
-const PAYLOAD_SCOPE_RE = re(String.raw`(?:this|the|whole|entire|every|our|ce|le|tout le)\s+(?:repo|repository|codebase|project|monorepo|d[ée]p[ôo]t|projet)\b|every file|all (?:the )?files|§tous les fichiers`);
+// Repo-wide scope must be the OBJECT (end of the instruction / the whole
+// payload): "summarize my codebase" yes, "summarize the project status" no.
+const SCOPE_NOUN = String.raw`(?:repo|repository|codebase|monorepo|project|d[ée]p[ôo]t|projet|code base)`;
+const INSTR_SCOPE_RE = re(String.raw`(?<![\w.\-/])[\w.\-]+(?:/[\w.\-]+)*/\s*$|(?:the|this|my|our|whole|entire|ce|mon|notre|tout le|le)\s+(?:whole\s+|entire\s+)?` + SCOPE_NOUN + String.raw`\s*$`);
+const PAYLOAD_SCOPE_RE = re(String.raw`^\s*(?:(?:the|this|my|our|whole|entire|ce|mon|notre|tout le|le)\s+)?(?:whole\s+|entire\s+)?` + SCOPE_NOUN + String.raw`\s*[.!]?\s*$|^\s*[\w.\-]+(?:/[\w.\-]+)*/\s*$|every file|all (?:the )?(?:files|(?:source )?code)|§tous les fichiers|§tout le code`);
 const SECURITY_QUESTION_RE = re(String.raw`\b(whether|if|can|could|is it|are they)\b|§(si|est-ce|peut|peuvent)\b|stolen|\bsteal|hijack|§vol[ée]?s?\b|§d[ée]tourn`);
 
 function payloadClass(instr, payload, depth) {
@@ -100,32 +119,37 @@ function payloadClass(instr, payload, depth) {
   const transform = LEADING_TRANSFORM_RE.test(instr);
   const lines = p.split('\n').map(l => l.trim()).filter(Boolean);
   // List items are data (tickets, steps to summarise): never read as orders.
-  const prose = lines.filter(l => !LIST_ITEM_RE.test(l)).join('\n');
+  const proseLines = lines.filter(l => !LIST_ITEM_RE.test(l));
+  const prose = proseLines.join('\n');
   const short = p.length < 240 && lines.length <= 2;
-  // 1) An explicit hand-over ("then ...", "also ...", "supprime-les", "commit
-  //    it"). For translate/rephrase the text itself may say "please update":
-  //    only pronoun-bound actions or then/puis-style connectors count there.
-  const chainHit = transform
-    ? (PRONOUN_ACTION_RE.test(prose) || re(String.raw`(?:\bthen\b|\bafterwards?\b|\bonce done\b|§puis\b|§ensuite\b|§il faudra\b)[\s,:;.-]+(?:\w+[\s,]+){0,3}` + ACTION_VERB_SRC).test(prose))
+  // 1) An explicit hand-over, the action directly after the connector. For
+  //    data verbs (classify / extract / translate / rephrase) the text may
+  //    itself say "please update ..." or "can you check": only then/puis-style
+  //    connectors and pronoun-bound actions count there.
+  const chainHit = (dataVerb || transform)
+    ? (DATA_CHAIN_RE.test(prose) || PRONOUN_ACTION_RE.test(prose))
     : (AGENT_CHAIN_RE.test(prose) || PRONOUN_ACTION_RE.test(prose));
-  // 2) A short payload whose first line is an order to the agent
-  //    ("Summarize:\nPlease, fix the bug in foo.js"). Not for data verbs, whose
-  //    items are often imperative ticket titles ("Fix login crash").
-  const imperative = !dataVerb && short ? lines.find(l => !LIST_ITEM_RE.test(l) && IMPERATIVE_LINE_RE.test(l)) : null;
+  // 2) An order on its own line: the first line of a short payload, or the LAST
+  //    prose line of any payload ("...\nFix the bug in src/pay.js."). Not for
+  //    data verbs, whose items are often imperative ticket titles.
+  const candidates = dataVerb ? [] : [short ? proseLines[0] : null, proseLines[proseLines.length - 1]].filter(Boolean);
+  const imperative = candidates.find(l => IMPERATIVE_LINE_RE.test(l)) || null;
   if (chainHit || imperative) {
     const sub = depth < 2 ? classifyTask({ prompt: imperative || prose }, depth + 1).taskClass : 'small-edit';
     cls = stricter(cls, sub === 'simple' ? 'small-edit' : sub);
     if (DESTRUCTIVE_RE.test(prose)) cls = stricter(cls, 'complex');
   }
-  // 3) Destructive commands in prose (not list items) are never "data" to a
-  //    local model: "after summarizing, rm -rf build".
-  if (DESTRUCTIVE_RE.test(prose) && (short || chainHit)) cls = stricter(cls, 'complex');
+  // 3) A destructive command in ORDER position (a prose line starting with it,
+  //    or right after a connector): "after summarizing, rm -rf build". A report
+  //    of past actions ("the intern ran rm -rf on staging") is not an order.
+  if (!dataVerb && proseLines.some(l => DESTRUCTIVE_LINE_RE.test(l))) cls = stricter(cls, 'complex');
+  if (chainHit && DESTRUCTIVE_RE.test(prose)) cls = stricter(cls, 'complex');
   if (short) {
     const fileTarget = FILE_TARGET_RE.test(p);
     if (SECURITY_RE.test(p) && (fileTarget || READONLY_WORDS_RE.test(p) || SECURITY_QUESTION_RE.test(p))) cls = stricter(cls, 'security');
     if (PAYLOAD_SCOPE_RE.test(p)) cls = stricter(cls, 'complex');
     if (NEW_FILE_RE.test(p)) cls = stricter(cls, 'small-edit');
-    if (transform && fileTarget) cls = stricter(cls, 'small-edit');
+    if (transform && FILE_PATH_RE.test(p)) cls = stricter(cls, 'small-edit');
     if (LEADING_EXTRACT_RE.test(instr) && CODE_UNIT_RE.test(p) && fileTarget) cls = stricter(cls, 'small-edit');
   }
   return cls;
@@ -136,7 +160,7 @@ function leadingSimpleClass(instr, payload = '', depth = 0) {
   let cls = 'simple';
   // Security named in the instruction itself ("summarize our threat model").
   if (SECURITY_RE.test(instr)) cls = 'security';
-  else if (COMPLEX_RE.test(instr) || PAYLOAD_SCOPE_RE.test(instr)) cls = 'complex';
+  else if (COMPLEX_RE.test(instr) || INSTR_SCOPE_RE.test(instr)) cls = 'complex';
   else if (DESTRUCTIVE_RE.test(afterVerb)) cls = 'complex';
   else if (WRITE_RE.test(afterVerb) || NEW_FILE_RE.test(instr)) cls = 'small-edit';
   else if (LEADING_TRANSFORM_RE.test(instr) && FILE_TARGET_RE.test(instr)) cls = 'small-edit';
@@ -146,6 +170,9 @@ function leadingSimpleClass(instr, payload = '', depth = 0) {
   if (AGENT_CHAIN_RE.test(afterVerb) || PRONOUN_ACTION_RE.test(afterVerb)) {
     cls = stricter(cls, DESTRUCTIVE_RE.test(afterVerb) ? 'complex' : 'small-edit');
   }
+  // "Summarize this email: ..." -- the instruction declares its payload as a
+  // document: it is processed as text, never read as orders.
+  if (DATA_NOUN_RE.test(instr)) return cls;
   return stricter(cls, payloadClass(instr, payload, depth));
 }
 

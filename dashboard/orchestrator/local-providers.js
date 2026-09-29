@@ -339,7 +339,8 @@ function isLoopbackUrl(u) {
 function inlineReferencedFiles(prompt, cwd, { maxBytes = 60000, maxFiles = 4 } = {}) {
   if (!cwd || typeof prompt !== 'string') return { prompt, files: [] };
   const root = path.resolve(cwd);
-  const candidates = prompt.match(/[\w@.~\\/-]+\.[A-Za-z0-9]{1,6}\b/g) || [];
+  // Anchored + bounded (linear time on long pasted text).
+  const candidates = prompt.match(/(?<![\w@.~\\/-])[\w@.~\\/-]{1,260}\.[A-Za-z0-9]{1,6}\b/g) || [];
   const files = [];
   let total = 0;
   for (const raw of [...new Set(candidates)]) {
