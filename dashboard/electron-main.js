@@ -112,26 +112,30 @@ app.commandLine.appendSwitch('disable-partial-raster');
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   // Another instance holds the lock. Check if it's actually alive.
-  const http = require('http');
-  const req = http.get(`http://${HOST}:${PORT}/api/ui/context`, { timeout: 2000 }, (res) => {
-    // Server is alive -- the real instance is running, just focus it
-    console.log('Another instance is running -- focusing it.');
-    res.resume();
-    res.on('end', () => { app.quit(); });
-  });
-  req.on('error', () => {
-    // Server not responding -- zombie. Kill everything and relaunch.
-    console.log('Stale instance detected -- killing and relaunching...');
-    killStaleProcesses(PORT);
-    setTimeout(() => { app.relaunch(); app.exit(0); }, 800);
-  });
-  req.on('timeout', () => {
-    req.destroy();
-    console.log('Stale instance detected (timeout) -- killing and relaunching...');
-    killStaleProcesses(PORT);
-    setTimeout(() => { app.relaunch(); app.exit(0); }, 800);
+  // A slow answer is NOT a dead instance: under memory pressure the live
+  // server can take several seconds to respond, and the old 2s-timeout ->
+  // taskkill path killed a perfectly healthy Symphonee (the "closes by
+  // itself" report). Only a refused connection, confirmed across a few
+  // spaced probes, counts as a zombie; a timeout just focuses/quits.
+  const { probeExistingInstance } = require('./electron/instance-probe');
+  probeExistingInstance({ host: HOST, port: PORT }).then((verdict) => {
+    if (verdict === 'dead') {
+      console.log('Stale instance detected (port refused on every probe) -- killing and relaunching...');
+      killStaleProcesses(PORT);
+      setTimeout(() => { app.relaunch(); app.exit(0); }, 800);
+      return;
+    }
+    console.log(`Another instance is running (${verdict}) -- focusing it.`);
+    app.quit();
   });
 } else {
+  // Crash visibility: local minidumps + <userData>/crash-log.jsonl, and a
+  // crashed renderer is reloaded instead of leaving a dead window.
+  try {
+    const { crashReporter } = require('electron');
+    require('./electron/crash-guard').installCrashGuard({ app, crashReporter, getWin: () => win });
+  } catch (e) { console.warn('  crash guard not installed:', e.message); }
+
   app.on('second-instance', () => {
     if (win) {
       if (win.isMinimized()) win.restore();

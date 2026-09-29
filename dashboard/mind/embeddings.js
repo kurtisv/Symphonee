@@ -65,7 +65,9 @@ function getOllamaStatus() { return _ollamaStatus; }
 function pickProvider() {
   // Dev escape hatch: explicit env override.
   if (DEFAULT_PROVIDER && DEFAULT_PROVIDER !== 'auto') return DEFAULT_PROVIDER;
-  // Local-only: Ollama or nothing. BM25 takes over when null.
+  // Local-only: Ollama or nothing. BM25 takes over when null (also while the
+  // embed circuit breaker is open, so callers stop queueing doomed embeds).
+  if (embedBreakerOpen()) return null;
   return (_ollamaStatus.reachable && _ollamaStatus.modelOk) ? 'ollama' : null;
 }
 
@@ -124,15 +126,62 @@ function applyTaskPrefix(text, model, task) {
   return `${task}: ${text}`;
 }
 
+// Circuit breaker for the local Ollama embedder. Without it, a broken Ollama
+// runner (observed: llama-server.exe crashing in vulkan-1.dll on every load,
+// HTTP 500 after ~4s) was hit in a tight loop by heal / per-node embeds /
+// dense search -- ~5000 runner crashes in 36h, each leaking driver memory
+// until Windows ran out of commit and killed Symphonee. After
+// EMBED_BREAKER_THRESHOLD consecutive failures we stop calling Ollama for a
+// cooldown that doubles on every re-trip (capped), and pickProvider()
+// returns null so Mind falls back to BM25 instead of hammering the runner.
+const EMBED_BREAKER_THRESHOLD = 3;
+const EMBED_BREAKER_BASE_MS = 60 * 1000;
+const EMBED_BREAKER_MAX_MS = 30 * 60 * 1000;
+let _now = () => Date.now();
+const _embedBreaker = { consecutiveFailures: 0, trips: 0, openUntil: 0, lastError: null };
+
+function embedBreakerOpen() { return _embedBreaker.openUntil > _now(); }
+function _recordEmbedSuccess() {
+  _embedBreaker.consecutiveFailures = 0;
+  _embedBreaker.trips = 0;
+  _embedBreaker.openUntil = 0;
+  _embedBreaker.lastError = null;
+}
+function _recordEmbedFailure(err) {
+  _embedBreaker.consecutiveFailures++;
+  _embedBreaker.lastError = (err && err.message) || String(err);
+  if (_embedBreaker.consecutiveFailures >= EMBED_BREAKER_THRESHOLD) {
+    const cooldown = Math.min(EMBED_BREAKER_MAX_MS, EMBED_BREAKER_BASE_MS * Math.pow(2, _embedBreaker.trips));
+    _embedBreaker.trips++;
+    _embedBreaker.consecutiveFailures = 0;
+    _embedBreaker.openUntil = _now() + cooldown;
+    console.warn(`[mind/embeddings] Ollama embedder failing (${_embedBreaker.lastError}); pausing embeds for ${Math.round(cooldown / 1000)}s, BM25-only meanwhile`);
+  }
+}
+function getEmbedBreakerState() {
+  return { ..._embedBreaker, open: embedBreakerOpen(), retryInMs: Math.max(0, _embedBreaker.openUntil - _now()) };
+}
+
 async function ollamaEmbed(texts, opts = {}) {
   const url = (opts.url || process.env.OLLAMA_URL || 'http://localhost:11434') + '/api/embeddings';
   const model = opts.model || process.env.SYMPHONEE_EMBED_MODEL || 'nomic-embed-text';
   const task = opts.task || null;
+  const post = opts._post || postJson;
   const out = [];
   for (const text of texts) {
+    if (embedBreakerOpen()) {
+      throw new Error(`ollama embedder paused after repeated failures (retry in ${Math.ceil(getEmbedBreakerState().retryInMs / 1000)}s): ${_embedBreaker.lastError}`);
+    }
     const prompt = applyTaskPrefix(text, model, task);
-    const r = await postJson(url, { model, prompt });
-    if (!r.embedding) throw new Error('ollama returned no embedding');
+    let r;
+    try {
+      r = await post(url, { model, prompt });
+      if (!r || !r.embedding) throw new Error('ollama returned no embedding');
+    } catch (err) {
+      _recordEmbedFailure(err);
+      throw err;
+    }
+    _recordEmbedSuccess();
     out.push(r.embedding);
   }
   return out;
@@ -233,6 +282,13 @@ module.exports = {
   setAvailableApiKeys,
   refreshOllamaStatus,
   getOllamaStatus,
+  getEmbedBreakerState,
   OLLAMA_DEFAULT_MODEL,
   defaultProvider: () => DEFAULT_PROVIDER,
+  _test: {
+    ollamaEmbed,
+    setNow(fn) { _now = fn || (() => Date.now()); },
+    reset() { _recordEmbedSuccess(); },
+    EMBED_BREAKER_THRESHOLD,
+  },
 };
