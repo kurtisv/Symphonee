@@ -884,3 +884,59 @@ test('41. fallback permission: corrupt rules fail closed, missing rules keep def
     assert.deepEqual(orch.spawns.map(s => s.cli), ['codex-oss-local'], 'no cloud spawn with unreadable permission rules');
   });
 });
+
+// ── Round 6: orders after a named document, instruction-level "and <verb>", strict rules, real wait ──
+test('42. an order placed after a named document is not data; the document body still is', () => {
+  const notSimple = [
+    'Summarize this ticket: login crashes on submit. Then fix it in auth.js',
+    'Summarize this ticket:\nLogin crashes on submit.\nFix it in src/auth.js please',
+    'Résume ce log : erreur 500 sur /api. Puis corrige le bug dans server.js',
+    'Résume ce ticket :\nLe login plante.\nCorrige-le dans auth.js',
+    'Summarize this stack trace:\nTypeError at foo.js:12\n\nThen fix foo.js',
+    'Summarize the following PR and merge it:\n+ foo',
+    'Classify these tickets and close the duplicates:\n- A\n- B',
+    'Résume ce log et supprime-le : erreur 500',
+    'Summarize this report and share it with the team: Revenue is up.',
+    'Summarize this paragraph and post it to Slack: release notes',
+    'Classify this ticket and assign it to Bob: auth bypass possible',
+  ];
+  for (const prompt of notSimple) assert.notEqual(classifyTask({ prompt }).taskClass, 'simple', prompt);
+  assert.equal(classifyTask({ prompt: 'Summarize these logs:\nERROR disk full\nWARN retry\nAlso delete the old log files' }).taskClass, 'complex');
+  assert.equal(classifyTask({ prompt: 'Summarize this issue:\nUsers report XSS in the comment form. Please patch comments.js' }).taskClass, 'security');
+  assert.equal(classifyTask({ prompt: 'Summarize this email: is our password reset flow vulnerable?' }).taskClass, 'security');
+  assert.equal(classifyTask({ prompt: 'Is this email a phishing attempt? From: bank@x.co' }).taskClass, 'security');
+  for (const prompt of [
+    'Summarize this chat: can you check the numbers? also please update the deck',
+    'Summarize this paragraph: Please remember to save your work often.',
+    'Classify this sentence: please delete my account',
+    'Classe ces tickets :\nFix login crash\nAdd dark mode\nUpdate README',
+    'Summarize this email:\nHi team,\nThe release slipped.\nThanks, Bob',
+    'Summarize this report: SQL injection found in login.js last quarter, fixed since',
+    'Summarize and translate: bonjour tout le monde',
+  ]) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+});
+
+test('43. fallback rules: any malformed Permissions field denies (no silent normalisation)', () => {
+  const { _fallbackPermission: fp } = require('./escalation');
+  const p = path.join(tmpDir(), 'config.json');
+  const bad = [
+    { mode: 'bypass', deny: 'cli:claude:spawn' }, { mode: 'bypass', deny: null }, { mode: 'weird' },
+    { mode: 'bypass', deny: [1] }, { mode: 'bypass', allow: 'cli:*' }, { mode: 'bypass', ask: {} },
+  ];
+  for (const perm of bad) { fs.writeFileSync(p, JSON.stringify({ Permissions: perm })); assert.equal(fp(p, 'claude', false), 'deny', JSON.stringify(perm)); }
+  fs.writeFileSync(p, JSON.stringify({ Permissions: { mode: 'bypass' } }));
+  assert.equal(fp(p, 'claude', false), 'allow', 'well-formed config keeps its meaning');
+  fs.writeFileSync(p, JSON.stringify({ OtherSetting: true }));
+  assert.equal(fp(p, 'claude', false), 'ask', 'no Permissions block: app defaults');
+});
+
+test('44. stale-process verification really waits (~2s) before declaring a survivor', () => {
+  const { killAndVerify } = require('../electron/process-guard');
+  const t0 = Date.now();
+  assert.equal(killAndVerify([424242], { kill: () => {}, isAlive: () => true }), false);
+  const waited = Date.now() - t0;
+  assert.ok(waited >= 1500, `waited only ${waited}ms`);
+  // A process that exits slowly (e.g. stuck in a GPU driver after /F) is still seen as killed.
+  let calls = 0;
+  assert.equal(killAndVerify([7], { kill: () => {}, isAlive: () => ++calls < 5 }), true);
+});
