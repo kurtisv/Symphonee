@@ -17,7 +17,7 @@ const TASK_CLASSES = ['simple', 'readonly-review', 'small-edit', 'complex', 'sec
 const NL = '(?<![a-z0-9à-öø-ÿ])';
 const re = (src) => new RegExp(src.replace(/§/g, NL));
 
-const SECURITY_SRC = String.raw`security|§s[ée]curit[ée]|vulnerab|vuln[ée]rab|§faille|§threat|pentest|\bcve\b|injection|\bxss\b|\bcsrf\b|\bssrf\b|\bjwt\b|password|passwd|mots? de passe|credential|identifiants?\b|\bsecrets?\b|token leak|leak(s|ed|age)? (of )?(the )?(tokens?|secrets?|keys?|credentials?)|access[- ]tokens?|bearer|oauth|traversal|\brce\b|privil[eè]ge|sanitiz|\bcors\b|\bcsp\b|encrypt|cryptograph|\bauth(entication|orization|entification|z|n)?\b|exploit|backdoor|fuite de (mots? de passe|donn[ée]es|secrets?|cl[ée]s?|tokens?)|session tokens?|session hijack|account takeover|(?:refresh|access|auth|api|bearer|id|csrf)[- ]tokens?|api[- ]keys?|\bcookies?\b.{0,60}\b(?:stolen|steal|theft|hijack\w*|httponly|samesite)|\b(?:stolen|steal\w*|theft|hijack\w*)\b.{0,60}\bcookies?\b|httponly|samesite|\battackers?\b|bypass(?:ing)? (?:the )?(?:login|auth\w*|2fa|mfa|check|permission)|§attaquant|§contourn\w* (?:l.|la |le )?(?:authentification|connexion|login|contr[ôo]le)|§chiffr(?:e[rz]?|ement)\b(?! d)`;
+const SECURITY_SRC = String.raw`security|§s[ée]curit[ée]|vulnerab|vuln[ée]rab|§faille|§threat|pentest|\bcve\b|injection|\bxss\b|\bcsrf\b|\bssrf\b|\bjwt\b|password|passwd|mots? de passe|credential|identifiants?\b|\bsecrets?\b|token leak|leak(s|ed|age)? (of )?(the )?(tokens?|secrets?|keys?|credentials?)|access[- ]tokens?|bearer|oauth|traversal|\brce\b|privil[eè]ge|sanitiz|\bcors\b|\bcsp\b|encrypt|cryptograph|\bauth(entication|orization|entification|z|n)?\b|exploit|backdoor|fuite de (mots? de passe|donn[ée]es|secrets?|cl[ée]s?|tokens?)|session tokens?|session hijack|account takeover|phishing|§hame[çc]onnage|(?:refresh|access|auth|api|bearer|id|csrf)[- ]tokens?|api[- ]keys?|\bcookies?\b.{0,60}\b(?:stolen|steal|theft|hijack\w*|httponly|samesite)|\b(?:stolen|steal\w*|theft|hijack\w*)\b.{0,60}\bcookies?\b|httponly|samesite|\battackers?\b|bypass(?:ing)? (?:the )?(?:login|auth\w*|2fa|mfa|check|permission)|§attaquant|§contourn\w* (?:l.|la |le )?(?:authentification|connexion|login|contr[ôo]le)|§chiffr(?:e[rz]?|ement)\b(?! d)`;
 const SECURITY_RE = re(SECURITY_SRC);
 
 const ROLE_PATTERNS = [
@@ -38,7 +38,7 @@ const COMPLEX_RE = re(String.raw`architect|complex|production|\bprod\b|critical|
 const SHELL_RE = re(String.raw`\brun\b|§lance\b|§lancer\b|§ex[ée]cute|execute|\bnpm\b|\bnpx\b|\bnode\b|jest|pytest|\bshell\b|\bcommand\b|§commande|\bscripts?\b|\blint\b|\bbuild\b`);
 const SEARCH_RE = re(String.raw`\bsearch|§cherche|§recherch|\bgrep\b|find (all|every|where)|§trouve (tous|toutes|o[uù])|dans (le|tout le) (repo|d[ée]p[ôo]t|projet)|across the (repo|codebase)`);
 // Writing is decided by verbs, not by the noun "code": "explique ce code" is read-only.
-const WRITE_RE = re(String.raw`implement|§impl[ée]ment|§modif|\bedit|§[ée]dite?\b|refactor|\bchange\b|\bwrite\b|§[ée]cri[st]\b|§r[ée][ée]cri[st]\b|\brewrite\b|§ajout|\badd\b|§corrig|\bfix|repair|§r[ée]pare|§faute|typo|§coquille|§renomm|rename|\bcreate\b|§cr[ée]e[rz]?\b|\bupdate|mets? [àa] jour|\bbump\b|upgrade|\binstall|\bpatch\b|\bapply\b|§applique|\bcommit (?:it|them|this|that|the|these|those|all|changes|everything|to)\b|§commit(?:e|er|ez)\b|\bsave\b|§sauvegarde|§enregistre|\bdelete\b|\bremove\b|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§retire|§efface|\bmove\b|§d[ée]place|\bdeploy\b|§d[ée]plo[iy]|\bpublish\b|§publi[ea]|\boverwrite\b|§[ée]cras`);
+const WRITE_RE = re(String.raw`implement|§impl[ée]ment|§modif|\bedit|§[ée]dite?\b|refactor|\bchange\b|\bwrite\b|§[ée]cri[st]\b|§r[ée][ée]cri[st]\b|\brewrite\b|§ajout|\badd\b|§corrig|\bfix|repair|§r[ée]pare|§faute|typo|§coquille|§renomm|rename|\bcreate\b|§cr[ée]e[rz]?\b|\bupdate|mets? [àa] jour|\bbump\b|upgrade|\binstall|\bpatch\b|\bapply\b|§applique|\bcommit (?:it|them|this|that|the|these|those|all|changes|everything|to)\b|§commit(?:e|er|ez)\b|\bsave\b|§sauvegarde|§enregistre|\bdelete\b|\bremove\b|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§retire|§efface|\bmove\b|§d[ée]place|\bdeploy\b|§d[ée]plo[iy]|\bpublish\b|§publi[ea]|\boverwrite\b|§[ée]cras|\bmerge (?:it|them|this|that|the|these|those|into)\b|\bclose (?:it|them|this|that|the|these|those|all)\b|\bapprove\b|\b(?:share|post|send|assign|forward|upload) (?:it|them|this|that|the|these|those|to)\b|§(?:partage|envoie|transf[èe]re|assigne|attribue)[rz]? (?:le|la|les|ce|ces|[àa])\b|\bresolve (?:it|them|this|that|the|these|those|all)\b|\brotate (?:the )?(?:keys?|secrets?|tokens?|credentials?)\b|\barchive (?:it|them|this|that|the|these|those|all)\b|§ferme[rz]? (?:le|la|les|ce|ces)\b|§approuve|§r[ée]sou[st] (?:le|la|les|ce|ces)\b|§archive[rz]? (?:le|la|les|ce|ces)\b`);
 // Destructive intent, including shell / database forms. Present / imperative
 // forms only: a log line saying "deleted" / "supprimé" is a report, not an order.
 const DESTRUCTIVE_SRC = String.raw`\bdelete\b|\bremove\b|\breset --hard|\bdiscard\b|\bdestroy\b|\bwipe\b|\bpurge\b|\bnuke\b|\brm\s+-\w*r|\brm\b|\bdrop (?:the |a |le |la |les )?(?:\w+ )?(?:table|database|db|schema|collection|index|base)\b|\btruncate\b|force[- ]?push|push (?:--force|-f)\b|\bkill\b|\bchmod\b|\bchown\b|\boverwrite\b|\bget rid of\b|\berase\b|\bdel\b|\brmdir\b|\brd /s\b|remove-item|\bformat (?:c:|the (?:disk|drive))|§supprim(?:e|er|ez|es)?(?![a-zà-öø-ÿ])|§effac(?:e|er|ez)(?![a-zà-öø-ÿ])|§d[ée]trui[st]?(?![a-zà-öø-ÿ])|§[ée]cras(?:e|er|ez)(?![a-zà-öø-ÿ])|§vir(?:e|er|ez)(?![a-zà-öø-ÿ])|§vide[rz]? (?:la |le |les )?(?:base|cache|dossier|r[ée]pertoire)`;
@@ -88,7 +88,7 @@ const stricter = (a, b) => (CLASS_RANK[b] > CLASS_RANK[a] ? b : a);
 // Imperative verbs a user addresses to the agent (EN exact, FR stems), each
 // ending on a word boundary ("reviewed", "added", "supprimé" do not count).
 const VERB_END = '(?![a-zà-öø-ÿ])';
-const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|overwrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|kill|restart|reboot|stop|chmod|chown|get rid of|erase|del|rmdir|label|tag|put|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets?|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§[ée]cras\w*|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§vir\w*|§nettoi\w*|§red[ée]marr\w*|§arr[êe]t\w*|§tu\w*|§[ée]tiquet\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
+const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|overwrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|kill|restart|reboot|stop|chmod|chown|get rid of|erase|del|rmdir|close|approve|resolve|rotate|archive|assign|forward|§assign\w*|§attribu\w*|§transf[èe]r\w*|§ferm\w*|§approuv\w*|§r[ée]sou[ds]\w*|§archiv\w*|label|tag|put|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets?|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§[ée]cras\w*|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§vir\w*|§nettoi\w*|§red[ée]marr\w*|§arr[êe]t\w*|§tu\w*|§[ée]tiquet\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
 // Connectors that hand the agent a further action. The action must follow the
 // connector DIRECTLY (only fillers / object pronouns in between): "then delete
 // the unused ones" is an order, "then Alice will deploy" is narration.
@@ -98,8 +98,12 @@ const FILLERS = String.raw`(?:(?:also|please|just|then|now|immediately|simply|au
 const chainRe = (connectors) => re(String.raw`(?:` + connectors + String.raw`)[\s,:;.\-—]+` + FILLERS + ACTION_VERB_SRC);
 const AGENT_CHAIN_RE = chainRe(CONNECTOR_CORE + CONNECTOR_POLITE);
 const DATA_CHAIN_RE = chainRe(String.raw`\bthen\b|\bafterwards?\b|\bonce done\b|§puis\b|§ensuite\b|§il faudra\b`);
+// In the instruction only, a plain "and / et" also chains an action
+// ("Summarize the following PR and merge it", "Classify these tickets and close
+// the duplicates", "Résume ce log et supprime-le").
+const INSTR_AND_CHAIN_RE = chainRe(String.raw`\band\b|§et\b`);
 // Object pronouns bound to an action: "supprime-les", "commit it", "send them".
-const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|\b(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite)\s+(?:it|them|this|that|the result|everything)\b`);
+const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|\b(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite|merge|close|approve|resolve|archive|fix|patch|share|post|assign|forward)\s+(?:it|them|this|that|the result|everything)\b`);
 // A payload line addressed to the agent (not a bulleted / numbered item).
 const IMPERATIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|could you\s+|can you\s+|would you\s+|now,?\s+|you (?:should|must|need to)\s+|we need you to\s+|peux-tu\s+|pourrais-tu\s+|merci de\s+|tu peux\s+|il (?:faut|faudra)\s+)?` + ACTION_VERB_SRC);
 const DESTRUCTIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|now,?\s+)?(?:` + DESTRUCTIVE_SRC + String.raw`)`);
@@ -109,7 +113,7 @@ const LIST_ITEM_RE = /^([-*•]|\d+[.)])\s/;
 const SCOPE_NOUN = String.raw`(?:repo|repository|codebase|monorepo|project|d[ée]p[ôo]t|projet|code base)`;
 const INSTR_SCOPE_RE = re(String.raw`(?<![\w.\-/])[\w.\-]+(?:/[\w.\-]+)*/\s*$|(?:the|this|my|our|whole|entire|ce|mon|notre|tout le|le)\s+(?:whole\s+|entire\s+)?` + SCOPE_NOUN + String.raw`\s*$`);
 const PAYLOAD_SCOPE_RE = re(String.raw`^\s*(?:(?:the|this|my|our|whole|entire|ce|mon|notre|tout le|le)\s+)?(?:whole\s+|entire\s+)?` + SCOPE_NOUN + String.raw`\s*[.!]?\s*$|^\s*[\w.\-]+(?:/[\w.\-]+)*/\s*$|every file|all (?:the )?(?:files|(?:source )?code)|§tous les fichiers|§tout le code`);
-const SECURITY_QUESTION_RE = re(String.raw`\b(whether|if|can|could|is it|are they)\b|§(si|est-ce|peut|peuvent)\b|stolen|\bsteal|hijack|§vol[ée]?s?\b|§d[ée]tourn`);
+const SECURITY_QUESTION_RE = re(String.raw`\b(whether|if|can|could|is it|are they|is (?:our|my|the|this)|are (?:our|my|the))\b|vulnerable|exploitable|§vuln[ée]rable|§exploitable|§(si|est-ce|peut|peuvent)\b|stolen|\bsteal|hijack|§vol[ée]?s?\b|§d[ée]tourn`);
 
 function payloadClass(instr, payload, depth) {
   const p = payload.trim();
@@ -155,6 +159,39 @@ function payloadClass(instr, payload, depth) {
   return cls;
 }
 
+// "Summarize this ticket: <ticket>. Then fix it in auth.js": the document is
+// data, but a follow-up order placed AFTER it is not (Claude round 6). Only the
+// tail is re-opened: the last prose line when it stands on its own line, or the
+// last sentence when it targets a concrete file. Polite phrases inside the
+// document body ("can you check the numbers?") stay data.
+function dataNounTailClass(instr, payload, depth) {
+  const lines = payload.split('\n').map(l => l.trim()).filter(Boolean).filter(l => !LIST_ITEM_RE.test(l));
+  if (!lines.length) return 'simple';
+  const lastLine = lines[lines.length - 1];
+  const sentences = lastLine.split(/(?<=[.!?;])\s+/).filter(Boolean);
+  const lastSentence = sentences[sentences.length - 1] || lastLine;
+  const ownLine = lines.length >= 2;
+  const segment = ownLine ? lastLine : (FILE_PATH_RE.test(lastSentence) ? lastSentence : null);
+  if (!segment) {
+    // Short one-line payload asking a security question about OUR system.
+    if (payload.length < 240 && SECURITY_RE.test(payload) && SECURITY_QUESTION_RE.test(payload) && re(String.raw`\b(?:our|my|we|us)\b|§(?:notre|nos|mon|ma|mes|on)\b`).test(payload)) return 'security';
+    return 'simple';
+  }
+  const dataVerb = LEADING_DATA_RE.test(instr);
+  // Items to classify are often imperative ticket titles: for data verbs only
+  // an explicit chain / pronoun-bound action counts, not a bare imperative.
+  const order = dataVerb
+    ? (DATA_CHAIN_RE.test(segment) || PRONOUN_ACTION_RE.test(segment))
+    : (AGENT_CHAIN_RE.test(segment) || PRONOUN_ACTION_RE.test(segment) || IMPERATIVE_LINE_RE.test(segment) || IMPERATIVE_LINE_RE.test(lastSentence));
+  if (!order) return 'simple';
+  // An order exists: judge the whole request (the document may be about XSS...).
+  const sub = depth < 2 ? classifyTask({ prompt: payload }, depth + 1).taskClass : 'small-edit';
+  let cls = stricter('small-edit', sub === 'simple' ? 'small-edit' : sub);
+  if (DESTRUCTIVE_RE.test(segment)) cls = stricter(cls, 'complex');
+  if (SECURITY_RE.test(payload) && FILE_TARGET_RE.test(payload)) cls = stricter(cls, 'security');
+  return cls;
+}
+
 function leadingSimpleClass(instr, payload = '', depth = 0) {
   const afterVerb = instr.replace(LEADING_SIMPLE_RE, ' ');
   let cls = 'simple';
@@ -167,12 +204,12 @@ function leadingSimpleClass(instr, payload = '', depth = 0) {
   else if (LEADING_EXTRACT_RE.test(instr) && CODE_UNIT_RE.test(instr)) cls = 'small-edit';
   // Chained actions inside the instruction itself ("Summarize the changes then
   // deploy: v2.3", "Résume puis déploie : la v2").
-  if (AGENT_CHAIN_RE.test(afterVerb) || PRONOUN_ACTION_RE.test(afterVerb)) {
+  if (AGENT_CHAIN_RE.test(afterVerb) || PRONOUN_ACTION_RE.test(afterVerb) || INSTR_AND_CHAIN_RE.test(afterVerb)) {
     cls = stricter(cls, DESTRUCTIVE_RE.test(afterVerb) ? 'complex' : 'small-edit');
   }
   // "Summarize this email: ..." -- the instruction declares its payload as a
   // document: it is processed as text, never read as orders.
-  if (DATA_NOUN_RE.test(instr)) return cls;
+  if (DATA_NOUN_RE.test(instr)) return stricter(cls, dataNounTailClass(instr, payload, depth));
   return stricter(cls, payloadClass(instr, payload, depth));
 }
 
