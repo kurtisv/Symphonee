@@ -348,3 +348,233 @@ test('15. Codex OSS says DONE but changed nothing -> unusable output, failover t
   assert.equal(d2.routeCategory, ROUTES.LOCAL_CODEX);
   assert.equal(t2.execution.changeCheck, 'passed');
 });
+
+// ── Round 2: regressions found by the Claude + Codex reviews ─────────────────
+const { classifyTask } = require('./task-roles');
+const { gitTreeFingerprint } = require('./local-providers');
+
+function httpSpawn(orch, body) {
+  const { registerOrchestratorRoutes } = require('./routes');
+  const repoRoot = tmpDir();
+  fs.mkdirSync(path.join(repoRoot, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, 'config', 'config.json'), JSON.stringify({ Permissions: { mode: 'bypass', deny: [], ask: [], allow: [] } }));
+  const routes = {};
+  registerOrchestratorRoutes((m, p, h) => { routes[`${m} ${p}`] = h; }, (res, data, code) => { res.payload = data; res.code = code || 200; }, orch, {
+    getConfig: orch.getConfig, broadcast: () => {}, getUiContext: () => ({}), repoRoot,
+  });
+  const raw = JSON.stringify({ cwd: os.tmpdir(), autoPermit: true, ...body });
+  const req = { on(ev, cb) { if (ev === 'data') cb(Buffer.from(raw)); if (ev === 'end') cb(); return req; } };
+  const res = {};
+  return routes['POST /api/orchestrator/spawn'](req, res).then(() => res);
+}
+
+test('16. cancelling a local task never starts a cloud task (BLOCKER from review)', async () => {
+  let release;
+  const orch = makeOrch({ post: () => new Promise((resolve) => { release = resolve; }) });
+  await orch.localHealth.refresh({ force: true });
+  const routing = orch.taskRouter.selectProvider({ prompt: 'résume ce texte: bonjour le monde' });
+  assert.equal(routing.provider, 'lmstudio-qwen-small');
+  const task = orch.spawnHeadless({ cli: routing.provider, prompt: 'résume ce texte: bonjour le monde' });
+  markAuto(task, routing);
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(orch.cancelTask(task.id), { ok: true });
+  if (release) release({ choices: [{ message: { content: 'late answer' }, finish_reason: 'stop' }] });
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(orch.spawns.length, 0, 'no CLI (cloud) spawned after cancel');
+  const t = orch.tasks.get(task.id);
+  assert.equal(t.cli, 'lmstudio-qwen-small');
+  assert.equal(t.state, STATE.CANCELLED);
+});
+
+test('17. FR/EN classification: instruction verb vs payload, writes, security vocabulary, word boundaries', () => {
+  const cases = [
+    ['Classe ces tickets : bug critique, security issue, crash en production', 'simple'],
+    ['classe ces éléments', 'simple'], ['résume ce fichier', 'simple'], ['extrais ces 20 valeurs', 'simple'],
+    ['compresse ce contexte', 'simple'], ['traduis ce paragraphe en anglais', 'simple'],
+    ['explique ce code', 'readonly-review'], ['Décris ce que fait foo.js', 'readonly-review'],
+    ['corrige cette faute', 'small-edit'], ["lance Jest et corrige l'erreur", 'small-edit'],
+    ['Rewrite the payment module in src/pay.js to use the new Stripe API', 'small-edit'],
+    ['Extrais la fonction parseConfig de server.js dans un nouveau fichier', 'small-edit'],
+    ['Update the README with the new options', 'small-edit'], ['Mets à jour le README', 'small-edit'],
+    ['Bump the version in package.json to 2.0.0', 'small-edit'], ['Summarize this stack trace and fix the bug', 'small-edit'],
+    ['Please translate the docs folder into Spanish and commit', 'small-edit'], ['Add a unit test for parseConfig', 'small-edit'],
+    ['Delete the unused import in foo.js', 'complex'], ["analyse l'architecture de l'orchestrateur", 'complex'],
+    ['investigue ce bug complexe en production', 'complex'], ['Refactor the whole orchestrator into TypeScript', 'complex'],
+    ['Fix the race condition that corrupts data', 'complex'], ['Design a new sharding strategy', 'complex'],
+    ['fais une security review', 'security'], ['fais une revue de sécurité complète', 'security'],
+    ['Review this PR diff for token leakage and SSRF', 'security'], ['Review the password hashing in login.js', 'security'],
+    ['Look for SSRF in fetchUrl()', 'security'], ['Is the JWT signature verification correct in auth.js?', 'security'],
+    ['Vérifie si ce code a une fuite de mots de passe', 'security'], ['Summarize security vulnerabilities in auth.js', 'security'],
+    ['Summarize the AUTHORS file', 'simple'],
+  ];
+  for (const [prompt, want] of cases) assert.equal(classifyTask({ prompt }).taskClass, want, prompt);
+});
+
+test('18. a local provider in cooldown is skipped; task-caused failures do not cool it down', async () => {
+  const { router, health } = await makeRouter();
+  health.recordOutcome('lmstudio-qwen-small', { ok: false, error: 'TIMEOUT' });
+  const r = router.selectProvider({ prompt: 'résume ce texte: abc' });
+  assert.equal(r.locality, 'cloud');
+  assert.match(r.localSkipped['lmstudio-qwen-small'], /cooling down/);
+  const { router: r2, health: h2 } = await makeRouter();
+  h2.recordOutcome('lmstudio-qwen-small', { ok: false, error: 'TASK_ERROR', cooldown: false });
+  assert.equal(r2.selectProvider({ prompt: 'résume ce texte: abc' }).provider, 'lmstudio-qwen-small');
+});
+
+test('19. codex-oss-local that cannot even launch fails over to cloud (no HTTP 400, no orphan task)', async () => {
+  // Codex's lmstudio provider only targets :1234 -> a :1235 endpoint makes the spawn refuse.
+  const orch = makeOrch({ cfg: { LocalFirst: { enableCodexOssSmallEdit: true, baseUrl: 'http://127.0.0.1:1235' } } });
+  orch.localHealth.fetchJson = up();
+  const res = await httpSpawn(orch, { cli: 'auto', prompt: 'corrige cette faute dans README.md' });
+  assert.equal(res.code, 200, JSON.stringify(res.payload));
+  assert.equal(res.payload.failedOverFrom.provider, 'codex-oss-local');
+  assert.match(res.payload.failedOverFrom.reason, /only targets :1234/);
+  assert.ok(!isLocalProvider(res.payload.cli));
+  assert.equal([...orch.tasks.values()].filter(t => t.state === STATE.PENDING).length, 0, 'no orphan PENDING task');
+  const done = await waitDone(orch, res.payload.id);
+  assert.equal(done.state, STATE.COMPLETED);
+  assert.equal(orch.routingTelemetry.summary().counts.LOCAL_TO_CLOUD_FAILOVER, 1);
+});
+
+test('20. claude-local: isolated config dir, no Bedrock/Vertex/AWS/proxy env, loopback enforced', async () => {
+  const saved = { AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID, CLAUDE_CODE_USE_BEDROCK: process.env.CLAUDE_CODE_USE_BEDROCK, HTTPS_PROXY: process.env.HTTPS_PROXY, CODEX_OSS_BASE_URL: process.env.CODEX_OSS_BASE_URL };
+  Object.assign(process.env, { AWS_ACCESS_KEY_ID: 'AKIA-TEST', CLAUDE_CODE_USE_BEDROCK: '1', HTTPS_PROXY: 'http://proxy.example:8080', CODEX_OSS_BASE_URL: 'https://example.com/v1' });
+  try {
+    const orch = makeOrch();
+    await orch.localHealth.refresh({ force: true });
+    const t = orch.spawnHeadless({ cli: 'claude-local', prompt: 'x', cwd: os.tmpdir() });
+    await waitDone(orch, t.id);
+    const env = orch.spawns.find(s => s.cli === 'claude').env;
+    for (const k of ['AWS_ACCESS_KEY_ID', 'CLAUDE_CODE_USE_BEDROCK', 'HTTPS_PROXY', 'ANTHROPIC_API_KEY', 'CODEX_OSS_BASE_URL']) assert.equal(env[k], undefined, k);
+    assert.equal(env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:1234');
+    assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+    assert.ok(env.CLAUDE_CONFIG_DIR.startsWith(orch.workspaceDir));
+    const c = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'x', cwd: os.tmpdir() });
+    await waitDone(orch, c.id);
+    assert.equal(orch.spawns.find(s => s.cli === 'codex-oss-local').env.CODEX_OSS_BASE_URL, undefined);
+    const bad = makeOrch({ cfg: { LocalFirst: { baseUrl: 'https://api.anthropic.com' } } });
+    const before = bad.tasks.size;
+    assert.throws(() => bad.spawnHeadless({ cli: 'claude-local', prompt: 'x', cwd: os.tmpdir() }), /not loopback/);
+    assert.equal(bad.tasks.size, before, 'refused launch leaves no task behind');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('21. explicit local spawn (not auto) still fails over to cloud', async () => {
+  const orch = makeOrch({ post: async () => { throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1234'), { code: 'ECONNREFUSED' }); } });
+  await orch.localHealth.refresh({ force: true });
+  const res = await httpSpawn(orch, { cli: 'lmstudio-qwen-small', prompt: 'résume ce texte: abc' });
+  assert.equal(res.code, 200, JSON.stringify(res.payload));
+  assert.equal(res.payload.requestedCli, 'lmstudio-qwen-small');
+  assert.ok(res.payload.fallbackChain.length > 0 && res.payload.fallbackChain.every(p => !isLocalProvider(p)));
+  const done = await waitDone(orch, res.payload.id);
+  assert.ok(!isLocalProvider(done.cli), `ended on cloud, got ${done.cli}`);
+  assert.equal(done.state, STATE.COMPLETED);
+});
+
+test('22. direct local refuses blind reviews and truncated answers (-> cloud), accepts inline code', async () => {
+  let calls = 0;
+  const orch = makeOrch({ post: async () => { calls++; return { choices: [{ message: { content: 'partial…' }, finish_reason: 'length' }] }; } });
+  await orch.localHealth.refresh({ force: true });
+  const blind = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: 'Why does the app crash on startup?', requiresRepoContent: true });
+  const b = await waitDone(orch, blind.id);
+  assert.equal(b.state, STATE.FAILED); assert.match(b.error, /local-cannot-read-repo/); assert.equal(calls, 0);
+  assert.equal(b.errorClassification.noCooldown, true);
+  const inline = orch.spawnLmStudio({ cli: 'lmstudio-qwen-small', prompt: 'review: function add(a,b){return a+b}', requiresRepoContent: true });
+  const i = await waitDone(orch, inline.id);
+  assert.equal(calls, 1, 'inline code is enough to run locally');
+  assert.equal(i.state, STATE.FAILED); assert.match(i.error, /truncated/);
+});
+
+test('23. false-success guard on a real git repo: pre-existing dirt, new file, deletion, non-git', async () => {
+  const { spawnSync } = require('child_process');
+  const repo = tmpDir();
+  const git = (...a) => spawnSync('git', a, { cwd: repo, encoding: 'utf8' });
+  git('init', '-q'); git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n'); git('add', '.'); git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'a');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'user edit already there\n'); // pre-existing user change
+  const before = gitTreeFingerprint(repo);
+  assert.ok(before);
+  assert.equal(gitTreeFingerprint(repo), before, 'agent did nothing: same fingerprint despite pre-existing dirt');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'user edit already there\nplus agent line\n');
+  assert.notEqual(gitTreeFingerprint(repo), before, 'further edit to an already-dirty file is detected');
+  const s2 = gitTreeFingerprint(repo);
+  fs.writeFileSync(path.join(repo, 'new.txt'), 'new\n');
+  assert.notEqual(gitTreeFingerprint(repo), s2, 'new untracked file detected');
+  const s3 = gitTreeFingerprint(repo);
+  fs.unlinkSync(path.join(repo, 'new.txt')); fs.unlinkSync(path.join(repo, 'a.txt'));
+  assert.notEqual(gitTreeFingerprint(repo), s3, 'deletion detected');
+  assert.equal(gitTreeFingerprint(tmpDir()), null, 'not a git repo');
+  // Non-git write task: success cannot be verified -> failure -> cloud.
+  const orch = makeOrch({ cfg: OPT_IN, script: { 'codex-oss-local': [{ code: 0, stdout: 'DONE' }] } });
+  orch._gitTreeFingerprint = () => null;
+  await orch.localHealth.refresh({ force: true });
+  const routing = orch.taskRouter.selectProvider({ prompt: 'corrige cette faute dans hello.txt' });
+  const t = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'corrige cette faute dans hello.txt', cwd: tmpDir(), expectsRepoChanges: true });
+  markAuto(t, routing);
+  const d = await waitDone(orch, t.id);
+  assert.ok(!isLocalProvider(d.cli));
+  assert.equal(t.execution.changeCheck, 'failed-unverifiable');
+});
+
+test('24. a process that emits error then close fails over exactly once', async () => {
+  const orch = makeOrch();
+  await orch.localHealth.refresh({ force: true });
+  const orig = orch._spawnImpl;
+  orch._spawnImpl = (command, args, opts) => {
+    if (!args.includes('--oss')) return orig(command, args, opts);
+    orch.spawns.push({ cli: 'codex-oss-local', args, env: opts.env });
+    const p = new EventEmitter(); p.stdin = { write() {}, end() {} }; p.stdout = new EventEmitter(); p.stderr = new EventEmitter(); p.kill = () => {};
+    setImmediate(() => { p.emit('error', new Error('spawn EPIPE')); p.emit('close', 1); });
+    return p;
+  };
+  const t = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'corrige la faute', cwd: os.tmpdir() });
+  Object.assign(t, { selectedProvider: 'codex-oss-local', routingHistory: [], _autoRouting: true, _automaticFallback: true, _escalationChain: ['codex', 'claude'], _escalationPrompt: 'corrige la faute' });
+  await waitDone(orch, t.id);
+  await new Promise(r => setTimeout(r, 30));
+  assert.deepEqual(orch.spawns.map(s => s.cli), ['codex-oss-local', 'codex'], 'one failover, not two');
+});
+
+test('25. refilled escalation chain respects OrchestrateCliList and MaxFallbackAttempts', async () => {
+  const orch = makeOrch({ cfg: { OrchestrateCliList: ['codex', 'claude'], MaxFallbackAttempts: 1 }, script: {
+    'codex-oss-local': [{ code: 1, stderr: 'boom' }], codex: [{ code: 1, stderr: 'quota exceeded' }], claude: [{ code: 1, stderr: 'quota exceeded' }],
+  } });
+  await orch.localHealth.refresh({ force: true });
+  const t = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'corrige la faute', cwd: os.tmpdir() });
+  Object.assign(t, { selectedProvider: 'codex-oss-local', routingHistory: [], _autoRouting: true, _automaticFallback: true, _escalationChain: [], _escalationPrompt: 'corrige la faute' });
+  const d = await waitDone(orch, t.id);
+  assert.equal(d.state, STATE.FAILED);
+  const clis = orch.spawns.map(s => s.cli);
+  assert.equal(clis[0], 'codex-oss-local');
+  assert.ok(clis.length <= 2, `at most MaxFallbackAttempts(1) cloud attempt, got ${clis.join(',')}`);
+  assert.ok(clis.slice(1).every(c => ['codex', 'claude'].includes(c)), `only enabled CLIs, got ${clis.join(',')}`);
+});
+
+test('26. cancelling or timing out a local agent kills its whole process tree', async () => {
+  const orch = makeOrch();
+  const killed = [];
+  orch._killTreeImpl = (pid) => killed.push(pid);
+  orch._spawnImpl = (command, args, opts) => {
+    const p = new EventEmitter(); p.pid = 4242; p.stdin = { write() {}, end() {} }; p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
+    p.kill = () => { throw new Error('plain kill must not be used for local agents'); };
+    return p;
+  };
+  await orch.localHealth.refresh({ force: true });
+  const t = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'x', cwd: os.tmpdir() });
+  assert.deepEqual(orch.cancelTask(t.id), { ok: true });
+  assert.deepEqual(killed, [4242]);
+});
+
+test('27. Ollama embed breaker keeps backing off for a flapping runner', async () => {
+  const emb = require('../mind/embeddings');
+  const { ollamaEmbed, setNow, reset, EMBED_BREAKER_THRESHOLD } = emb._test;
+  let now = 9_000_000; setNow(() => now); reset();
+  const fail = async () => { throw new Error('HTTP 500'); };
+  const ok = async () => ({ embedding: [1] });
+  const trip = async () => { for (let i = 0; i < EMBED_BREAKER_THRESHOLD; i++) await ollamaEmbed(['x'], { _post: fail }).catch(() => {}); };
+  await trip(); assert.equal(emb.getEmbedBreakerState().retryInMs, 60_000);
+  now += 60_001; await ollamaEmbed(['x'], { _post: ok }); // one lucky success
+  await trip(); assert.equal(emb.getEmbedBreakerState().retryInMs, 120_000, 'cooldown still escalates');
+  setNow(null); reset();
+});
