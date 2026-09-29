@@ -60,7 +60,7 @@ const LEADING_DATA_RE = /^\s*(please\s+|peux-tu\s+|merci de\s+)?(classe[rz]?\b|c
 // "ce log", "these tickets"): the payload is DATA, whatever it says. This is
 // the structural answer to the false positives (a log saying "rm -rf", a mail
 // saying "please delete my account", a chat asking "can you check...").
-const DATA_NOUN_RE = re(String.raw`\b(?:this|these|the following|the below|below|following)\s+(?:\w+\s+){0,2}(?:e-?mails?|mails?|messages?|chats?|conversations?|threads?|logs?|log lines?|traces?|stack ?traces?|tickets?|issues?|comments?|reviews?|notes?|minutes|transcripts?|texts?|paragraphs?|sentences?|articles?|posts?|documents?|docs?|reports?|changelogs?|release notes|incidents?|summaries|replies|feedback|survey|list|items?|lines?|entries|records|outputs?|errors?)\b|§(?:ce|cet|cette|ces)\s+(?:\w+\s+){0,2}(?:e-?mails?|mails?|courriels?|messages?|conversations?|fils?|journaux|journal|logs?|traces?|tickets?|commentaires?|avis|notes?|comptes? rendus?|transcriptions?|textes?|paragraphes?|phrases?|articles?|documents?|rapports?|incidents?|r[ée]ponses?|retours?|listes?|lignes?|entr[ée]es?|erreurs?|sorties?)(?![a-zà-öø-ÿ])`);
+const DATA_NOUN_RE = re(String.raw`\b(?:this|these|the following|the below|below|following)\s+(?:\w+\s+){0,2}(?:e-?mails?|mails?|messages?|chats?|conversations?|threads?|logs?|log lines?|traces?|stack ?traces?|tickets?|issues?|comments?|reviews?|notes?|minutes|transcripts?|texts?|paragraphs?|sentences?|articles?|posts?|documents?|docs?|reports?|changelogs?|release notes|incidents?|summaries|replies|feedback|survey|list|items?|lines?|entries|records|outputs?|errors?|readmes?|guides?|documentation|tutorials?|instructions|steps|faqs?|wiki|specs?|pages?|polic(?:y|ies)|contracts?|proposals?|drafts?|minutes)\b|§(?:ce|cet|cette|ces)\s+(?:\w+\s+){0,2}(?:e-?mails?|mails?|courriels?|messages?|conversations?|fils?|journaux|journal|logs?|traces?|tickets?|commentaires?|avis|notes?|comptes? rendus?|transcriptions?|textes?|paragraphes?|phrases?|articles?|documents?|rapports?|incidents?|r[ée]ponses?|retours?|listes?|lignes?|entr[ée]es?|erreurs?|sorties?|readmes?|guides?|documentations?|tutoriels?|proc[ée]dures?|consignes?|[ée]tapes?|politiques?|contrats?|pages?|brouillons?|propositions?)(?![a-zà-öø-ÿ])`);
 const SIMPLE_RE = /r[ée]sum|summar|extract|extrai|classif|cat[ée]goris|reformul|rephrase|paraphras|rewrite|compress|compact|condens|translat|tradui|synth[èe]s/;
 const READONLY_WORDS_RE = re(String.raw`review|§revue|explain|§explique|analy|§investig|§comprend|understand|\bwhy\b|§pourquoi|§d[ée]cri[st]|describe`);
 
@@ -88,7 +88,7 @@ const stricter = (a, b) => (CLASS_RANK[b] > CLASS_RANK[a] ? b : a);
 // Imperative verbs a user addresses to the agent (EN exact, FR stems), each
 // ending on a word boundary ("reviewed", "added", "supprimé" do not count).
 const VERB_END = '(?![a-zà-öø-ÿ])';
-const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|overwrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|kill|restart|reboot|stop|chmod|chown|get rid of|erase|del|rmdir|close|approve|resolve|rotate|archive|assign|forward|§assign\w*|§attribu\w*|§transf[èe]r\w*|§ferm\w*|§approuv\w*|§r[ée]sou[ds]\w*|§archiv\w*|label|tag|put|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets?|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§[ée]cras\w*|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§vir\w*|§nettoi\w*|§red[ée]marr\w*|§arr[êe]t\w*|§tu\w*|§[ée]tiquet\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
+const ACTION_VERB_SRC = String.raw`(?:review|audit|check|inspect|verify|look for|find|rewrite|overwrite|fix|repair|delete|remove|update|add|create|move|rename|commit|push|save|apply|install|refactor|implement|edit|modify|write|run|execute|deploy|merge|replace|patch|upgrade|migrate|wipe|purge|nuke|destroy|drop|clear|clean(?: up)?|rm|kill|restart|reboot|stop|chmod|chown|get rid of|erase|del|rmdir|close|approve|resolve|rotate|archive|assign|forward|change|reset|revoke|§chang\w*|§r[ée]initialis\w*|§r[ée]voqu\w*|§assign\w*|§attribu\w*|§transf[èe]r\w*|§ferm\w*|§approuv\w*|§r[ée]sou[ds]\w*|§archiv\w*|label|tag|put|send|e-?mail|publish|release|paste|post|upload|share|§v[ée]rifi\w*|§cherch\w*|§trouv\w*|§r[ée][ée]cri[st]|§corrig\w*|§r[ée]par\w*|§supprim\w*|§effac\w*|§retir\w*|§mets?|§ajout\w*|§cr[ée]\w*|§d[ée]plac\w*|§renomm\w*|§pouss\w*|§sauvegard\w*|§enregistr\w*|§appliqu\w*|§install\w*|§impl[ée]ment\w*|§[ée]dit\w*|§modifi\w*|§[ée]cri[st]|§[ée]cras\w*|§lanc\w*|§ex[ée]cut\w*|§d[ée]plo[iy]\w*|§fusionn\w*|§remplac\w*|§migr\w*|§vid\w*|§vir\w*|§nettoi\w*|§red[ée]marr\w*|§arr[êe]t\w*|§tu\w*|§[ée]tiquet\w*|§envo[iy]\w*|§publi\w*|§partag\w*|§t[ée]l[ée]vers\w*)` + VERB_END;
 // Connectors that hand the agent a further action. The action must follow the
 // connector DIRECTLY (only fillers / object pronouns in between): "then delete
 // the unused ones" is an order, "then Alice will deploy" is narration.
@@ -103,7 +103,7 @@ const DATA_CHAIN_RE = chainRe(String.raw`\bthen\b|\bafterwards?\b|\bonce done\b|
 // the duplicates", "Résume ce log et supprime-le").
 const INSTR_AND_CHAIN_RE = chainRe(String.raw`\band\b|§et\b`);
 // Object pronouns bound to an action: "supprime-les", "commit it", "send them".
-const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|\b(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite|merge|close|approve|resolve|archive|fix|patch|share|post|assign|forward)\s+(?:it|them|this|that|the result|everything)\b`);
+const PRONOUN_ACTION_RE = re(ACTION_VERB_SRC + String.raw`-(?:les|le|la|moi|lui|leur)\b|\b(?:save|commit|push|write|send|email|deploy|delete|remove|upload|publish|overwrite|merge|close|approve|resolve|archive|fix|patch|share|post|assign|forward|rotate|change|reset|revoke|restart|kill|update|rewrite)\s+(?:it|them|this|that|the result|everything)\b`);
 // A payload line addressed to the agent (not a bulleted / numbered item).
 const IMPERATIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|could you\s+|can you\s+|would you\s+|now,?\s+|you (?:should|must|need to)\s+|we need you to\s+|peux-tu\s+|pourrais-tu\s+|merci de\s+|tu peux\s+|il (?:faut|faudra)\s+)?` + ACTION_VERB_SRC);
 const DESTRUCTIVE_LINE_RE = re(String.raw`^\s*(?:please,?\s+|now,?\s+)?(?:` + DESTRUCTIVE_SRC + String.raw`)`);
@@ -159,36 +159,55 @@ function payloadClass(instr, payload, depth) {
   return cls;
 }
 
-// "Summarize this ticket: <ticket>. Then fix it in auth.js": the document is
-// data, but a follow-up order placed AFTER it is not (Claude round 6). Only the
-// tail is re-opened: the last prose line when it stands on its own line, or the
-// last sentence when it targets a concrete file. Polite phrases inside the
-// document body ("can you check the numbers?") stay data.
+// "Summarize this ticket: <ticket>. Then fix it" -- the document is data, but
+// an order placed at its END is not (both reviewers, rounds 6-7):
+//  - the LAST SENTENCE is always checked: a then/puis/ensuite chain or a
+//    pronoun-bound action ("fix it", "corrige-le", "rotate it") is an order,
+//    with or without a file path;
+//  - trailing sign-offs ("Thanks!", "-- sent from my phone", a lone name) are
+//    skipped first so they cannot hide the order;
+//  - a BARE imperative on its own last line counts only for operational
+//    documents (ticket / issue / log / trace / error / incident); for e-mails,
+//    chats, READMEs... it is part of the text ("Please review the attached draft").
+const SIGN_OFF_RE = re(String.raw`^(?:thanks?(?: you)?|thx|cheers|regards|best(?: regards)?|kind regards|merci(?: beaucoup)?|cordialement|bien [àa] (?:toi|vous)|bonne journ[ée]e|--.*|—.*|sent from .*|envoy[ée] de(?:puis)? .*)[!.,\s]*$`);
+const NAME_ONLY_RE = /^[a-zà-öø-ÿ'-]{2,20}(?: [a-zà-öø-ÿ'-]{2,20})?[.,!]*$/;
+const OPERATIONAL_NOUN_RE = re(String.raw`\b(?:tickets?|issues?|bugs?|logs?|log lines?|traces?|stack ?traces?|errors?|incidents?|alerts?|outputs?)\b|§(?:tickets?|logs?|journal|journaux|traces?|erreurs?|incidents?|alertes?|sorties?)(?![a-zà-öø-ÿ])`);
+
 function dataNounTailClass(instr, payload, depth) {
-  const lines = payload.split('\n').map(l => l.trim()).filter(Boolean).filter(l => !LIST_ITEM_RE.test(l));
+  let lines = payload.split('\n').map(l => l.trim()).filter(Boolean).filter(l => !LIST_ITEM_RE.test(l));
+  while (lines.length > 1 && (SIGN_OFF_RE.test(lines[lines.length - 1]) || (NAME_ONLY_RE.test(lines[lines.length - 1]) && !IMPERATIVE_LINE_RE.test(lines[lines.length - 1])))) lines = lines.slice(0, -1);
   if (!lines.length) return 'simple';
   const lastLine = lines[lines.length - 1];
   const sentences = lastLine.split(/(?<=[.!?;])\s+/).filter(Boolean);
   const lastSentence = sentences[sentences.length - 1] || lastLine;
+  const dataVerb = LEADING_DATA_RE.test(instr);
+  const operational = OPERATIONAL_NOUN_RE.test(instr);
   const ownLine = lines.length >= 2;
-  const segment = ownLine ? lastLine : (FILE_PATH_RE.test(lastSentence) ? lastSentence : null);
-  if (!segment) {
+  // Explicit hand-over in the final sentence is an order -- except for data
+  // verbs (translate / rephrase / classify / extract) on a one-line payload,
+  // where that sentence is itself the text being processed.
+  const tailText = dataVerb && !ownLine ? '' : lastSentence;
+  let order = !!tailText && (DATA_CHAIN_RE.test(tailText) || PRONOUN_ACTION_RE.test(tailText));
+  // Operational documents (ticket, log...): an own last line opened by
+  // "also / please / could you" + action is an order too.
+  if (!order && operational && ownLine && !dataVerb) order = AGENT_CHAIN_RE.test(lastLine) || IMPERATIVE_LINE_RE.test(lastLine.replace(/^(?:also|aussi|and|et)[\s,]+/, ''));
+  if (!order && !dataVerb) {
+    // An imperative final sentence aimed at a concrete file, or starting a new
+    // sentence of a single-line operational payload ("Auth bypass possible. Fix the login").
+    const imperativeLast = IMPERATIVE_LINE_RE.test(lastSentence);
+    if (imperativeLast && FILE_PATH_RE.test(lastSentence)) order = true;
+    else if (imperativeLast && operational && (ownLine || sentences.length >= 2)) order = true;
+  }
+  if (!order) {
     // Short one-line payload asking a security question about OUR system.
     if (payload.length < 240 && SECURITY_RE.test(payload) && SECURITY_QUESTION_RE.test(payload) && re(String.raw`\b(?:our|my|we|us)\b|§(?:notre|nos|mon|ma|mes|on)\b`).test(payload)) return 'security';
     return 'simple';
   }
-  const dataVerb = LEADING_DATA_RE.test(instr);
-  // Items to classify are often imperative ticket titles: for data verbs only
-  // an explicit chain / pronoun-bound action counts, not a bare imperative.
-  const order = dataVerb
-    ? (DATA_CHAIN_RE.test(segment) || PRONOUN_ACTION_RE.test(segment))
-    : (AGENT_CHAIN_RE.test(segment) || PRONOUN_ACTION_RE.test(segment) || IMPERATIVE_LINE_RE.test(segment) || IMPERATIVE_LINE_RE.test(lastSentence));
-  if (!order) return 'simple';
   // An order exists: judge the whole request (the document may be about XSS...).
   const sub = depth < 2 ? classifyTask({ prompt: payload }, depth + 1).taskClass : 'small-edit';
   let cls = stricter('small-edit', sub === 'simple' ? 'small-edit' : sub);
-  if (DESTRUCTIVE_RE.test(segment)) cls = stricter(cls, 'complex');
-  if (SECURITY_RE.test(payload) && FILE_TARGET_RE.test(payload)) cls = stricter(cls, 'security');
+  if (DESTRUCTIVE_RE.test(lastSentence)) cls = stricter(cls, 'complex');
+  if (SECURITY_RE.test(payload)) cls = stricter(cls, 'security');
   return cls;
 }
 
