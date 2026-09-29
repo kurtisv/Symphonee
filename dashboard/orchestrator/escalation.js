@@ -19,6 +19,20 @@ const { isLocalProvider } = require('./local-providers');
  * 5). Here: a MISSING config keeps the app-wide defaults (same as every other
  * gate), but a config that exists and cannot be read or parsed denies.
  */
+// Strict shape check: loadSettings() "normalises" a malformed block (e.g.
+// deny: "cli:claude:spawn" as a string, deny: null) into an empty list, which
+// silently drops the user's deny rule (Codex round 6). Anything malformed denies.
+function validPermissionsBlock(p) {
+  if (p === null || typeof p !== 'object' || Array.isArray(p)) return false;
+  const permissions = require('../permissions');
+  if (p.mode !== undefined && !permissions.MODES.includes(p.mode)) return false;
+  for (const k of ['allow', 'ask', 'deny']) {
+    if (p[k] === undefined) continue;
+    if (!Array.isArray(p[k]) || !p[k].every(r => typeof r === 'string')) return false;
+  }
+  return true;
+}
+
 function fallbackPermission(configPath, cli, worktree, { readFile = (p) => require('fs').readFileSync(p, 'utf8'), exists = (p) => require('fs').existsSync(p) } = {}) {
   const permissions = require('../permissions');
   let settings;
@@ -26,7 +40,7 @@ function fallbackPermission(configPath, cli, worktree, { readFile = (p) => requi
     if (exists(configPath)) {
       const cfg = JSON.parse(readFile(configPath));
       const p = cfg && cfg.Permissions;
-      if (p !== undefined && (p === null || typeof p !== 'object' || Array.isArray(p))) return 'deny';
+      if (p !== undefined && !validPermissionsBlock(p)) return 'deny';
     }
     settings = permissions.loadSettings(configPath);
   } catch (_) {

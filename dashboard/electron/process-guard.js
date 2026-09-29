@@ -85,7 +85,7 @@ function killStaleProcesses(port) {
  * gone, which is the normal case (Chromium children die with their main
  * process) and used to make every relaunch report "could not close".
  */
-function killAndVerify(targets, { kill, isAlive = pidAlive, sleepMs = (ms) => { try { require('child_process').execSync(`ping -n 1 -w ${ms} 127.0.0.1 >nul`, { timeout: ms + 2000 }); } catch (_) {} } } = {}) {
+function killAndVerify(targets, { kill, isAlive = pidAlive, sleepMs = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (_) {} } } = {}) {
   if (!targets.length) return false;
   for (const pid of targets) { try { kill(pid); } catch (_) { /* already gone or access denied: verified below */ } }
   for (let i = 0; i < 10 && targets.some(isAlive); i++) sleepMs(200);
