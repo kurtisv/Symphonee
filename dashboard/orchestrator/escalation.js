@@ -182,6 +182,22 @@ module.exports = {
     // model (local gets exactly one attempt, chosen up-front by the router).
     if (visited.has(nextCli) || isLocalProvider(nextCli)) return this._tryEscalate(task);
     if (!this.circuitBreaker.isAvailable(nextCli)) return this._tryEscalate(task); // skip broken CLIs
+    // Asynchronous fallbacks run without a request to gate, so at least honour
+    // the permission rules: a CLI the user DENIES spawning (explicit rule, or
+    // review mode) is never started as a fallback. "ask" stays covered by the
+    // approval of the original spawn and by the AutomaticFallback setting.
+    if (this.permissionsConfigPath) {
+      let decision = 'allow';
+      try {
+        const permissions = require('../permissions');
+        decision = permissions.evaluate({ type: 'cli', value: `${nextCli}:spawn` }, permissions.loadSettings(this.permissionsConfigPath),
+          { worktree: String(task._escalationCwd || '').includes('worktree') }).decision;
+      } catch (_) { decision = 'deny'; /* cannot read the rules: fail closed */ }
+      if (decision === 'deny') {
+        this.broadcast({ type: 'orchestrator-event', event: 'fallback-blocked', taskId: task.id, from: task.cli, to: nextCli, reason: 'permission rules deny this CLI', timestamp: Date.now() });
+        return this._tryEscalate(task);
+      }
+    }
 
     this.broadcast({ type: 'orchestrator-event', event: 'task-escalate', taskId: task.id, from: task.cli, to: nextCli, timestamp: Date.now() });
 

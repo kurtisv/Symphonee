@@ -32,6 +32,8 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
   // module it was left behind, leaving gateSpawn undefined -> every gated spawn
   // route threw and hung. Defined here now, fed the real repoRoot.
   const configPath = path.join(repoRoot || path.join(__dirname, '..', '..'), 'config', 'config.json');
+  // Lets asynchronous fallbacks (escalation.js) honour the same permission rules.
+  if (orch && typeof orch === 'object') orch.permissionsConfigPath = configPath;
   async function gateSpawn(res, { cli, cwd, label, wait = true }) {
     return permissions.gate(res, { type: 'cli', value: `${cli}:spawn` }, {
       configPath,
