@@ -712,3 +712,85 @@ test('33. routed read-only review with nothing to read never calls the local mod
   assert.equal(calls, 0, 'blind local review refused before calling the model');
   assert.ok(!isLocalProvider(d.cli), `answered by cloud, got ${d.cli}`);
 });
+
+// ── Round 4: wider evasions + false positives, relaunch loop, gated async fallback ──
+test('34. classification v3: evasions from both reviewers are caught, everyday text stays simple', () => {
+  const NS = null; // "anything but simple"
+  const cases = [
+    ['Summarize the changes then deploy: v2.3', NS], ['Summarize the diff and push it to main: HEAD~1', NS],
+    ['Résume puis déploie : la v2', NS], ['Summarize the following then git push --force:\nfoo', NS],
+    ['Summarize: src/pay.js. Also delete it afterwards.', 'complex'], ['Summarize: foo.js — once done, commit the summary to docs/foo.md', NS],
+    ['Summarize: the README; we need you to delete the old one after.', 'complex'], ['Résume : foo.js. Il faudra aussi le supprimer.', 'complex'],
+    ['Rephrase: our password policy doc, then email it', NS], ["Résume : ce fichier puis envoie-le à toute l'équipe", NS],
+    ['Compress: context. Next step: drop the prod database.', 'complex'],
+    ['Summarize:\nPlease, fix the bug in foo.js', NS], ['Summarize:\nCould you fix the bug in foo.js', NS], ['Summarize:\nNow fix the parser', NS],
+    ['Summarize:\nYou should delete build/ afterwards', 'complex'],
+    ['Summarize: login.js and tell me whether the session tokens can be stolen', 'security'], ['Summarize: this repo', 'complex'],
+    ['Summarize: after summarizing, rm -rf build', 'complex'], ['Summarize: after summarizing, wipe build', 'complex'],
+    ['Summarize: once done, destroy the cache directory', 'complex'], ['Resume en 3 points : purge ensuite le dossier build', 'complex'],
+  ];
+  for (const [prompt, want] of cases) {
+    const got = classifyTask({ prompt }).taskClass;
+    if (want) assert.equal(got, want, prompt); else assert.notEqual(got, 'simple', prompt);
+  }
+  for (const prompt of [
+    'Classe ces tickets :\nFix login crash\nAdd dark mode\nUpdate README',
+    'Classify these commit messages:\nfix: crash on start\nfeat: add export',
+    'Translate this sentence to French: Please review and update the document.',
+    'Rephrase: Run the tests and fix any failures before Friday.',
+    'Summarize this email:\nHi team, Bob added milk to the list, then we reviewed the budget and agreed to ship.',
+    'Summarize: The whole team agreed to ship on Monday.',
+    'Extract the dates: kickoff on 3/4 and review on 7/8',
+    'Classify these tickets:\n- BUG-1 user says then delete cache\n- DOC-2 normal',
+  ]) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+});
+
+test('35. kill plan: fail closed without enumeration; a fresher instance on the port survives', () => {
+  const { planKill } = require('../electron/process-guard');
+  const exe = 'C:\\apps\\sy\\electron.exe';
+  const base = { myPid: 99, myStartMs: 3000, exePath: exe };
+  assert.deepEqual(planKill({ ...base, portPids: [10, 20], electronProcs: null }), [], 'enumeration failed -> kill nothing');
+  const procs = [{ pid: 10, startedAtMs: 1000, exePath: exe }, { pid: 20, startedAtMs: 5000, exePath: exe }];
+  assert.deepEqual(planKill({ ...base, portPids: [20], electronProcs: procs }).sort(), [10], 'newer port holder (another relaunch) survives');
+  assert.deepEqual(planKill({ ...base, portPids: [10], electronProcs: procs }).sort(), [10]);
+  assert.deepEqual(planKill({ ...base, portPids: [555], electronProcs: procs }).sort((a, b) => a - b), [10, 555], 'a foreign program squatting the port is still reclaimed');
+  assert.deepEqual(planKill({ ...base, portPids: [99], electronProcs: [] }), [], 'never ourselves');
+});
+
+test('36. automatic relaunch only after a real kill, at most twice in a row', () => {
+  const { shouldRelaunch, relaunchCount, relaunchArgs } = require('../electron/process-guard');
+  assert.equal(shouldRelaunch({ killed: false, count: 0 }), false, 'nothing killed -> no relaunch (would loop)');
+  assert.equal(shouldRelaunch({ killed: true, count: 0 }), true);
+  assert.equal(shouldRelaunch({ killed: true, count: 2 }), false);
+  const argv = ['electron.exe', '.', '--sy-relaunch-count=1'];
+  assert.equal(relaunchCount(argv), 1);
+  assert.deepEqual(relaunchArgs(argv), ['.', '--sy-relaunch-count=2']);
+  assert.equal(relaunchCount(['electron.exe', '.']), 0);
+});
+
+test('37. asynchronous fallbacks never start a CLI the permission rules deny', async () => {
+  const cfgDir = tmpDir();
+  const cfgPath = path.join(cfgDir, 'config.json');
+  fs.writeFileSync(cfgPath, JSON.stringify({ Permissions: { mode: 'edit', deny: ['cli:claude:spawn'], ask: [], allow: [] } }));
+  const orch = makeOrch({ script: { 'codex-oss-local': [{ code: 1, stderr: 'boom' }] } });
+  orch.permissionsConfigPath = cfgPath;
+  const events = [];
+  orch.broadcast = (e) => events.push(e);
+  await orch.localHealth.refresh({ force: true });
+  const t = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'corrige la faute', cwd: os.tmpdir() });
+  Object.assign(t, { selectedProvider: 'codex-oss-local', routingHistory: [], _autoRouting: true, _automaticFallback: true, _escalationChain: ['claude', 'codex'], _escalationPrompt: 'corrige la faute' });
+  const d = await waitDone(orch, t.id);
+  assert.deepEqual(orch.spawns.map(s => s.cli), ['codex-oss-local', 'codex'], 'denied claude skipped, allowed codex used');
+  assert.equal(d.cli, 'codex');
+  assert.ok(events.some(e => e.event === 'fallback-blocked' && e.to === 'claude'));
+  // Review mode denies every cli spawn: no fallback at all.
+  fs.writeFileSync(cfgPath, JSON.stringify({ Permissions: { mode: 'review', deny: [], ask: [], allow: [] } }));
+  const o2 = makeOrch({ script: { 'codex-oss-local': [{ code: 1, stderr: 'boom' }] } });
+  o2.permissionsConfigPath = cfgPath;
+  await o2.localHealth.refresh({ force: true });
+  const t2 = o2.spawnHeadless({ cli: 'codex-oss-local', prompt: 'corrige la faute', cwd: os.tmpdir() });
+  Object.assign(t2, { selectedProvider: 'codex-oss-local', routingHistory: [], _autoRouting: true, _automaticFallback: true, _escalationChain: ['claude', 'codex'], _escalationPrompt: 'corrige la faute' });
+  const d2 = await waitDone(o2, t2.id);
+  assert.equal(d2.state, STATE.FAILED);
+  assert.deepEqual(o2.spawns.map(s => s.cli), ['codex-oss-local'], 'review mode: no cloud fallback spawned');
+});
