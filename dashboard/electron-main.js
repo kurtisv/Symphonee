@@ -118,7 +118,27 @@ if (!gotLock) {
   // itself" report). Only a refused connection, confirmed across a few
   // spaced probes, counts as a zombie; a timeout just focuses/quits.
   const { probeExistingInstance } = require('./electron/instance-probe');
-  const restart = () => { killStaleProcesses(PORT); setTimeout(() => { app.relaunch(); app.exit(0); }, 800); };
+  // Relaunch only if a stale process was really killed, and at most twice in a
+  // row: if nothing could be killed (enumeration failed, access denied), the
+  // zombie still holds the lock and relaunching would loop forever, windowless.
+  const { relaunchCount, relaunchArgs, shouldRelaunch } = require('./electron/process-guard');
+  const restart = async () => {
+    const killed = killStaleProcesses(PORT);
+    if (shouldRelaunch({ killed, count: relaunchCount() })) {
+      setTimeout(() => { app.relaunch({ args: relaunchArgs() }); app.exit(0); }, 800);
+      return;
+    }
+    try {
+      await app.whenReady();
+      dialog.showMessageBoxSync({
+        type: 'error', title: 'Symphonee',
+        message: "Symphonee est deja ouvert mais bloque, et n'a pas pu etre ferme automatiquement.",
+        detail: "Fermez les processus electron.exe de Symphonee dans le Gestionnaire des taches, puis relancez-le.",
+        buttons: ['OK'], noLink: true,
+      });
+    } catch (_) {}
+    app.exit(0);
+  };
   probeExistingInstance({ host: HOST, port: PORT }).then(async (verdict) => {
     if (verdict === 'dead') {
       console.log('Stale instance detected (port refused for the whole startup window) -- killing and relaunching...');
@@ -288,8 +308,9 @@ if (!gotLock) {
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
         console.log(`Port ${PORT} in use -- killing stale processes and relaunching...`);
-        if (killStaleProcesses(PORT)) {
-          setTimeout(() => { app.relaunch(); app.exit(0); }, 800);
+        const pg = require('./electron/process-guard');
+        if (pg.shouldRelaunch({ killed: killStaleProcesses(PORT), count: pg.relaunchCount() })) {
+          setTimeout(() => { app.relaunch({ args: pg.relaunchArgs() }); app.exit(0); }, 800);
           return;
         }
         dialog.showErrorBox('Symphonee', `Port ${PORT} is already in use.\n\nClose any other Symphonee instances and try again.`);

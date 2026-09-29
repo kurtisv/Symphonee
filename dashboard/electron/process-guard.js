@@ -30,32 +30,50 @@ function listElectronProcesses(exeName, execSync) {
  * Kill anything holding port 3800 and/or stale Electron instances of this exe.
  * Returns true if something was killed.
  */
+/**
+ * Decide what to kill. Pure (testable).
+ *  - Cannot enumerate our processes safely -> kill NOTHING (fail closed).
+ *  - Stale instances of our exe (started before us) -> kill.
+ *  - Port holders: a holder that is one of OUR exe's processes is only killed
+ *    if it is stale (a fresher instance that just bound the port survives);
+ *    any other program squatting the port is killed as before.
+ */
+function planKill({ portPids = [], electronProcs = null, myPid, myStartMs, exePath }) {
+  if (!Array.isArray(electronProcs)) return [];
+  const norm = (p) => String(p || '').toLowerCase();
+  const stale = new Set(selectStaleElectron(electronProcs, { myPid, myStartMs, exePath }));
+  const ours = new Set(electronProcs.filter(p => norm(p.exePath) === norm(exePath)).map(p => p.pid));
+  const out = new Set(stale);
+  for (const pid of portPids) {
+    if (pid === myPid) continue;
+    if (ours.has(pid) && !stale.has(pid)) continue;
+    out.add(pid);
+  }
+  return [...out];
+}
+
 function killStaleProcesses(port) {
   if (process.platform !== 'win32') return false;
   const { execSync } = require('child_process');
   const myPid = process.pid;
   const myStartMs = Date.now() - process.uptime() * 1000;
-  const pidsToKill = new Set();
 
-  // Strategy 1: find PIDs holding port 3800 via netstat
+  const portPids = [];
   try {
     const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf8', timeout: 5000 });
     for (const line of out.trim().split('\n')) {
       const m = line.trim().match(/\s(\d+)$/);
-      if (m && Number(m[1]) !== myPid) pidsToKill.add(m[1]);
+      if (m) portPids.push(Number(m[1]));
     }
   } catch (_) { /* no listeners on port -- fine */ }
 
-  // Strategy 2: other instances of THIS executable that were already running
-  // when we started. Previously every electron.exe was killed -- including an
-  // instance a parallel relaunch had just started, and other Electron apps.
-  try {
-    const exeName = path.basename(process.execPath);
-    for (const pid of selectStaleElectron(listElectronProcesses(exeName, execSync), { myPid, myStartMs, exePath: process.execPath })) {
-      pidsToKill.add(String(pid));
-    }
-  } catch (_) { /* cannot enumerate safely -> kill nothing by name */ }
+  let electronProcs = null;
+  try { electronProcs = listElectronProcesses(path.basename(process.execPath), execSync); } catch (_) { electronProcs = null; }
 
+  // Synchronous on purpose: callers are a second instance that is about to exit
+  // (no window, no server) or startup before the server listens, so blocking
+  // here cannot freeze anything the user sees; the relaunch must follow the kill.
+  const pidsToKill = new Set(planKill({ portPids, electronProcs, myPid, myStartMs, exePath: process.execPath }).map(String));
   if (pidsToKill.size) {
     try {
       execSync(`taskkill /F ${[...pidsToKill].map(p => '/PID ' + p).join(' ')}`, { encoding: 'utf8', timeout: 5000 });
@@ -66,4 +84,17 @@ function killStaleProcesses(port) {
   return false;
 }
 
-module.exports = { killStaleProcesses, selectStaleElectron, listElectronProcesses };
+/** Relaunch bookkeeping: how many automatic relaunches in a row (argv flag). */
+const RELAUNCH_FLAG = '--sy-relaunch-count=';
+function relaunchCount(argv = process.argv) {
+  const a = argv.find(x => String(x).startsWith(RELAUNCH_FLAG));
+  return a ? Number(a.slice(RELAUNCH_FLAG.length)) || 0 : 0;
+}
+function relaunchArgs(argv = process.argv) {
+  const n = relaunchCount(argv);
+  return [...argv.slice(1).filter(x => !String(x).startsWith(RELAUNCH_FLAG)), `${RELAUNCH_FLAG}${n + 1}`];
+}
+/** Relaunch only after a successful kill, and never more than twice in a row. */
+function shouldRelaunch({ killed, count, max = 2 }) { return !!killed && count < max; }
+
+module.exports = { killStaleProcesses, selectStaleElectron, listElectronProcesses, planKill, relaunchCount, relaunchArgs, shouldRelaunch };
