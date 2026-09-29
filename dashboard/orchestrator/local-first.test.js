@@ -1008,3 +1008,34 @@ test('47. tail trimming stays linear on many short name-like lines', () => {
   classifyTask({ prompt: p });
   assert.ok(Date.now() - t0 < 1000, `${Date.now() - t0}ms`);
 });
+
+// ── Round 9: signature blocks / closing sentences cannot hide an order ──
+test('48. an order followed by a real signature block or a closing sentence is still found', () => {
+  for (const prompt of [
+    'Summarize this ticket:\nLogin crashes.\nFix it.\nThanks!\nBob Smith\nACME Corp',
+    'Summarize this ticket:\nLogin crashes.\nFix it.\n\nThanks,\nBob\nSenior Engineer',
+    'Summarize this ticket:\nLogin crashes.\nFix it.\nBob (support)',
+    'Summarize this ticket:\nLogin crashes.\nFix it.\nTIA',
+    'Summarize this ticket:\nLogin crashes.\nFix it.\nLet me know if you need anything.',
+    'Summarize this ticket: login crashes. Fix it. Thanks!',
+    'Summarize this ticket: login crashes. Please fix it. Thanks, Bob',
+    'Résume ce ticket :\nLe login plante.\nCorrige-le.\nMerci,\nPaul Martin\nSupport',
+  ]) assert.notEqual(classifyTask({ prompt }).taskClass, 'simple', prompt);
+  assert.equal(classifyTask({ prompt: 'Summarize this ticket:\nAuth bypass possible.\nPatch it.\nThanks,\nBob\nSecurity team' }).taskClass, 'security');
+  for (const prompt of [
+    'Summarize this email:\nHi team,\nThe numbers are in.\nLet me know if you have questions.\nCheers,\nBob\nFinance',
+    'Summarize this ticket:\nUser says the app is slow.\nThanks,\nBob',
+    'Summarize this ticket:\nI will fix it tomorrow.',
+  ]) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+});
+
+test('49. "I need you to ..." / "j\'ai besoin que tu ..." are orders; "I need you to know..." is not', () => {
+  for (const v of ['fix this', 'patch it', 'rotate it', 'delete old logs', 'ban it', 'disable it', 'sanitize it', 'update it']) {
+    assert.equal(classifyTask({ prompt: `Summarize this ticket: SQL injection in login. I need you to ${v}` }).taskClass, 'security', v);
+  }
+  assert.equal(classifyTask({ prompt: "Résume ce ticket : injection SQL. J'ai besoin que tu corriges ça" }).taskClass, 'security');
+  assert.notEqual(classifyTask({ prompt: 'Summarize this ticket: login slow. I would like you to fix it' }).taskClass, 'simple');
+  for (const prompt of ['Summarize this email:\nHi,\nI need you to know the release slipped.\nBob', 'Summarize this ticket: I need you to understand the context first.']) {
+    assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+  }
+});
