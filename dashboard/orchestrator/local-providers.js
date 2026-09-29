@@ -317,8 +317,11 @@ function killProcessTree(proc, impl = null) {
   if (!proc) return;
   if (proc.pid && impl) return impl(proc.pid);
   if (proc.pid && process.platform === 'win32') {
+    // Asynchronous: must not block the server event loop (spawnSync could hang
+    // it for up to 10s on a slow taskkill).
     try {
-      require('child_process').spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, timeout: 10000 });
+      const k = require('child_process').spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      k.on('error', () => { try { proc.kill('SIGTERM'); } catch (_) {} });
       return;
     } catch (_) { /* fall back to a plain kill */ }
   }

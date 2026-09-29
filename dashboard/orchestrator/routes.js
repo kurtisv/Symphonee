@@ -282,7 +282,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         // Direct local models have no tools: any task that needs repo content
         // (a file named, or a read-only review) must bring it inline or fail over.
         const needsContent = !!(routing && routing.characteristics && (routing.characteristics.repoReadRequired || routing.taskClass === 'readonly-review'));
-        task = orch.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace, requiresRepoContent: needsContent });
+        task = orch.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace, requiresRepoContent: needsContent, noFallback: !!(taskHints && taskHints.noFallback) });
       } else if (cli === 'gemini-api' && typeof orch.spawnGeminiApi === 'function') {
         task = orch.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space: resolvedSpace });
       } else if (cli === 'jules' && typeof orch.spawnJules === 'function') {
@@ -294,7 +294,9 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
       } else if (useVisible) {
         task = orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
       } else {
-        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace, expectsRepoChanges: !!(isLocalProvider(cli) && (!routing || (routing.characteristics && routing.characteristics.repoWriteRequired))) });
+        // Routed: the router's write verdict. Unrouted: spawnHeadless infers it.
+        const expectsRepoChanges = routing && isLocalProvider(cli) ? !!(routing.characteristics && routing.characteristics.repoWriteRequired) : undefined;
+        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace, expectsRepoChanges, noFallback: !!(taskHints && taskHints.noFallback) });
       }
       return task;
       };
@@ -304,6 +306,9 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
       } catch (err) {
         // Synchronous launch failure of a LOCAL provider -> cloud, same as a failed prep.
         if (!(routing && isLocalProvider(cli) && failLocalBeforeLaunch(err.message))) throw err;
+        // The permission prompt was for the local provider: ask again for the
+        // cloud one that will actually run.
+        if (!await gateSpawn(res, { cli, cwd, label: `Spawn ${cli} worker (fallback: local provider unavailable)`, wait: !autoPermit })) return;
         task = spawnFor(cli);
       }
       const payload = orch._serializeTask(task);

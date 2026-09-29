@@ -148,7 +148,10 @@ const INTENTS = {
   'small-edit': {
     description: 'Small agentic change: 1-2 files, a shell command, a targeted test run.',
     prefer: [
-      { cli: 'codex-oss-local', model: 'qwen2.5-coder-1.5b', weight: 11, reason: 'local-first: Codex OSS on LM Studio' },
+      // OPT-IN ONLY: skipped in recommend() unless LocalFirst.enableCodexOssSmallEdit
+      // is true (default off since the real 1.5B run: 273s, "DONE", no edit).
+      // With the default config the first choice here is codex gpt-5.4-mini.
+      { cli: 'codex-oss-local', model: 'qwen2.5-coder-1.5b', weight: 11, reason: 'local-first: Codex OSS on LM Studio (opt-in)' },
       { cli: 'codex', model: 'gpt-5.4-mini', weight: 9 },
       { cli: 'claude', model: 'sonnet-4-6', weight: 8 },
     ],

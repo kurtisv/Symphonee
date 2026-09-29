@@ -10,6 +10,7 @@ const { STATE } = require('./state');
 const { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER } = require('./cli-config');
 const { classifyError, retryDelay, maxRetriesFor } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
+const { classifyTask } = require('./task-roles');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
 const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync } = require('./gemini-runtime');
 const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint, isLoopbackUrl, prepareIsolatedHome, killProcessTree } = require('./local-providers');
@@ -70,10 +71,10 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] — auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, _retryAttempt = 0 }) {
     cli = canonicalProviderId(cli);
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
-      return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent });
+      return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
     }
     const localSpec = getLocalProvider(cli);
     if (localSpec) {
@@ -178,6 +179,12 @@ module.exports = {
       timeout: localSpec ? timeout : 0,  // Cloud: never timeout. Local: bounded (fails over).
     });
     task._originalPrompt = originalPrompt;
+    // Local runs from ANY caller (followup, graph runs, dependencies, brain picks)
+    // get the cloud safety net, not only /spawn: one local attempt, then cloud.
+    if (localSpec && _retryAttempt === 0) this._attachLocalFallback(task, originalPrompt, { cwd, noFallback });
+    // Whether a local agent must leave a diff: explicit from the router, else
+    // inferred from the task itself (a read-only question must not need one).
+    const expectWrite = expectsRepoChanges !== undefined ? !!expectsRepoChanges : !!(localSpec && classifyTask({ prompt: originalPrompt }).characteristics.repoWriteRequired);
     task._firstStartedAt = task._firstStartedAt || Date.now();
 
     // Build final args based on how this CLI expects the prompt
@@ -317,7 +324,7 @@ module.exports = {
     // Local write task: remember the working tree so a "success" that changed
     // nothing can be treated as unusable output (-> cloud) instead of counted as done.
     let treeBefore = null;
-    if (localSpec && expectsRepoChanges) {
+    if (localSpec && expectWrite) {
       try { treeBefore = (this._gitTreeFingerprint || gitTreeFingerprint)(cwd || process.cwd()); } catch (_) { treeBefore = null; }
       // Outside a git repo nothing can prove the write happened: fail closed.
       task.execution.changeCheck = treeBefore ? 'armed' : 'unverifiable-not-a-git-repo';
@@ -386,7 +393,7 @@ module.exports = {
         } else {
           task.execution.changeCheck = 'passed';
         }
-      } else if (code === 0 && localSpec && expectsRepoChanges && !treeBefore) {
+      } else if (code === 0 && localSpec && expectWrite && !treeBefore) {
         code = -1;
         stderr = 'unusable local output: write task outside a git repository cannot be verified';
         task.execution.changeCheck = 'failed-unverifiable';

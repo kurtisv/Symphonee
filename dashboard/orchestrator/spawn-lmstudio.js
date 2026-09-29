@@ -10,7 +10,7 @@ const http = require('http');
 const { STATE } = require('./state');
 const {
   getLocalProvider, localFirstConfig, isLoopbackUrl, estimateTokens, requiredContextTokens,
-  inlineReferencedFiles, ensureLoaded,
+  inlineReferencedFiles, ensureLoaded, LOCAL_PROVIDERS, isLocalProvider,
 } = require('./local-providers');
 
 const SYSTEM_PROMPT = 'You are a precise assistant running locally. Answer the task directly and concisely. ' +
@@ -66,6 +66,29 @@ function hasInlineContent(prompt) {
 
 module.exports = {
   /**
+   * Give a local task the cloud safety net when its caller did not route it
+   * (explicit local cli from followup / graph runs / dependencies / brain).
+   * Routes.js overwrites these fields for /spawn; this is the default for
+   * everyone else. Never local -> local; respects AutomaticFallback and
+   * MaxFallbackAttempts; a no-op when no cloud provider is usable.
+   */
+  _attachLocalFallback(task, prompt, { cwd, noFallback = false } = {}) {
+    if (noFallback || task._autoRouting || !this.taskRouter) return;
+    const cfg = (this.getConfig && this.getConfig()) || {};
+    if (cfg.AutomaticFallback === false || cfg.EnableAutomaticFallback === false) return;
+    let r;
+    try { r = this.taskRouter.selectProvider({ prompt }, { exclude: Object.keys(LOCAL_PROVIDERS) }); } catch (_) { return; }
+    const cap = Math.max(0, Math.min(3, Number(cfg.MaxFallbackAttempts === undefined ? 3 : cfg.MaxFallbackAttempts)));
+    const chain = [...new Set([r.provider, ...(r.fallbackChain || [])])].filter(id => !isLocalProvider(id)).slice(0, cap);
+    if (!chain.length) return;
+    Object.assign(task, {
+      _autoRouting: true, _automaticFallback: true, _escalationChain: chain,
+      _escalationPrompt: prompt, _escalationCwd: cwd, taskClass: task.taskClass || r.taskClass,
+      selectedRole: task.selectedRole || r.selectedRole, routingHistory: task.routingHistory || [],
+    });
+  },
+
+  /**
    * Make an agentic local provider (codex-oss-local) ready BEFORE its CLI is
    * spawned: fresh LM Studio health, context fit, RAM guard, and an explicit
    * load at full context (a JIT load would use LM Studio's small default and
@@ -90,7 +113,7 @@ module.exports = {
     return { ok: true };
   },
 
-  spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent = false } = {}) {
+  spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent = false, noFallback = false } = {}) {
     const lp = getLocalProvider(cli);
     if (!lp || lp.kind !== 'lmstudio-direct') throw new Error(`spawnLmStudio: "${cli}" is not a direct LM Studio provider`);
     const cfg = localFirstConfig((this.getConfig && this.getConfig()) || {});
@@ -102,6 +125,7 @@ module.exports = {
     task.state = STATE.RUNNING;
     task.startedAt = Date.now();
     task.execution = { locality: 'local', backend: 'lmstudio', endpoint: cfg.baseUrl, model: lp.model, provider: cli, cloudCredentialsPresent: false, attempts: 1 };
+    this._attachLocalFallback(task, prompt, { cwd, noFallback });
     this.heartbeats.set(task.id, Date.now());
     this._broadcastTaskUpdate(task);
 
