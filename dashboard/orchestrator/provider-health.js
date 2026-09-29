@@ -1,6 +1,7 @@
 'use strict';
 
 const { CLI_CONFIG, HEADLESS_FLAGS } = require('./cli-config');
+const { isLocalProvider, canonicalProviderId, localFirstConfig } = require('./local-providers');
 
 const ERROR_TYPES = Object.freeze({
   AUTH_ERROR: 'AUTH_ERROR', RATE_LIMIT: 'RATE_LIMIT', QUOTA_EXHAUSTED: 'QUOTA_EXHAUSTED',
@@ -18,6 +19,10 @@ const DEFAULT_CAPABILITIES = {
   copilot: ['coding', 'review', 'analysis'],
   grok: ['analysis', 'summarization', 'classification'],
   qwen: ['coding', 'analysis', 'cheap-tasks'],
+  'codex-oss-local': ['coding', 'repo-edit', 'tests', 'shell', 'cheap-tasks', 'offline', 'local'],
+  'claude-local': ['coding', 'repo-edit', 'tests', 'docs', 'cheap-tasks', 'offline', 'local'],
+  'lmstudio-qwen-small': ['summarization', 'classification', 'extraction', 'context-compression', 'cheap-tasks', 'offline', 'local'],
+  'lmstudio-qwen-review': ['analysis', 'review', 'explanation', 'cheap-tasks', 'offline', 'local'],
 };
 
 const DEFAULTS = {
@@ -30,6 +35,12 @@ const DEFAULTS = {
   copilot: { costTier: 1, speedTier: 4, qualityTier: 3, type: 'cli' },
   grok: { costTier: 2, speedTier: 4, qualityTier: 3, type: 'cli' },
   qwen: { costTier: 2, speedTier: 4, qualityTier: 3, type: 'cli' },
+  // Local providers: costTier 0 (free), type 'local'. Quality is deliberately
+  // low so quality gates keep them off complex / security work.
+  'codex-oss-local': { costTier: 0, speedTier: 1, qualityTier: 2, type: 'local' },
+  'claude-local': { costTier: 0, speedTier: 1, qualityTier: 2, type: 'local' },
+  'lmstudio-qwen-small': { costTier: 0, speedTier: 4, qualityTier: 2, type: 'local' },
+  'lmstudio-qwen-review': { costTier: 0, speedTier: 3, qualityTier: 3, type: 'local' },
 };
 
 function classifyProviderError(error) {
@@ -50,7 +61,11 @@ function isFailoverEligible(type) {
 
 function buildProviderRegistry({ config = {}, availability = {}, now = Date.now() } = {}) {
   const enabledList = Array.isArray(config.OrchestrateCliList) && config.OrchestrateCliList.length
-    ? new Set(config.OrchestrateCliList) : null;
+    ? new Set(config.OrchestrateCliList.map(canonicalProviderId)) : null;
+  // Local providers are governed by LocalFirst.enabled (default on), not by the
+  // cloud CLI allow-list: they cost nothing and are gated by the live LM Studio
+  // health check instead.
+  const localEnabled = localFirstConfig(config).enabled;
   const result = {};
   for (const id of Object.keys(CLI_CONFIG)) {
     const meta = CLI_CONFIG[id] || {};
@@ -58,13 +73,14 @@ function buildProviderRegistry({ config = {}, availability = {}, now = Date.now(
     const prior = availability[id] || {};
     const cooldownUntil = Number(prior.cooldownUntil || 0);
     result[id] = {
-      id, enabled: enabledList ? enabledList.has(id) : prior.enabled !== false,
+      id, enabled: isLocalProvider(id) ? (localEnabled && prior.enabled !== false) : enabledList ? enabledList.has(id) : prior.enabled !== false,
+      locality: isLocalProvider(id) ? 'local' : 'cloud',
       available: prior.available !== undefined ? !!prior.available : true,
       type: d.type, capabilities: [...(prior.capabilities || DEFAULT_CAPABILITIES[id] || [])],
       costTier: prior.costTier || d.costTier, speedTier: prior.speedTier || d.speedTier,
       qualityTier: prior.qualityTier || d.qualityTier,
-      supportsCodeChanges: prior.supportsCodeChanges !== undefined ? !!prior.supportsCodeChanges : ['codex', 'claude', 'gemini', 'antigravity', 'copilot', 'qwen'].includes(id),
-      supportsRepo: prior.supportsRepo !== undefined ? !!prior.supportsRepo : id !== 'gemini-api',
+      supportsCodeChanges: prior.supportsCodeChanges !== undefined ? !!prior.supportsCodeChanges : ['codex', 'claude', 'gemini', 'antigravity', 'copilot', 'qwen', 'codex-oss-local', 'claude-local'].includes(id),
+      supportsRepo: prior.supportsRepo !== undefined ? !!prior.supportsRepo : !['gemini-api', 'lmstudio-qwen-small', 'lmstudio-qwen-review'].includes(id),
       supportsLongRunning: prior.supportsLongRunning !== undefined ? !!prior.supportsLongRunning : id === 'jules',
       usage: { ...(prior.usage || {}) },
       health: prior.health || 'healthy', reason: prior.reason || null, cooldownUntil: cooldownUntil > now ? cooldownUntil : 0,
@@ -76,8 +92,8 @@ function buildProviderRegistry({ config = {}, availability = {}, now = Date.now(
 }
 
 class ProviderHealthManager {
-  constructor({ getConfig = () => ({}), cooldownMs = 5 * 60 * 1000, availability = {}, now = () => Date.now() } = {}) {
-    this.getConfig = getConfig; this.cooldownMs = cooldownMs; this.now = now;
+  constructor({ getConfig = () => ({}), cooldownMs = 5 * 60 * 1000, availability = {}, now = () => Date.now(), localHealth = null } = {}) {
+    this.getConfig = getConfig; this.cooldownMs = cooldownMs; this.now = now; this.localHealth = localHealth;
     this.providers = buildProviderRegistry({ config: getConfig(), availability, now: now() });
   }
   refresh() { this.providers = buildProviderRegistry({ config: this.getConfig(), availability: this.providers, now: this.now() }); return this.providers; }
@@ -86,7 +102,15 @@ class ProviderHealthManager {
     const p = this.providers[id];
     if (!p || !p.enabled || !p.available) return false;
     if (!manual && p.cooldownUntil && p.cooldownUntil > this.now()) return false;
+    // Local providers additionally need a healthy LM Studio. No health source
+    // (or not checked yet) means unavailable: fail closed to cloud.
+    if (isLocalProvider(id)) return !!(this.localHealth && this.localHealth.eligibility(id).ok);
     return true;
+  }
+  localEligibility(id, opts) {
+    if (!isLocalProvider(id)) return { ok: true };
+    if (!this.localHealth) return { ok: false, reason: 'no-local-health-source' };
+    return this.localHealth.eligibility(id, opts);
   }
   recordUsage(id, usage = {}) { const p = this.providers[id]; if (!p) return; p.usage = { ...p.usage, ...usage }; }
   recordOutcome(id, { ok, error, usage } = {}) {

@@ -118,6 +118,18 @@ function classifyError(error, cli) {
 const MAX_RETRIES = 2;
 const RETRY_BASE_MS = 3000;
 
+// Differentiated retry policy. Every LOCAL provider gets 0 same-provider
+// retries (exactly one attempt): a small local model that failed once will
+// almost always fail again, and each attempt can cost minutes, so it fails over
+// to cloud immediately instead. Cloud providers keep the global MAX_RETRIES.
+const { isLocalProvider } = require('./local-providers');
+const LOCAL_MAX_RETRIES = 0;
+const MAX_RETRIES_BY_CLI = {};
+function maxRetriesFor(cli) {
+  if (isLocalProvider(cli)) return LOCAL_MAX_RETRIES;
+  return Object.prototype.hasOwnProperty.call(MAX_RETRIES_BY_CLI, cli) ? MAX_RETRIES_BY_CLI[cli] : MAX_RETRIES;
+}
+
 function retryDelay(attempt) {
   // Exponential backoff with jitter: base * 2^attempt + random(0..1000)
   return RETRY_BASE_MS * Math.pow(2, attempt) + Math.floor(Math.random() * 1000);
@@ -146,6 +158,6 @@ function scoreResult(result) {
 
 module.exports = {
   CircuitBreaker, classifyError, retryDelay, scoreResult,
-  MAX_RETRIES, RETRY_BASE_MS, QUALITY_GATES,
+  MAX_RETRIES, LOCAL_MAX_RETRIES, MAX_RETRIES_BY_CLI, maxRetriesFor, RETRY_BASE_MS, QUALITY_GATES,
   CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN, CIRCUIT_BREAKER_HALF_OPEN_AFTER,
 };

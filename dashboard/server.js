@@ -247,7 +247,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/models/recommend' && req.method === 'POST') {
       const body = await readBody(req);
-      return json(res, modelRouter.recommend({ ...body, configPath }));
+      // Live LM Studio health so local recommendations are only made when the
+      // local model can actually take the task.
+      let localHealth = null;
+      try { localHealth = orchestrator && orchestrator.localHealth; if (localHealth) await localHealth.refresh(); } catch (_) { localHealth = null; }
+      return json(res, modelRouter.recommend({ ...body, configPath, localHealth }));
     }
 
     // ── Hybrid Search ─────────────────────────────────────────────────────

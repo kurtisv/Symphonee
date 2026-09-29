@@ -20,6 +20,8 @@ const { CircuitBreaker } = require('./orchestrator/reliability');
 const { ProviderHealthManager } = require('./orchestrator/provider-health');
 const { TaskRouter } = require('./orchestrator/task-router');
 const { ProviderPerformanceStore } = require('./orchestrator/provider-performance');
+const { LocalHealth } = require('./orchestrator/local-providers');
+const { RoutingTelemetry } = require('./orchestrator/routing-telemetry');
 const { registerOrchestratorRoutes } = require('./orchestrator/routes');
 
 // ── Orchestrator class ───────────────────────────────────────────────────────
@@ -60,7 +62,11 @@ class Orchestrator extends EventEmitter {
 
     /** @type {CircuitBreaker} per-CLI circuit breaker */
     this.circuitBreaker = new CircuitBreaker();
-    this.providerHealth = new ProviderHealthManager({ getConfig: this.getConfig });
+    // LM Studio health for local-first routing (local providers are unavailable
+    // until a probe says otherwise: fail closed to cloud).
+    this.localHealth = new LocalHealth({ getConfig: this.getConfig });
+    this.routingTelemetry = new RoutingTelemetry({ file: path.join(workspaceDir, 'routing-telemetry.jsonl') });
+    this.providerHealth = new ProviderHealthManager({ getConfig: this.getConfig, localHealth: this.localHealth });
     this.performance = new ProviderPerformanceStore({ file: path.join(workspaceDir, 'provider-performance.json') });
     this.taskRouter = new TaskRouter({ health: this.providerHealth, performance: this.performance, getConfig: this.getConfig });
 
@@ -96,6 +102,7 @@ Object.assign(
   require('./orchestrator/spawn-visible'),  // visible PTY spawn with interactive watcher
   require('./orchestrator/spawn-jules'),    // Google Jules cloud remote worker
   require('./orchestrator/spawn-gemini-api'), // Google Gemini Developer API remote worker
+  require('./orchestrator/spawn-lmstudio'),   // direct local LM Studio worker + local provider prep
 );
 
 // ── Route mounting ───────────────────────────────────────────────────────────
@@ -117,6 +124,9 @@ function mountOrchestrator(addRoute, json, { terminals, broadcast, repoRoot, cre
 
   // Auto-cleanup tasks older than 1 hour every 30 minutes (preserves recent results)
   setInterval(() => orch.cleanup(60 * 60 * 1000), 30 * 60 * 1000).unref();
+  // Keep the LM Studio snapshot warm (one cheap GET on loopback every 30s).
+  orch.localHealth.refresh().catch(() => {});
+  setInterval(() => { orch.localHealth.refresh().catch(() => {}); }, 30 * 1000).unref();
 
   registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast, getUiContext, repoRoot });
   return orch;

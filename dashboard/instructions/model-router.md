@@ -29,6 +29,9 @@ Feed the returned `cli` + `model` into your spawn body (`POST /api/orchestrator/
 - `social-live` — live X/Twitter context
 - `parallel-fanout` — one of N cheap workers
 - `large-context` — input > 200k tokens (auto-promoted if `contextTokens` passed)
+- `context-compression` — compress / condense a context packet (local first)
+- `code-review-readonly` — read-only code reading / simple review (local 7B first)
+- `small-edit` — 1-2 file edit, a shell command, a targeted test (Codex OSS local first)
 
 Budget flag (optional): `cheap`, `default`, `premium`.
 
@@ -39,3 +42,57 @@ Full catalog: `curl -s http://127.0.0.1:3800/api/models/catalog`
 - User explicitly asked for a specific CLI or model
 - The intent is already obvious from a previous router call in this session
 - You're testing the router itself
+- The task fits the LOCAL DIRECT tier below (skip the router *and* every CLI)
+
+## Local tier -- LOCAL-FIRST routing (built into the orchestrator)
+
+This machine runs LM Studio on `http://127.0.0.1:1234` with Qwen2.5-Coder. The orchestrator
+routes to it automatically: spawn with `"cli": "auto"` and the router picks by **capability
+class**, local first when the local model can actually do the job.
+
+Local providers (locality is explicit in `orchestrator/local-providers.js`; `qwen` is Qwen Code
+on DashScope = CLOUD, never local):
+
+| Provider id | What | Used for |
+|---|---|---|
+| `lmstudio-qwen-small` | direct LM Studio, Qwen2.5-Coder 1.5B | summary, extraction, classification, rephrasing, context compression |
+| `lmstudio-qwen-review` | direct LM Studio, Qwen2.5-Coder 7B | read-only review / explanation of content that fits 32k |
+| `codex-oss-local` | `codex exec --oss --local-provider lmstudio` (1.5B) | NOT auto-routed by default (measured: 273s then "DONE" with no edit). Opt in with `LocalFirst.enableCodexOssSmallEdit: true` |
+| `claude-local` | Claude Code on LM Studio | explicit opt-in only, never auto-routed |
+
+Routing matrix:
+
+| Task class | Primary | Fallback | Retry policy |
+|---|---|---|---|
+| simple | `lmstudio-qwen-small` | cheapest capable cloud, then premium | 1 local attempt, then cloud |
+| readonly-review | `lmstudio-qwen-review` | capable cloud (claude/codex) | 1 local attempt, then cloud |
+| small-edit (edit, tests + fix) | codex / claude cloud directly | next cloud | cloud policy |
+| complex | cloud (quality >= 4) directly | next cloud | cloud policy (MAX_RETRIES=2 on transient errors) |
+| security | top-quality cloud directly | next cloud | cloud policy |
+
+Rules the code enforces:
+- Local is only eligible when LM Studio answered a fresh probe, the model is installed, the task
+  fits its context (Codex OSS carries ~20k tokens of its own prompt), and the RAM guard passes
+  (a model is loaded with `lms load --context-length 32768 --ttl 900`; the 7B is never stacked on
+  another resident LLM). Unknown == unavailable: fail closed to cloud.
+- A local provider gets exactly ONE attempt. Any failure (LM Studio down, load failure, context
+  overflow, timeout, empty output, tool error) fails over to cloud immediately. Fallback chains
+  are cloud-only and de-duplicated: never local -> local, never a loop.
+- Local runs never see a cloud credential: every cloud API key is stripped from the child env,
+  `codex-oss-local` argv is verified to be pinned to `--oss --local-provider lmstudio` (refuses to
+  start otherwise), direct calls only go to a loopback URL. `task.execution.locality` says
+  `local` or `cloud` on every task.
+- An explicit user preference (`preferredProvider` / `PreferredProvider`) always wins.
+- `LocalFirst.enabled: false` in config turns the whole local tier off.
+
+Observability:
+- `GET /api/orchestrator/routing-stats[?since=ISO]` -> counts per route: `LOCAL_DIRECT`,
+  `LOCAL_CODEX`, `CLOUD_DIRECT`, `LOCAL_TO_CLOUD_FAILOVER` (+ one-line summary and recent records).
+  Persisted in `.ai-workspace/orchestrator/routing-telemetry.jsonl`.
+- `GET /api/orchestrator/local-health` -> live LM Studio probe + eligibility per local provider.
+- Per task (`GET /api/orchestrator/task?id=`): `execution`, `routeCategory`, `taskClass`,
+  `routingReason`, `failedOverFrom`, `routingHistory`.
+
+Model-router intents with a local first choice: `quick-summary`, `context-compression`
+(`lmstudio-qwen-small`), `code-review-readonly` (`lmstudio-qwen-review`), `small-edit`
+(`codex-oss-local`). They are only recommended when LM Studio is live and the context fits.

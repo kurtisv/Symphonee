@@ -60,7 +60,8 @@ function _pretrustQwen(cwd) {
 
 function pretrustFolderForCli(cli, cwd) {
   if (!cwd) return;
-  if (cli === 'codex')  return _pretrustCodex(cwd);
+  // codex-oss-local trusts folders inside its own isolated CODEX_HOME (local-providers.js).
+  if (cli === 'codex') return _pretrustCodex(cwd);
   if (cli === 'gemini') return _pretrustGemini(cwd);
   if (cli === 'qwen')   return _pretrustQwen(cwd);
   // claude / copilot / grok: non-interactive modes don't gate on a folder trust list.

@@ -14,6 +14,24 @@ const HEADLESS_FLAGS = {
   copilot: { cmd: process.platform === 'win32' ? 'copilot.cmd' : 'copilot', args: ['-p'],     promptMode: 'flag',  shell: false },
   grok:    { cmd: process.platform === 'win32' ? 'grok.cmd'    : 'grok',    args: ['--print'], promptMode: 'positional', shell: false },
   qwen:    { cmd: process.platform === 'win32' ? 'qwen.cmd'    : 'qwen',    args: ['-p'],      promptMode: 'flag',       shell: false },
+  // NOTE: `-m` is baked in here (not left to the caller) because `codex --oss` with no
+  // explicit model defaults to auto-downloading OpenAI's own gpt-oss-20b (12+ GB) instead
+  // of using whatever LM Studio already has loaded. spawnHeadless() only injects modelFlag
+  // when a caller explicitly passes one, so without this default every unqualified spawn
+  // would trigger that download. Model is Qwen2.5-Coder-1.5B (not 7B): on this machine's
+  // CPU-only inference, 1.5B finishes Codex's ~12k-token system prompt in ~14 min vs
+  // ~20 min for 7B -- pick 7B instead if quality matters more than turnaround.
+  // Local provider (see local-providers.js). Pinned to LM Studio; spawn-headless
+  // re-verifies this argv (fail closed) and strips every cloud key from its env.
+  'codex-oss-local': { cmd: 'codex', args: ['exec', '--oss', '--local-provider', 'lmstudio', '-m', 'qwen2.5-coder-1.5b-instruct'], promptMode: 'stdin' },
+  // 'claude-local' points Claude Code at the local LM Studio server via LM Studio's
+  // native Anthropic-compatible /v1/messages endpoint (confirmed working, no proxy
+  // needed) -- the ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_ATTRIBUTION_HEADER
+  // env vars are injected in spawn-headless.js (only on the spawned child's env, never
+  // process.env), same pattern as codex-oss's baked-in -m. Claude Code's own system
+  // prompt measured at ~19,821 tokens -- bigger than Codex's -- so the local model must be
+  // loaded with a big enough context (see local-ai-bin's claude-local.ps1, which uses 32768).
+  'claude-local': { cmd: 'claude', args: ['-p', '--model', 'qwen2.5-coder-1.5b-instruct'], promptMode: 'stdin' },
 };
 
 // Grounded model availability per CLI and account type. Update when models change.
@@ -124,6 +142,49 @@ const CLI_MODELS = {
     extraHeadless: [],
     notes: 'Qwen Code is a Gemini CLI fork. Auth via DashScope (DASHSCOPE_API_KEY) or OpenAI-compatible endpoint. Qwen3-Coder models are code-specialized.',
   },
+  'codex-oss-local': {
+    // 1.5B ONLY -- deliberately no 7B option here. Measured: 7B through Codex's
+    // ~12k-token system prompt timed out after 31.5 min on this machine (unreliable);
+    // 1.5B completes the same call in ~6.5 min. If 7B quality is needed, use it via
+    // local-code (direct LM Studio, no agentic overhead) instead of through Codex.
+    models: ['qwen2.5-coder-1.5b-instruct'],
+    modelIds: ['qwen2.5-coder-1.5b-instruct'],
+    defaultModel: 'qwen2.5-coder-1.5b-instruct',
+    modelFlag: '-m',
+    effortFlag: null,
+    permissionFlag: '--dangerously-bypass-approvals-and-sandbox',
+    autoPermission: true,
+    outputFormatFlag: '--json',
+    systemPromptFlag: null,
+    worktreeFlag: null,
+    extraHeadless: [],
+    notes: 'Codex CLI against a LOCAL LM Studio server (127.0.0.1:1234), via `codex exec --oss --local-provider lmstudio`. ' +
+      'No cloud account or API key involved. Requires LM Studio running with a model loaded (see scripts/local-ai-start.ps1 / local-ai-status.ps1). ' +
+      'Use ONLY when the task genuinely needs tools/repo-edit/shell/tests/repo-search that a direct LM Studio call cannot do -- ' +
+      'for everything else (logs, summaries, classification, docs, regex, small code questions, file review, git diff, patch proposals), ' +
+      'call LM Studio directly instead (local-fast / local-code / local-review / local-code-review / local-log-analysis) -- it is ~200x faster ' +
+      '(~2s vs ~6.5min) because it skips Codex\'s own ~12k-token system prompt entirely. ' +
+      'Not for: complex architecture, security-sensitive work, or critical bugs -- escalate to codex/claude cloud for those.',
+  },
+  'claude-local': {
+    models: ['qwen2.5-coder-1.5b-instruct', 'qwen2.5-coder-7b-instruct'],
+    modelIds: ['qwen2.5-coder-1.5b-instruct', 'qwen2.5-coder-7b-instruct'],
+    defaultModel: 'qwen2.5-coder-1.5b-instruct',
+    modelFlag: '--model',
+    effortFlag: null,
+    permissionFlag: '--dangerously-skip-permissions',
+    autoPermission: true,
+    outputFormatFlag: '--output-format',
+    systemPromptFlag: '--append-system-prompt',
+    worktreeFlag: '--worktree',
+    extraHeadless: [],
+    notes: 'Claude Code CLI against a LOCAL LM Studio server (127.0.0.1:1234), via LM Studio\'s native ' +
+      'Anthropic-compatible /v1/messages endpoint. No cloud account or API key involved -- ' +
+      'ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN are injected on the spawned process only (spawn-headless.js), ' +
+      'never on process.env, so Claude Cloud is unaffected. Requires LM Studio running with the model loaded ' +
+      'at 32768+ context (Claude Code\'s own system prompt alone is ~19.8k tokens -- bigger than Codex\'s). ' +
+      'Same use-case guidance as codex-oss: logs, tests, docs, repo search, review, small fixes, summaries.',
+  },
   jules: {
     models: ['default'],
     modelIds: ['default'],
@@ -166,11 +227,18 @@ const CLI_CONFIG = {
   copilot:     { cmd: 'copilot', label: 'Copilot CLI', pipeMode: true, tier: 1, costRank: 1, idlePattern: /[❯>]\s*$/ },
   grok:        { cmd: 'grok',    label: 'Grok Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
   qwen:        { cmd: 'qwen',    label: 'Qwen Code',   pipeMode: true, tier: 2, costRank: 2, idlePattern: /[❯>$]\s*$/ },
+  'codex-oss-local': { cmd: 'codex', label: 'Codex OSS (Local · LM Studio)', pipeMode: true, tier: 1, costRank: 0, isLocal: true, idlePattern: /[❯>$]\s*$/ },
+  'claude-local': { cmd: 'claude', label: 'Claude Code (Local · LM Studio)', pipeMode: true, tier: 1, costRank: 0, isLocal: true, idlePattern: /[❯>]\s*$/ },
+  // Direct LM Studio calls (no CLI process), see spawn-lmstudio.js.
+  'lmstudio-qwen-small':  { cmd: null, label: 'Qwen 1.5B (Local · LM Studio)', pipeMode: true, tier: 1, costRank: 0, isLocal: true, isDirectLocal: true, idlePattern: null },
+  'lmstudio-qwen-review': { cmd: null, label: 'Qwen 7B review (Local · LM Studio)', pipeMode: true, tier: 1, costRank: 0, isLocal: true, isDirectLocal: true, idlePattern: null },
   jules:       { cmd: null,      label: 'Jules',       pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
   'gemini-api': { cmd: null,     label: 'Gemini API',  pipeMode: true, tier: 2, costRank: 2, isRemote: true, idlePattern: null },
 };
 
 // Cross-model escalation chain (cheapest first); skips circuit-broken / uninstalled CLIs.
+// Cloud only: local providers are chosen up-front by the capability-class router
+// (task-router.js) and get exactly one attempt; they are never an escalation target.
 const ESCALATION_ORDER = ['copilot', 'gemini', 'grok', 'qwen', 'antigravity', 'codex', 'claude'];
 
 module.exports = { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER };

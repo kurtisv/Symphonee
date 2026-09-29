@@ -8,10 +8,11 @@ const fs = require('fs');
 const path = require('path');
 const { STATE } = require('./state');
 const { HEADLESS_FLAGS, CLI_MODELS, CLI_CONFIG, ESCALATION_ORDER } = require('./cli-config');
-const { classifyError, retryDelay, MAX_RETRIES } = require('./reliability');
+const { classifyError, retryDelay, maxRetriesFor } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
 const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync } = require('./gemini-runtime');
+const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint } = require('./local-providers');
 module.exports = {
   // ── PTY Injection (Tier 1) ───────────────────────────────────────────────
 
@@ -69,7 +70,18 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] — auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges = false, _retryAttempt = 0 }) {
+    cli = canonicalProviderId(cli);
+    if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
+      return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent });
+    }
+    const localSpec = getLocalProvider(cli);
+    if (localSpec) {
+      // Local agentic CLIs get a bounded run (no "run forever"): past it, the
+      // task times out and fails over to cloud like any other local failure.
+      const lf = localFirstConfig((this.getConfig && this.getConfig()) || {});
+      timeout = Number(lf.timeouts[cli]) || Number(timeout) || localSpec.timeoutMs;
+    }
     if (cli === 'gemini-api' && typeof this.spawnGeminiApi === 'function') {
       return this.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space });
     }
@@ -145,7 +157,7 @@ module.exports = {
       if (preflight.state !== 'READY') {
         throw new Error(`Gemini CLI preflight failed (${preflight.reason}): ${String(preflight.details || '').substring(0, 300)}`);
       }
-    } else {
+    } else if (!this._spawnImpl) { // test seam: an injected spawn skips the PATH probe
       try {
         const { execSync } = require('child_process');
         execSync(`where ${cfg.cmd} 2>nul || which ${cfg.cmd} 2>/dev/null`, { encoding: 'utf8', timeout: 3000 });
@@ -163,9 +175,10 @@ module.exports = {
       prompt,
       from: from || null,
       space: space || null,
-      timeout: 0,  // Never timeout — AI runs as long as it needs
+      timeout: localSpec ? timeout : 0,  // Cloud: never timeout. Local: bounded (fails over).
     });
     task._originalPrompt = originalPrompt;
+    task._firstStartedAt = task._firstStartedAt || Date.now();
 
     // Build final args based on how this CLI expects the prompt
     const finalArgs = [...cfg.args];
@@ -173,7 +186,20 @@ module.exports = {
     // Inject model/effort/permission flags from CLI_MODELS intelligence
     const cliMeta = CLI_MODELS[cli];
     if (cliMeta) {
-      if (model && cliMeta.modelFlag) {
+      // Guardrail: codex-oss is 1.5B-only on this machine (7B through Codex's own
+      // system prompt measured unreliable -- 31.5 min timeout vs 1.5B's 6.5 min).
+      // Reject a caller-supplied override outside cliMeta.models -- loud, not silent --
+      // rather than let it override the baked-in -m default in HEADLESS_FLAGS.
+      const modelOverrideAllowed = cli !== 'codex-oss-local' || !model || (cliMeta.models || []).includes(model);
+      if (model && cliMeta.modelFlag && !modelOverrideAllowed) {
+        const warning = `codex-oss is restricted to ${(cliMeta.models || []).join(', ')} on this machine ` +
+          `(7B through Codex's own system prompt measured unreliable: 31.5 min timeout vs 1.5B's 6.5 min). ` +
+          `Requested model "${model}" was ignored; falling back to ${cliMeta.defaultModel}. ` +
+          `For 7B quality without Codex's overhead, use local-code (direct LM Studio) instead.`;
+        console.warn(`[spawnHeadless] ${warning}`);
+        this.broadcast({ type: 'orchestrator-event', event: 'model-override-rejected', cli, requestedModel: model, usedModel: cliMeta.defaultModel, reason: warning, timestamp: Date.now() });
+      }
+      if (model && cliMeta.modelFlag && modelOverrideAllowed) {
         finalArgs.unshift(cliMeta.modelFlag, model);
       }
       if (effort && cliMeta.effortFlag) {
@@ -240,12 +266,44 @@ module.exports = {
     for (const envKey of (CLI_ENV_KEYS[cli] || [])) {
       if (aiKeys[envKey]) spawnEnv[envKey] = aiKeys[envKey];
     }
+    // 'claude-local' points Claude Code at the local LM Studio server instead of the
+    // cloud API. Fixed values (not user config) -- only set on the spawned child's env,
+    // never on process.env itself, so Claude Cloud spawns are completely unaffected.
+    // LOCAL guard: a local run must not be able to reach a cloud model. Strip
+    // every cloud credential from the child env, pin the backend, and record
+    // it on the task so "was this local?" is provable after the fact.
+    if (localSpec) {
+      const stripped = stripCloudEnv(spawnEnv);
+      const lf = localFirstConfig((this.getConfig && this.getConfig()) || {});
+      if (cli === 'claude-local') {
+        spawnEnv.ANTHROPIC_BASE_URL = lf.baseUrl;
+        spawnEnv.ANTHROPIC_AUTH_TOKEN = 'lmstudio';
+        spawnEnv.CLAUDE_CODE_ATTRIBUTION_HEADER = '0';
+      }
+      let codexHome = null;
+      if (cli === 'codex-oss-local') {
+        assertCodexOssArgs(finalArgs); // throws => fail closed
+        codexHome = prepareCodexOssHome(this.workspaceDir, cwd || process.cwd()); // throws if credentials found
+        spawnEnv.CODEX_HOME = codexHome;
+      }
+      task.execution = { locality: 'local', backend: 'lmstudio', endpoint: lf.baseUrl, model: localSpec.model, provider: cli, cloudEnvStripped: stripped, cloudCredentialsPresent: false, codexHome, argv: finalArgs.filter(a => a !== prompt), attempts: 1 };
+    } else {
+      task.execution = { locality: 'cloud', provider: cli, model: resolvedModel };
+    }
 
     // Pre-trust the working folder so first-time dispatches don't abort with
     // "this folder isn't trusted". This is independent of full bypass mode.
-    try { pretrustFolderForCli(cli, cwd || process.cwd()); } catch (_) {}
+    try { (this._pretrust || pretrustFolderForCli)(cli, cwd || process.cwd()); } catch (_) {}
 
-    const proc = spawn(command, finalArgs, {
+    // Local write task: remember the working tree so a "success" that changed
+    // nothing can be treated as unusable output (-> cloud) instead of counted as done.
+    let treeBefore = null;
+    if (localSpec && expectsRepoChanges) {
+      try { treeBefore = (this._gitTreeFingerprint || gitTreeFingerprint)(cwd || process.cwd()); } catch (_) { treeBefore = null; }
+      task.execution.changeCheck = treeBefore ? 'armed' : 'skipped-not-a-git-repo';
+    }
+
+    const proc = (this._spawnImpl || spawn)(command, finalArgs, {
       cwd: cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
@@ -292,6 +350,20 @@ module.exports = {
       task._proc = null;
       if (task.state === STATE.CANCELLED || task.state === STATE.TIMEOUT) return;
 
+      // A local run that "succeeds" with no output is unusable: fail it so it
+      // goes to cloud instead of returning an empty answer.
+      if (code === 0 && localSpec && !stdout.trim()) { code = -1; stderr = stderr || 'unusable local output: empty result'; }
+      if (code === 0 && treeBefore) {
+        let treeAfter = null;
+        try { treeAfter = (this._gitTreeFingerprint || gitTreeFingerprint)(cwd || process.cwd()); } catch (_) {}
+        if (treeAfter === treeBefore) {
+          code = -1;
+          stderr = 'unusable local output: write task reported success but the repository is unchanged';
+          task.execution.changeCheck = 'failed-no-changes';
+        } else {
+          task.execution.changeCheck = 'passed';
+        }
+      }
       if (code === 0) {
         task.state = STATE.COMPLETED;
         task.result = stdout.trim();
@@ -300,6 +372,10 @@ module.exports = {
       } else {
         const errText = stderr.trim() || stdout.trim() || '';
         const classified = classifyError(errText || `Process exited with code ${code}`, cli);
+        if (localSpec) {
+          // One local attempt, then cloud: every local failure is failover-eligible.
+          Object.assign(classified, { local: true, failover: true, recoverable: true, retryable: false, failoverReason: `local failure: ${(errText || 'exit ' + code).slice(0, 120)}` });
+        }
 
         // Save checkpoint for crash recovery (partial results)
         if (stdout.trim()) {
@@ -318,8 +394,9 @@ module.exports = {
           this.broadcast({ type: 'orchestrator-event', event: 'circuit-open', cli, timestamp: Date.now() });
         }
 
-        // Retry with exponential backoff if error is retryable
-        if (classified.retryable && _retryAttempt < MAX_RETRIES) {
+        // Retry with exponential backoff if error is retryable (per-provider cap --
+        // codex-oss gets 0 retries; everyone else keeps the global MAX_RETRIES).
+        if (classified.retryable && _retryAttempt < maxRetriesFor(cli)) {
           const delay = retryDelay(_retryAttempt);
           task.state = STATE.PENDING;
           task._retryAttempt = _retryAttempt + 1;
@@ -362,7 +439,7 @@ module.exports = {
         if (classified.failover && task._autoRouting) {
           if (!task._escalationChain || !task._escalationChain.length) {
             task._escalationChain = ESCALATION_ORDER
-              .filter(c => c !== cli && this.circuitBreaker.isAvailable(c));
+              .filter(c => c !== cli && !isLocalProvider(c) && this.circuitBreaker.isAvailable(c));
           }
           task._escalationPrompt = task._escalationPrompt || originalPrompt;
           task._escalationCwd = task._escalationCwd || cwd;

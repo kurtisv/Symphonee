@@ -10,6 +10,7 @@ const { ESCALATION_ORDER } = require('./cli-config');
 const { scoreResult } = require('./reliability');
 const { MAX_CONCURRENT_SPAWNS, SPAWN_STAGGER_MS } = require('./constants');
 const { createContextPacket } = require('./context-packet');
+const { isLocalProvider } = require('./local-providers');
 module.exports = {
   // ── Synchronous Handoff ─────────────────────────────────────────────────
 
@@ -175,7 +176,11 @@ module.exports = {
   /** Called when a task fails; attempts escalation to next CLI */
   _tryEscalate(task) {
     if (!task._escalationChain || !task._escalationChain.length) return false;
+    const visited = new Set([...(task._visitedProviders || []), task.cli, task.selectedProvider].filter(Boolean));
     const nextCli = task._escalationChain.shift();
+    // Loop guard: never revisit a provider, and never fail over INTO a local
+    // model (local gets exactly one attempt, chosen up-front by the router).
+    if (visited.has(nextCli) || isLocalProvider(nextCli)) return this._tryEscalate(task);
     if (!this.circuitBreaker.isAvailable(nextCli)) return this._tryEscalate(task); // skip broken CLIs
 
     this.broadcast({ type: 'orchestrator-event', event: 'task-escalate', taskId: task.id, from: task.cli, to: nextCli, timestamp: Date.now() });
@@ -203,6 +208,10 @@ module.exports = {
       newTask._escalationChain = task._escalationChain;
       newTask._escalationPrompt = task._escalationPrompt;
       newTask._escalationCwd = task._escalationCwd;
+      newTask._visitedProviders = [...visited];
+      newTask._firstStartedAt = task._firstStartedAt || task.startedAt;
+      newTask.taskClass = task.taskClass; newTask.estimatedPromptTokens = task.estimatedPromptTokens;
+      newTask.failedOverFrom = { provider: task.cli, locality: isLocalProvider(task.cli) ? 'local' : 'cloud', reason: classified.failoverReason || classified.errorType || task.error || null };
       if (task._autoRouting) {
         newTask.requestedCli = 'auto';
         newTask.selectedProvider = nextCli;
@@ -221,6 +230,7 @@ module.exports = {
         from: task.cli,
         to: nextCli,
         reason: classified.failoverReason || 'provider error',
+        localToCloud: isLocalProvider(task.cli) && !isLocalProvider(nextCli),
         errorSnippet: (classified.message || task.error || '').slice(0, 160),
         chainRemaining: (newTask._escalationChain || []).length,
         chain: (newTask._escalationChain || []).slice(),

@@ -8,6 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { STATE } = require('./state');
 const { classifyProviderError, isFailoverEligible } = require('./provider-health');
+const { isLocalProvider } = require('./local-providers');
 
 // A task must have a bounded lifetime unless the caller supplies a longer
 // explicit timeout. Zero used to mean "forever", which left stalled workers
@@ -215,7 +216,9 @@ module.exports = {
     if (task._needsAttention && task.state === STATE.FAILED) task.state = STATE.NEEDS_ATTENTION;
     if (task.state !== STATE.COMPLETED && task._autoRouting && task._automaticFallback && task._escalationChain && task._escalationChain.length && !task._failoverStarted) {
       const type = task.errorClassification && task.errorClassification.errorType || classifyProviderError(task.error || task.state);
-      if (isFailoverEligible(type) && typeof this._tryEscalate === 'function') {
+      // Local providers get one attempt: ANY local failure goes to cloud.
+      const localFailure = (task.errorClassification && task.errorClassification.local) || isLocalProvider(task.selectedProvider || task.cli);
+      if ((isFailoverEligible(type) || localFailure) && typeof this._tryEscalate === 'function') {
         task.errorClassification = task.errorClassification || { errorType: type, message: task.error || task.state };
         task._failoverStarted = true;
         if (this._tryEscalate(task)) return;
@@ -231,6 +234,8 @@ module.exports = {
         task.routingHistory.push({ provider: task.selectedProvider, startedAt: task.startedAt, endedAt: task.completedAt || Date.now(), outcome, errorClassification, usage: task.geminiUsage || task.usage || null });
         task._routingAttemptRecorded = true;
       }
+      // Final outcome of this task (no further failover): count its route.
+      if (this.routingTelemetry) { try { this.routingTelemetry.recordTask(task); } catch (_) {} }
     }
     this._saveTasks();
     this.broadcast({

@@ -17,6 +17,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { isLocalProvider, localFirstConfig, requiredContextTokens } = require('./orchestrator/local-providers');
 
 // ── Catalog ─────────────────────────────────────────────────────────────────
 // tier: fast | balanced | deep
@@ -26,7 +27,30 @@ const fs = require('fs');
 // agentic: fair | good | excellent (long-horizon autonomy)
 // specialty: optional focus area
 // requiresKey: env var name if the model only works with a user-supplied API key
+// local: runs on this machine via LM Studio (127.0.0.1). Locality is explicit,
+//        never inferred from a model family name ('qwen' below is DashScope cloud).
 const CATALOG = {
+  'lmstudio-qwen-small': {
+    provider: 'LM Studio (local)', local: true,
+    models: {
+      'qwen2.5-coder-1.5b': { id: 'qwen2.5-coder-1.5b-instruct', tier: 'fast', cost: 0, ctx: 32768, agentic: 'none', local: true,
+        note: 'Free, on-machine. Summaries, extraction, classification, rephrasing, context compression.' },
+    },
+  },
+  'lmstudio-qwen-review': {
+    provider: 'LM Studio (local)', local: true,
+    models: {
+      'qwen2.5-coder-7b': { id: 'qwen/qwen2.5-coder-7b', tier: 'balanced', cost: 0, ctx: 32768, agentic: 'none', local: true,
+        note: 'Free, on-machine, read-only. Code reading / simple review / explanation of content that fits 32k.' },
+    },
+  },
+  'codex-oss-local': {
+    provider: 'Codex CLI --oss + LM Studio (local)', local: true,
+    models: {
+      'qwen2.5-coder-1.5b': { id: 'qwen2.5-coder-1.5b-instruct', tier: 'fast', cost: 0, ctx: 32768, agentic: 'fair', local: true,
+        note: 'Free, on-machine agentic: 1-2 file edits, a shell command, a targeted test. One attempt, then cloud.' },
+    },
+  },
   claude: {
     provider: 'Anthropic',
     models: {
@@ -98,10 +122,35 @@ const INTENTS = {
   'quick-summary': {
     description: 'Short text output: summary, classify, haiku, one-paragraph answer.',
     prefer: [
+      { cli: 'lmstudio-qwen-small', model: 'qwen2.5-coder-1.5b', weight: 11, reason: 'local-first: free on-machine model' },
       { cli: 'claude', model: 'haiku-4-5', weight: 10 },
       { cli: 'codex', model: 'gpt-5.4-mini', weight: 9 },
       { cli: 'gemini', model: 'gemini-3-flash', weight: 8 },
       { cli: 'qwen', model: 'qwen3-coder-flash', weight: 6 },
+    ],
+  },
+  'context-compression': {
+    description: 'Compress / condense a context packet or long text.',
+    prefer: [
+      { cli: 'lmstudio-qwen-small', model: 'qwen2.5-coder-1.5b', weight: 11, reason: 'local-first: free on-machine model' },
+      { cli: 'gemini', model: 'gemini-3-flash', weight: 8 },
+      { cli: 'claude', model: 'haiku-4-5', weight: 7 },
+    ],
+  },
+  'code-review-readonly': {
+    description: 'Read-only code reading / simple review / explanation (no edits).',
+    prefer: [
+      { cli: 'lmstudio-qwen-review', model: 'qwen2.5-coder-7b', weight: 11, reason: 'local-first: free on-machine 7B, read-only' },
+      { cli: 'claude', model: 'sonnet-4-6', weight: 9 },
+      { cli: 'codex', model: 'gpt-5.4', weight: 8 },
+    ],
+  },
+  'small-edit': {
+    description: 'Small agentic change: 1-2 files, a shell command, a targeted test run.',
+    prefer: [
+      { cli: 'codex-oss-local', model: 'qwen2.5-coder-1.5b', weight: 11, reason: 'local-first: Codex OSS on LM Studio' },
+      { cli: 'codex', model: 'gpt-5.4-mini', weight: 9 },
+      { cli: 'claude', model: 'sonnet-4-6', weight: 8 },
     ],
   },
   'deep-code': {
@@ -183,11 +232,13 @@ function loadConfig(configPath) {
 
 function availableClis(cfg) {
   // Orchestration is always on. Honor the user's OrchestrateCliList if set;
-  // otherwise assume every catalog CLI is available.
+  // otherwise assume every catalog CLI is available. Local providers follow
+  // LocalFirst.enabled (default on) instead of the cloud allow-list.
+  const locals = localFirstConfig(cfg).enabled ? Object.keys(CATALOG).filter(isLocalProvider) : [];
   if (Array.isArray(cfg.OrchestrateCliList) && cfg.OrchestrateCliList.length) {
-    return new Set(cfg.OrchestrateCliList);
+    return new Set([...cfg.OrchestrateCliList, ...locals]);
   }
-  return new Set(Object.keys(CATALOG));
+  return new Set([...Object.keys(CATALOG).filter(c => !isLocalProvider(c)), ...locals]);
 }
 
 function modelAvailable(cli, modelKey, cfg) {
@@ -201,7 +252,7 @@ function modelAvailable(cli, modelKey, cfg) {
 }
 
 // ── Recommend ───────────────────────────────────────────────────────────────
-function recommend({ intent, contextTokens, budget, configPath }) {
+function recommend({ intent, contextTokens, budget, configPath, localHealth }) {
   const cfg = loadConfig(configPath);
   const allowedClis = availableClis(cfg);
 
@@ -217,6 +268,14 @@ function recommend({ intent, contextTokens, budget, configPath }) {
   for (const pref of spec.prefer) {
     if (!allowedClis.has(pref.cli)) continue;
     if (!modelAvailable(pref.cli, pref.model, cfg)) continue;
+    // Codex OSS small edits are opt-in (too slow/unreliable with the 1.5B today).
+    if (pref.cli === 'codex-oss-local' && !localFirstConfig(cfg).enableCodexOssSmallEdit) continue;
+    if (isLocalProvider(pref.cli)) {
+      // Local only when LM Studio is live and the task fits its context.
+      // No live health source => no local recommendation (fail closed).
+      const elig = localHealth ? localHealth.eligibility(pref.cli, { requiredTokens: requiredContextTokens(pref.cli, Number(contextTokens) || 0) }) : { ok: false, reason: 'no live LM Studio health' };
+      if (!elig.ok) continue;
+    }
     if (budget === 'cheap' && CATALOG[pref.cli].models[pref.model].cost > 2) continue;
     if (budget === 'premium' && CATALOG[pref.cli].models[pref.model].cost < 3) continue;
     const meta = CATALOG[pref.cli].models[pref.model];
