@@ -794,3 +794,93 @@ test('37. asynchronous fallbacks never start a CLI the permission rules deny', a
   assert.equal(d2.state, STATE.FAILED);
   assert.deepEqual(o2.spawns.map(s => s.cli), ['codex-oss-local'], 'review mode: no cloud fallback spawned');
 });
+
+// ── Round 5: data-noun payloads, verb-adjacent connectors, perf, verified kill, fail-closed rules ──
+test('38. classification v4: documents named in the instruction are data; remaining evasions caught', () => {
+  const simple = [
+    'Summarize the project status: on track', 'Summarize: the project timeline slipped two weeks',
+    'Classify these logs:\nuser bob deleted file report.pdf', "Résume ce log : l'utilisateur a supprimé le fichier",
+    'Summarize this incident: the intern ran rm -rf on staging and we restored from backup',
+    'Summarize this changelog: dropped the legacy table, removed old API', 'Classify this sentence: please delete my account',
+    'Extract the action items: Bob will send the report, then Alice will deploy',
+    'Summarize this chat: can you check the numbers? also please update the deck',
+    'Summarize this paragraph: Please remember to save your work often.',
+    'Résume ce mail : peux-tu vérifier les chiffres et envoyer le rapport ?',
+    'Translate this sentence to French: First review and update the document, then email it.',
+    'Rephrase: Please delete the temporary files once done.',
+  ];
+  for (const prompt of simple) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+  const notSimple = [
+    'Summarize: the logs, then kill the server', 'Summarize: the logs, then restart prod', 'Résume : les logs, puis redémarre le serveur',
+    'Summarize: the config, then chmod 777 /etc', 'Summarize: foo.js, then overwrite it with the summary', 'Summarize: foo.js, then get rid of it',
+    'Résume : foo.js. Tu peux ensuite le virer', 'Summarize: the issues. Then label each GitHub issue accordingly',
+    'Summarize:\nThe payment module is old.\nIt uses Stripe v1.\nFix the bug in src/pay.js.',
+    'Résume :\nLe module de paiement est vieux.\nIl utilise Stripe v1.\nCorrige le bug dans src/pay.js.',
+    'Donne-moi la liste: des fichiers à supprimer, et supprime-les',
+  ];
+  for (const prompt of notSimple) assert.notEqual(classifyTask({ prompt }).taskClass, 'simple', prompt);
+  for (const prompt of ['Summarize: login.js — is the session cookie HttpOnly?', 'Summarize: login.js — could an attacker bypass the login?',
+    'Summarize: can the refresh token be stolen?', 'Summarize: can cookies be stolen?', 'Summarize: login.js and tell me whether cookies can be stolen']) {
+    assert.equal(classifyTask({ prompt }).taskClass, 'security', prompt);
+  }
+  for (const prompt of ['Summarize my codebase', 'Résume mon projet', 'Summarize src/', 'Summarize: all source code',
+    'Summarize: after summarizing, erase build', 'Summarize: after summarizing, del build', 'Summarize: after summarizing, rmdir /s build']) {
+    assert.equal(classifyTask({ prompt }).taskClass, 'complex', prompt);
+  }
+});
+
+test('39. classification stays linear on long / pathological inputs (no regex blow-up)', () => {
+  const N = 200000;
+  const inputs = [
+    'Summarize: after summarizing, rm -' + 'w'.repeat(N), 'Summarize: ' + 'a'.repeat(N), 'Summarize: ' + 'then '.repeat(N / 5),
+    'Summarize: then ' + 'x, '.repeat(N / 3), 'Résume : ' + 'é'.repeat(N), 'Summarize: drop ' + 'the '.repeat(N / 4),
+    'Summarize this ' + 'big '.repeat(N / 4) + 'email: hi', 'Summarize: cookie ' + 'x '.repeat(N / 2), 'Summarize:\n' + 'line\n'.repeat(N / 5),
+    'Summarize: ' + 'a/'.repeat(N / 2), 'x '.repeat(N / 2) + 'y.js',
+  ];
+  for (const prompt of inputs) {
+    const t0 = Date.now();
+    classifyTask({ prompt });
+    const ms = Date.now() - t0;
+    assert.ok(ms < 1000, `${ms}ms for ${JSON.stringify(prompt.slice(0, 40))}...`);
+  }
+  const { inlineReferencedFiles } = require('./local-providers');
+  const t0 = Date.now(); inlineReferencedFiles('x ' + 'w'.repeat(N), os.tmpdir());
+  assert.ok(Date.now() - t0 < 1000);
+});
+
+test('40. stale-process kill is judged by verification, not by taskkill exit code', () => {
+  const { killAndVerify } = require('../electron/process-guard');
+  const alive = new Set([10, 11]);
+  // PID 11 is a child that already died with its parent: taskkill fails for it.
+  const kill = (pid) => { if (pid === 11) { alive.delete(11); throw new Error('ERROR: process not found (exit 128)'); } alive.delete(pid); };
+  alive.delete(11);
+  assert.equal(killAndVerify([10, 11], { kill, isAlive: (p) => alive.has(p), sleepMs: () => {} }), true);
+  const stubborn = new Set([20]);
+  assert.equal(killAndVerify([20], { kill: () => { throw new Error('Access is denied'); }, isAlive: (p) => stubborn.has(p), sleepMs: () => {} }), false);
+  assert.equal(killAndVerify([], { kill: () => {}, isAlive: () => false, sleepMs: () => {} }), false, 'nothing to kill -> not "killed"');
+});
+
+test('41. fallback permission: corrupt rules fail closed, missing rules keep defaults, deny wins', () => {
+  const { _fallbackPermission: fp } = require('./escalation');
+  const dir = tmpDir();
+  const p = path.join(dir, 'config.json');
+  assert.equal(fp(path.join(dir, 'missing.json'), 'claude', false), 'ask', 'missing config: app-wide defaults (edit mode)');
+  fs.writeFileSync(p, '{ "Permissions": { "mode": "bypass", ');
+  assert.equal(fp(p, 'claude', false), 'deny', 'truncated / corrupt JSON');
+  fs.writeFileSync(p, JSON.stringify({ Permissions: 'bypass' }));
+  assert.equal(fp(p, 'claude', false), 'deny', 'Permissions of the wrong type');
+  fs.writeFileSync(p, JSON.stringify({ Permissions: { mode: 'bypass', deny: ['cli:claude:spawn'], ask: [], allow: [] } }));
+  assert.equal(fp(p, 'claude', false), 'deny');
+  assert.equal(fp(p, 'codex', false), 'allow');
+  // End to end: a corrupt config blocks the asynchronous fallback.
+  fs.writeFileSync(p, '{not json');
+  const orch = makeOrch({ script: { 'codex-oss-local': [{ code: 1, stderr: 'boom' }] } });
+  orch.permissionsConfigPath = p;
+  return orch.localHealth.refresh({ force: true }).then(async () => {
+    const t = orch.spawnHeadless({ cli: 'codex-oss-local', prompt: 'corrige la faute', cwd: os.tmpdir() });
+    Object.assign(t, { selectedProvider: 'codex-oss-local', routingHistory: [], _autoRouting: true, _automaticFallback: true, _escalationChain: ['claude', 'codex'], _escalationPrompt: 'corrige la faute' });
+    const d = await waitDone(orch, t.id);
+    assert.equal(d.state, STATE.FAILED);
+    assert.deepEqual(orch.spawns.map(s => s.cli), ['codex-oss-local'], 'no cloud spawn with unreadable permission rules');
+  });
+});
