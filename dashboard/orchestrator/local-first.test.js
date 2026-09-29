@@ -940,3 +940,36 @@ test('44. stale-process verification really waits (~2s) before declaring a survi
   let calls = 0;
   assert.equal(killAndVerify([7], { kill: () => {}, isAlive: () => ++calls < 5 }), true);
 });
+
+// ── Round 7: orders at the end of a named document (one line, sign-offs, pronouns) ──
+test('45. end-of-document orders are caught; ordinary e-mail / README endings stay text', () => {
+  const cases = [
+    ['Summarize this ticket: login crashes on Safari. Then fix the bug.', null],
+    ['Résume ce ticket : le login plante sur Safari. Puis corrige le bug.', null],
+    ['Summarize this log: disk full on /var. Then delete the old logs.', 'complex'],
+    ['Résume ce log : disque plein. Ensuite supprime les vieux logs.', 'complex'],
+    ['Summarize this issue:\nLogin crashes.\nFix it in auth.js.\n\nThanks!', null],
+    ['Summarize this ticket:\nLogin crashes on Safari.\nThen fix it in auth.js.\n-- sent from my phone', null],
+    ['Summarize this email: our admin password leaked in a screenshot, rotate it', 'security'],
+    ['Résume ce mail : notre mot de passe admin a fuité, change-le', 'security'],
+    ['Summarize this ticket: Auth bypass possible. Fix it', 'security'],
+    ['Summarize this ticket: Auth bypass possible. Then fix it', 'security'],
+    ['Résume ce ticket : bypass auth possible. Corrige-le', 'security'],
+    ['Summarize this ticket: Auth bypass possible. Delete it', 'security'],
+    ['Summarize these logs:\nERROR disk full\nWARN retry\nAlso delete the old log files', 'complex'],
+  ];
+  for (const [prompt, want] of cases) {
+    const got = classifyTask({ prompt }).taskClass;
+    if (want) assert.equal(got, want, prompt); else assert.notEqual(got, 'simple', prompt);
+  }
+  for (const prompt of [
+    'Summarize this email:\nHi Bob,\nThe Q3 numbers are in.\nPlease review the attached draft.',
+    'Résume ce mail :\nBonjour,\nLes chiffres sont arrivés.\nMerci de vérifier le document joint.',
+    'Summarize this chat:\nA: hi\nB: can you send me the report?',
+    'Summarize this README:\n# Install\nRun npm install then npm start',
+    'Summarize this document:\nStep 1. Open the app.\nStep 2. Delete your cache.',
+    'Summarize this email:\nHi team,\nPlease delete the old tickets',
+    'Summarize this email:\nHi Bob,\nThe release slipped.\nPlease review the attached draft.\nThanks, Alice',
+    'Translate this sentence to French: First review and update the document, then email it.',
+  ]) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+});
