@@ -89,7 +89,15 @@ Rules the code enforces:
 - A local provider that just failed is in cooldown (no new local attempt) unless the failure was
   caused by the task itself (prompt too large, repo content not available to a tool-less model).
 - Classification reasons on the INSTRUCTION: for "summarize/classify/extract/compress/translate:
-  <payload>", words inside the payload (bug, security, production...) do not change the route.
+  <payload>", words inside a pure-data payload (ticket list, log, text to translate) do not change
+  the route; but a payload that gives the agent an order (then/also/puis/ensuite + action,
+  "supprime-les", "commit it", an imperative line, a destructive command, a file to rewrite,
+  repo-wide scope, a security question about code) is analysed like a task. Known limit: this is
+  keyword analysis; an unusual phrasing can still reach the local 1.5B, which can only answer in
+  text (it cannot perform the action). A model-side "reply NEEDS_TOOLS" guard was measured on the
+  real 1.5B and rejected (it refused 5 of 9 plain text tasks).
+- Automatic fallbacks never start a CLI that the permission rules DENY (explicit deny rule or
+  review mode); a blocked candidate emits a `fallback-blocked` event.
 - `LocalFirst.enabled: false` in config turns the whole local tier off.
 
 Observability:
