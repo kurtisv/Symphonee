@@ -113,13 +113,16 @@ class ProviderHealthManager {
     return this.localHealth.eligibility(id, opts);
   }
   recordUsage(id, usage = {}) { const p = this.providers[id]; if (!p) return; p.usage = { ...p.usage, ...usage }; }
-  recordOutcome(id, { ok, error, usage } = {}) {
+  recordOutcome(id, { ok, error, usage, cooldown = true } = {}) {
     const p = this.providers[id]; if (!p) return null;
     if (usage) this.recordUsage(id, usage);
     if (ok) { p.health = 'healthy'; p.reason = null; p.available = true; p.consecutiveFailures = 0; p.lastSuccess = this.now(); p.cooldownUntil = 0; return null; }
     const errorClassification = typeof error === 'string' && Object.values(ERROR_TYPES).includes(error) ? error : classifyProviderError(error);
     p.lastFailure = this.now();
     p.reason = errorClassification;
+    // A failure caused by the task itself (e.g. prompt too large for a local
+    // model) says nothing about the provider's health: record it, no cooldown.
+    if (cooldown === false) return errorClassification;
     if (errorClassification === ERROR_TYPES.RUNTIME_INCOMPATIBLE) {
       p.available = false; p.health = 'unavailable'; p.cooldownUntil = this.now() + this.cooldownMs;
     } else if (isFailoverEligible(errorClassification)) {

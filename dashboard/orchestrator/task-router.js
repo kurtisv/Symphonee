@@ -21,6 +21,12 @@ class TaskRouter {
       const optIn = (getLocalProvider(p.id).optInTaskClasses || []).includes(taskClass);
       return { ok: false, reason: optIn ? `local ${p.id} disabled for ${taskClass} (opt-in: LocalFirst.enableCodexOssSmallEdit)` : `local ${p.id} not suited for ${taskClass} tasks` };
     }
+    // A local provider that just failed (timeout, LM Studio error, empty/false
+    // success) is cooling down like any other: don't make every new task pay
+    // the full local timeout again before failing over.
+    const now = typeof this.health.now === 'function' ? this.health.now() : Date.now();
+    if (p.available === false) return { ok: false, reason: `local ${p.id} unavailable (${p.reason || 'marked unavailable'})` };
+    if (p.cooldownUntil && p.cooldownUntil > now) return { ok: false, reason: `local ${p.id} cooling down after ${p.reason || 'a recent failure'} (${Math.ceil((p.cooldownUntil - now) / 1000)}s left)` };
     const required = requiredContextTokens(p.id, promptTokens);
     const elig = typeof this.health.localEligibility === 'function' ? this.health.localEligibility(p.id, { requiredTokens: required }) : { ok: false, reason: 'no-local-health-source' };
     return elig.ok ? { ok: true, required, contextTokens: elig.contextTokens } : { ok: false, reason: elig.reason, required };

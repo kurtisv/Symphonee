@@ -81,7 +81,8 @@ module.exports = {
 
     // Clean up resources
     if (task._proc) {
-      try { task._proc.kill('SIGTERM'); } catch (_) {}
+      // Local agents: kill the whole tree (see killProcessTree); others as before.
+      try { if (task._kill) task._kill(); else task._proc.kill('SIGTERM'); } catch (_) {}
       task._proc = null;
     }
     if (task._abortController) {
@@ -214,7 +215,11 @@ module.exports = {
 
   _broadcastTaskUpdate(task) {
     if (task._needsAttention && task.state === STATE.FAILED) task.state = STATE.NEEDS_ATTENTION;
-    if (task.state !== STATE.COMPLETED && task._autoRouting && task._automaticFallback && task._escalationChain && task._escalationChain.length && !task._failoverStarted) {
+    // Failover only for a real failure. A CANCELLED task (user stop) or one
+    // still RUNNING/PENDING must never start another provider -- before this
+    // guard, cancelling a local task spawned a cloud task (cancel = cloud spend).
+    const failedTerminally = task.state === STATE.FAILED || task.state === STATE.TIMEOUT;
+    if (failedTerminally && task._autoRouting && task._automaticFallback && task._escalationChain && task._escalationChain.length && !task._failoverStarted) {
       const type = task.errorClassification && task.errorClassification.errorType || classifyProviderError(task.error || task.state);
       // Local providers get one attempt: ANY local failure goes to cloud.
       const localFailure = (task.errorClassification && task.errorClassification.local) || isLocalProvider(task.selectedProvider || task.cli);
@@ -229,7 +234,7 @@ module.exports = {
       if (!task._routingAttemptRecorded) {
         const errorClassification = task.errorClassification && (task.errorClassification.errorType || task.errorClassification.type) || null;
         const outcome = task.state === STATE.COMPLETED ? 'success' : task.state;
-        if (this.providerHealth) this.providerHealth.recordOutcome(task.selectedProvider, { ok: outcome === 'success', error: errorClassification || task.error, usage: task.geminiUsage || task.usage });
+        if (this.providerHealth) this.providerHealth.recordOutcome(task.selectedProvider, { ok: outcome === 'success', error: errorClassification || task.error, usage: task.geminiUsage || task.usage, cooldown: !(task.errorClassification && task.errorClassification.noCooldown) });
         if (this.performance && task.selectedRole) this.performance.record(task.selectedProvider, task.selectedRole, { ok: outcome === 'success', errorType: errorClassification, durationMs: task.startedAt && task.completedAt ? task.completedAt - task.startedAt : undefined, inputTokens: (task.geminiUsage || task.usage || {}).inputTokens, outputTokens: (task.geminiUsage || task.usage || {}).outputTokens, testPassed: outcome === 'success' && task.selectedRole === 'tester' });
         task.routingHistory.push({ provider: task.selectedProvider, startedAt: task.startedAt, endedAt: task.completedAt || Date.now(), outcome, errorClassification, usage: task.geminiUsage || task.usage || null });
         task._routingAttemptRecorded = true;

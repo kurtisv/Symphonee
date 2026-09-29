@@ -190,7 +190,7 @@ module.exports = {
       if (task._autoRouting && !task._routingAttemptRecorded) {
         task.routingHistory = task.routingHistory || [];
         const errorType = classified.errorType || classified.failoverReason || 'PROVIDER_ERROR';
-        if (this.providerHealth) this.providerHealth.recordOutcome(task.selectedProvider || task.cli, { ok: false, error: errorType });
+        if (this.providerHealth) this.providerHealth.recordOutcome(task.selectedProvider || task.cli, { ok: false, error: errorType, cooldown: !classified.noCooldown });
         task.routingHistory.push({ provider: task.selectedProvider || task.cli, startedAt: task.startedAt, endedAt: task.completedAt || Date.now(), outcome: 'failed', errorClassification: errorType, usage: task.geminiUsage || task.usage || null });
         task._routingAttemptRecorded = true;
       }

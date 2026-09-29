@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const permissions = require('../permissions');
 const { CLI_MODELS, CLI_CONFIG } = require('./cli-config');
-const { isLocalProvider, isDirectLocal, canonicalProviderId, localFirstConfig, requiredContextTokens } = require('./local-providers');
+const { LOCAL_PROVIDERS, isLocalProvider, isDirectLocal, canonicalProviderId, localFirstConfig, requiredContextTokens } = require('./local-providers');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -164,19 +164,34 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         routing = orch.taskRouter.selectProvider({ ...(taskHints || {}), prompt }, { role: taskHints && taskHints.role, policy: taskHints && taskHints.routingPolicy, authorProvider: taskHints && (taskHints.authorProvider || taskHints.writerProvider), plan: !!(taskHints && taskHints.plan), preferCheaper: !!(taskHints && taskHints.preferCheaper) });
         cli = routing.provider;
       } catch (err) { return json(res, { error: err.message, requestedCli: 'auto' }, 503); }
-      // Agentic local provider: make sure LM Studio is up and the model is
-      // loaded at full context BEFORE spawning. If not, fail over to cloud
-      // right here -- no doomed local launch, no retry loop.
-      if (isLocalProvider(cli) && !isDirectLocal(cli) && typeof orch.prepareLocalProvider === 'function') {
-        const prep = await orch.prepareLocalProvider(cli, { requiredTokens: requiredContextTokens(cli, routing.estimatedPromptTokens || 0) });
-        if (!prep.ok) {
-          localPrepFailure = { provider: cli, reason: prep.reason };
-          const next = (routing.fallbackChain || [])[0];
-          if (!next) return json(res, { error: `Local provider ${cli} unavailable (${prep.reason}) and no cloud fallback is available`, requestedCli: 'auto' }, 503);
-          if (broadcast) broadcast({ type: 'orchestrator-event', event: 'provider-failover', from: cli, to: next, reason: `local unavailable: ${prep.reason}`, localToCloud: true, timestamp: Date.now() });
-          cli = next;
-          routing = { ...routing, provider: next, selectedProvider: next, locality: 'cloud', fallbackChain: routing.fallbackChain.slice(1), reason: [`local ${localPrepFailure.provider} unavailable: ${prep.reason}`, ...(routing.reason || [])] };
-        }
+    } else if (isLocalProvider(cli) && !(taskHints && taskHints.noFallback)) {
+      // Explicit local request (e.g. the model-router recommended a local id):
+      // it keeps its local choice but gets the same cloud safety net as an
+      // auto-routed task -- "any local failure -> cloud" holds on every path.
+      if (orch.localHealth) { try { await orch.localHealth.refresh(); } catch (_) {} }
+      try {
+        const cloud = orch.taskRouter.selectProvider({ ...(taskHints || {}), prompt }, { exclude: Object.keys(LOCAL_PROVIDERS) });
+        routing = { ...cloud, provider: cli, selectedProvider: cli, locality: 'local', explicitLocal: true,
+          fallbackChain: [...new Set([cloud.provider, ...(cloud.fallbackChain || [])])].filter(id => !isLocalProvider(id)),
+          reason: [`explicit local request: ${cli}`] };
+      } catch (_) { routing = null; /* no usable cloud provider: plain local run */ }
+    }
+    // A local provider that cannot even be launched (LM Studio down, model not
+    // loadable, circuit open, CLI missing, isolation check failed) fails over to
+    // cloud right here -- no doomed local launch, no HTTP 400, no retry loop.
+    const failLocalBeforeLaunch = (reason) => {
+      localPrepFailure = { provider: cli, reason };
+      const next = (routing && routing.fallbackChain || [])[0];
+      if (!next) return false;
+      if (broadcast) broadcast({ type: 'orchestrator-event', event: 'provider-failover', from: cli, to: next, reason: `local unavailable: ${reason}`, localToCloud: true, timestamp: Date.now() });
+      cli = next;
+      routing = { ...routing, provider: next, selectedProvider: next, locality: 'cloud', fallbackChain: routing.fallbackChain.slice(1), reason: [`local ${localPrepFailure.provider} unavailable: ${reason}`, ...(routing.reason || [])] };
+      return true;
+    };
+    if (routing && isLocalProvider(cli) && !isDirectLocal(cli) && typeof orch.prepareLocalProvider === 'function') {
+      const prep = await orch.prepareLocalProvider(cli, { requiredTokens: requiredContextTokens(cli, routing.estimatedPromptTokens || 0) });
+      if (!prep.ok && !failLocalBeforeLaunch(prep.reason)) {
+        return json(res, { error: `Local provider ${cli} unavailable (${prep.reason}) and no cloud fallback is available`, requestedCli }, 503);
       }
     }
     // Symphonee brain consultation: when cli is omitted, the brain tries
@@ -252,17 +267,22 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
     }
     if (!await gateSpawn(res, { cli, cwd, label: `Spawn ${cli} worker`, wait: !autoPermit })) return;
     try {
+      const resolvedSpace = resolveSpace(space);
+      const spawnFor = (target) => {
       // Auto-select best mode: pipe mode for CLIs that support it (fast, reliable),
       // visible PTY for interactive CLIs that need a terminal.
       // Remote cloud workers (e.g. Jules, Gemini API) route to remote spawn methods without spawning a local CLI process.
       // The 'visible' param can override: visible=true forces PTY, visible=false forces headless.
+      const cli = target;
       const cliCfg = CLI_CONFIG[cli];
       const isRemote = cli === 'jules' || cli === 'gemini-api' || (cliCfg && cliCfg.isRemote);
-      const useVisible = !isRemote && (visible === true || (visible !== false && cliCfg && !cliCfg.pipeMode));
-      const resolvedSpace = resolveSpace(space);
+      const useVisible = !isRemote && !isLocalProvider(cli) && (visible === true || (visible !== false && cliCfg && !cliCfg.pipeMode));
       let task;
       if (isDirectLocal(cli) && typeof orch.spawnLmStudio === 'function') {
-        task = orch.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace, requiresRepoContent: !!(routing && routing.characteristics && routing.characteristics.repoReadRequired) });
+        // Direct local models have no tools: any task that needs repo content
+        // (a file named, or a read-only review) must bring it inline or fail over.
+        const needsContent = !!(routing && routing.characteristics && (routing.characteristics.repoReadRequired || routing.taskClass === 'readonly-review'));
+        task = orch.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace, requiresRepoContent: needsContent });
       } else if (cli === 'gemini-api' && typeof orch.spawnGeminiApi === 'function') {
         task = orch.spawnGeminiApi({ cli, prompt, cwd, timeout, from, taskId, model, space: resolvedSpace });
       } else if (cli === 'jules' && typeof orch.spawnJules === 'function') {
@@ -274,11 +294,21 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
       } else if (useVisible) {
         task = orch.spawnVisible({ cli, prompt, cwd, timeout, from, taskId, space: resolvedSpace });
       } else {
-        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace, expectsRepoChanges: !!(routing && isLocalProvider(cli) && routing.characteristics && routing.characteristics.repoWriteRequired) });
+        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace, expectsRepoChanges: !!(isLocalProvider(cli) && (!routing || (routing.characteristics && routing.characteristics.repoWriteRequired))) });
+      }
+      return task;
+      };
+      let task;
+      try {
+        task = spawnFor(cli);
+      } catch (err) {
+        // Synchronous launch failure of a LOCAL provider -> cloud, same as a failed prep.
+        if (!(routing && isLocalProvider(cli) && failLocalBeforeLaunch(err.message))) throw err;
+        task = spawnFor(cli);
       }
       const payload = orch._serializeTask(task);
       if (requestedCli === 'auto' || routing) {
-        payload.requestedCli = 'auto';
+        payload.requestedCli = requestedCli;
         payload.selectedProvider = cli;
         payload.routingReason = routing.reason;
         payload.routingScore = routing.score;
@@ -287,7 +317,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         payload.selectedRole = routing.selectedRole; payload.routingCandidates = routing.routingCandidates; payload.routingPolicy = routing.policy; payload.reviewIndependence = routing.reviewIndependence;
         const configuredFallback = getConfig && getConfig().MaxFallbackAttempts;
         const maxFallback = Math.max(0, Math.min(3, Number(configuredFallback === undefined ? 3 : configuredFallback)));
-        task.requestedCli = 'auto'; task.selectedProvider = cli; task.selectedRole = routing.selectedRole; task.routingCandidates = routing.routingCandidates; task.routingPolicy = routing.policy; task.reviewIndependence = routing.reviewIndependence; task.routingReason = routing.reason; task.routingScore = routing.score; task.routingAttempt = 1; task.routingHistory = []; task._autoRouting = true;
+        task.requestedCli = requestedCli; task.selectedProvider = cli; task.selectedRole = routing.selectedRole; task.routingCandidates = routing.routingCandidates; task.routingPolicy = routing.policy; task.reviewIndependence = routing.reviewIndependence; task.routingReason = routing.reason; task.routingScore = routing.score; task.routingAttempt = 1; task.routingHistory = []; task._autoRouting = true;
         task._automaticFallback = !getConfig || (getConfig().AutomaticFallback !== false && getConfig().EnableAutomaticFallback !== false);
         task._needsAttention = !!(taskHints && (taskHints.destructive || taskHints.nonIdempotent || taskHints.ambiguousRepoState));
         if (task._needsAttention) task._automaticFallback = false;

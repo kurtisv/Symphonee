@@ -83,6 +83,13 @@ Rules the code enforces:
   start otherwise), direct calls only go to a loopback URL. `task.execution.locality` says
   `local` or `cloud` on every task.
 - An explicit user preference (`preferredProvider` / `PreferredProvider`) always wins.
+- A spawn that names a local provider explicitly (e.g. `"cli": "lmstudio-qwen-small"` from a
+  model-router recommendation) gets the same cloud fallback chain; pass `task.noFallback: true`
+  to opt out. Cancelling a task never triggers a failover.
+- A local provider that just failed is in cooldown (no new local attempt) unless the failure was
+  caused by the task itself (prompt too large, repo content not available to a tool-less model).
+- Classification reasons on the INSTRUCTION: for "summarize/classify/extract/compress/translate:
+  <payload>", words inside the payload (bug, security, production...) do not change the route.
 - `LocalFirst.enabled: false` in config turns the whole local tier off.
 
 Observability:
