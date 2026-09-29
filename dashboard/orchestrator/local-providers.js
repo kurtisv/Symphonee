@@ -76,6 +76,15 @@ const CLOUD_ENV_KEYS = Object.freeze([
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
   'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY',
   'DASHSCOPE_API_KEY', 'XAI_API_KEY', 'AZURE_OPENAI_API_KEY', 'OPENROUTER_API_KEY',
+  'OPENAI_API_BASE', 'AZURE_OPENAI_ENDPOINT', 'CLAUDE_CODE_OAUTH_TOKEN',
+  // Claude Code cloud back-ends (Bedrock / Vertex) and their credentials.
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'ANTHROPIC_VERTEX_PROJECT_ID', 'CLOUD_ML_REGION',
+  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE', 'AWS_BEARER_TOKEN_BEDROCK',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  // Endpoint overrides that could point a "local" CLI somewhere else.
+  'CODEX_OSS_BASE_URL', 'CODEX_OSS_PORT',
+  // Proxies: a local run only talks to loopback, so it never needs one.
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy',
 ]);
 
 function canonicalProviderId(id) { return LOCAL_ALIASES[id] || id; }
@@ -291,6 +300,31 @@ function gitTreeFingerprint(cwd, { spawnSync = require('child_process').spawnSyn
   return require('crypto').createHash('sha1').update(String(status.stdout)).update('\0').update(String(diff.stdout || '')).digest('hex');
 }
 
+// Generic isolated config home for a local agent CLI (claude-local). Refuses
+// to start if any credential file shows up in it.
+function prepareIsolatedHome(workspaceDir, name, forbiddenFiles = []) {
+  const home = path.join(workspaceDir, name);
+  fs.mkdirSync(home, { recursive: true });
+  for (const f of forbiddenFiles) {
+    if (fs.existsSync(path.join(home, f))) throw new Error(`local agent refused to start: ${f} present in isolated home ${home}`);
+  }
+  return home;
+}
+
+// Stop a local agent and everything it spawned. On Windows the agent runs
+// under cmd.exe (shell: true), so proc.kill() alone would orphan codex.exe.
+function killProcessTree(proc, impl = null) {
+  if (!proc) return;
+  if (proc.pid && impl) return impl(proc.pid);
+  if (proc.pid && process.platform === 'win32') {
+    try {
+      require('child_process').spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, timeout: 10000 });
+      return;
+    } catch (_) { /* fall back to a plain kill */ }
+  }
+  try { proc.kill('SIGTERM'); } catch (_) {}
+}
+
 // Only a loopback LM Studio endpoint counts as local. Anything else fails closed.
 function isLoopbackUrl(u) {
   try { const h = new URL(u).hostname; return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]'; } catch (_) { return false; }
@@ -327,5 +361,5 @@ module.exports = {
   LMSTUDIO_BASE_URL, LOCAL_PROVIDERS, LOCAL_ALIASES, CLOUD_ENV_KEYS,
   canonicalProviderId, isLocalProvider, getLocalProvider, providerLocality, isDirectLocal,
   localFirstConfig, estimateTokens, requiredContextTokens, stripCloudEnv, assertCodexOssArgs,
-  routedTaskClasses, LocalHealth, ensureLoaded, lmsLoadArgs, isLoopbackUrl, prepareCodexOssHome, gitTreeFingerprint, inlineReferencedFiles, httpGetJson,
+  routedTaskClasses, prepareIsolatedHome, killProcessTree, LocalHealth, ensureLoaded, lmsLoadArgs, isLoopbackUrl, prepareCodexOssHome, gitTreeFingerprint, inlineReferencedFiles, httpGetJson,
 };

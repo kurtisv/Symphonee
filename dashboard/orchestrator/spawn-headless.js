@@ -12,7 +12,7 @@ const { classifyError, retryDelay, maxRetriesFor } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
 const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync } = require('./gemini-runtime');
-const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint } = require('./local-providers');
+const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint, isLoopbackUrl, prepareIsolatedHome, killProcessTree } = require('./local-providers');
 module.exports = {
   // ── PTY Injection (Tier 1) ───────────────────────────────────────────────
 
@@ -273,20 +273,39 @@ module.exports = {
     // every cloud credential from the child env, pin the backend, and record
     // it on the task so "was this local?" is provable after the fact.
     if (localSpec) {
-      const stripped = stripCloudEnv(spawnEnv);
-      const lf = localFirstConfig((this.getConfig && this.getConfig()) || {});
-      if (cli === 'claude-local') {
-        spawnEnv.ANTHROPIC_BASE_URL = lf.baseUrl;
-        spawnEnv.ANTHROPIC_AUTH_TOKEN = 'lmstudio';
-        spawnEnv.CLAUDE_CODE_ATTRIBUTION_HEADER = '0';
+      try {
+        const stripped = stripCloudEnv(spawnEnv);
+        const lf = localFirstConfig((this.getConfig && this.getConfig()) || {});
+        // Fail closed: a non-loopback "local" endpoint is not local.
+        if (!isLoopbackUrl(lf.baseUrl)) throw new Error(`${cli} refused to start: LM Studio URL ${lf.baseUrl} is not loopback`);
+        let codexHome = null;
+        let claudeHome = null;
+        if (cli === 'claude-local') {
+          spawnEnv.ANTHROPIC_BASE_URL = lf.baseUrl;
+          spawnEnv.ANTHROPIC_AUTH_TOKEN = 'lmstudio';
+          spawnEnv.CLAUDE_CODE_ATTRIBUTION_HEADER = '0';
+          // No telemetry / update / error-report traffic, and an isolated config
+          // dir so the user's Claude OAuth login is not reachable from this run.
+          spawnEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+          spawnEnv.DISABLE_TELEMETRY = '1';
+          spawnEnv.DISABLE_ERROR_REPORTING = '1';
+          claudeHome = prepareIsolatedHome(this.workspaceDir, 'claude-local-home', ['.credentials.json', 'credentials.json']);
+          spawnEnv.CLAUDE_CONFIG_DIR = claudeHome;
+        }
+        if (cli === 'codex-oss-local') {
+          assertCodexOssArgs(finalArgs); // throws => fail closed
+          // `--local-provider lmstudio` always talks to localhost:1234; a different
+          // configured endpoint would make health checks and Codex disagree.
+          if (new URL(lf.baseUrl).port !== '1234') throw new Error(`codex-oss-local refused to start: Codex's lmstudio provider only targets :1234, LocalFirst.baseUrl is ${lf.baseUrl}`);
+          codexHome = prepareCodexOssHome(this.workspaceDir, cwd || process.cwd()); // throws if credentials found
+          spawnEnv.CODEX_HOME = codexHome;
+        }
+        task.execution = { locality: 'local', backend: 'lmstudio', endpoint: lf.baseUrl, model: localSpec.model, provider: cli, cloudEnvStripped: stripped, cloudCredentialsPresent: false, codexHome, claudeHome, argv: finalArgs.filter(a => a !== prompt), attempts: 1 };
+      } catch (err) {
+        // Do not leave a PENDING orphan behind a refused local launch.
+        this.tasks.delete(task.id);
+        throw err;
       }
-      let codexHome = null;
-      if (cli === 'codex-oss-local') {
-        assertCodexOssArgs(finalArgs); // throws => fail closed
-        codexHome = prepareCodexOssHome(this.workspaceDir, cwd || process.cwd()); // throws if credentials found
-        spawnEnv.CODEX_HOME = codexHome;
-      }
-      task.execution = { locality: 'local', backend: 'lmstudio', endpoint: lf.baseUrl, model: localSpec.model, provider: cli, cloudEnvStripped: stripped, cloudCredentialsPresent: false, codexHome, argv: finalArgs.filter(a => a !== prompt), attempts: 1 };
     } else {
       task.execution = { locality: 'cloud', provider: cli, model: resolvedModel };
     }
@@ -300,7 +319,8 @@ module.exports = {
     let treeBefore = null;
     if (localSpec && expectsRepoChanges) {
       try { treeBefore = (this._gitTreeFingerprint || gitTreeFingerprint)(cwd || process.cwd()); } catch (_) { treeBefore = null; }
-      task.execution.changeCheck = treeBefore ? 'armed' : 'skipped-not-a-git-repo';
+      // Outside a git repo nothing can prove the write happened: fail closed.
+      task.execution.changeCheck = treeBefore ? 'armed' : 'unverifiable-not-a-git-repo';
     }
 
     const proc = (this._spawnImpl || spawn)(command, finalArgs, {
@@ -349,6 +369,9 @@ module.exports = {
     proc.on('close', (code) => {
       task._proc = null;
       if (task.state === STATE.CANCELLED || task.state === STATE.TIMEOUT) return;
+      // 'error' already settled this attempt (and possibly failed it over).
+      if (task._settled) return;
+      task._settled = true;
 
       // A local run that "succeeds" with no output is unusable: fail it so it
       // goes to cloud instead of returning an empty answer.
@@ -363,6 +386,10 @@ module.exports = {
         } else {
           task.execution.changeCheck = 'passed';
         }
+      } else if (code === 0 && localSpec && expectsRepoChanges && !treeBefore) {
+        code = -1;
+        stderr = 'unusable local output: write task outside a git repository cannot be verified';
+        task.execution.changeCheck = 'failed-unverifiable';
       }
       if (code === 0) {
         task.state = STATE.COMPLETED;
@@ -436,17 +463,27 @@ module.exports = {
         // The actual failover event is broadcast by _tryEscalate after it
         // successfully spawns the next CLI. That keeps the UI from saying
         // "sent to Copilot" when Copilot is skipped and Gemini actually runs.
-        if (classified.failover && task._autoRouting) {
-          if (!task._escalationChain || !task._escalationChain.length) {
+        if (classified.failover && task._autoRouting && task._automaticFallback !== false) {
+          if ((!task._escalationChain || !task._escalationChain.length) && !task._chainRefilled) {
+            // One refill only, cloud-only, enabled/healthy providers, capped by
+            // MaxFallbackAttempts minus the providers already tried.
+            const cfgNow = (this.getConfig && this.getConfig()) || {};
+            const cap = Math.max(0, Math.min(3, Number(cfgNow.MaxFallbackAttempts === undefined ? 3 : cfgNow.MaxFallbackAttempts)));
+            const tried = new Set([...(task._visitedProviders || []), cli]);
             task._escalationChain = ESCALATION_ORDER
-              .filter(c => c !== cli && !isLocalProvider(c) && this.circuitBreaker.isAvailable(c));
+              .filter(c => !tried.has(c) && !isLocalProvider(c) && this.circuitBreaker.isAvailable(c)
+                && (!this.providerHealth || this.providerHealth.isAvailable(c)))
+              .slice(0, Math.max(0, cap - (tried.size - 1)));
+            task._chainRefilled = true;
           }
           task._escalationPrompt = task._escalationPrompt || originalPrompt;
           task._escalationCwd = task._escalationCwd || cwd;
         }
 
-        // Try cross-model escalation before giving up
-        if (task._autoRouting && task._escalationChain && task._escalationChain.length && classified.recoverable) {
+        // Try cross-model escalation before giving up (once per failed attempt:
+        // _broadcastTaskUpdate must not escalate the same failure again).
+        if (task._autoRouting && task._escalationChain && task._escalationChain.length && classified.recoverable && !task._failoverStarted) {
+          task._failoverStarted = true;
           if (this._tryEscalate(task)) return; // escalated to next CLI
         }
 
@@ -474,6 +511,8 @@ module.exports = {
     });
 
     proc.on('error', (err) => {
+      if (task._settled) return;
+      task._settled = true;
       task._proc = null;
       task.state = STATE.FAILED;
       task.error = err.message;
@@ -481,13 +520,20 @@ module.exports = {
       this._broadcastTaskUpdate(task);
     });
 
+    // Local agents run through a shell on Windows: killing the shell leaves
+    // codex.exe running (and possibly still editing files while the cloud
+    // fallback works on the same tree). Kill the whole process tree instead.
+    if (localSpec) {
+      task._kill = () => killProcessTree(proc, (this._killTreeImpl || null));
+    }
+
     // Timeout guard (skip if timeout is 0 = unlimited)
     if (task.timeout) task._timer = setTimeout(() => {
       if (task.state === STATE.RUNNING) {
         task.state = STATE.TIMEOUT;
         task.error = `Timed out after ${task.timeout}ms`;
         task.completedAt = Date.now();
-        try { proc.kill('SIGTERM'); } catch (_) {}
+        try { if (task._kill) task._kill(); else proc.kill('SIGTERM'); } catch (_) {}
         this._broadcastTaskUpdate(task);
       }
     }, task.timeout);

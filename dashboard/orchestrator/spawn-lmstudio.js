@@ -47,10 +47,21 @@ function localFailure(reason) {
     : /ECONNREFUSED|ECONNRESET|unreachable|socket|network/i.test(r) ? 'NETWORK_ERROR'
     : /context|ram-guard|load failed|not installed|HTTP 5\d\d/i.test(r) ? 'PROVIDER_ERROR'
     : 'TASK_ERROR';
+  // Failures caused by the task (too big, needs repo content) say nothing about
+  // the provider's health: no cooldown, the next small task can still go local.
+  const noCooldown = /context-exceeds-local|local-cannot-read-repo/.test(r);
   return {
-    message: r, errorType, local: true, failover: true, recoverable: true, retryable: false,
+    message: r, errorType, local: true, failover: true, recoverable: true, retryable: false, noCooldown,
     transient: false, permanent: false, failoverReason: `local failure: ${r.slice(0, 120)}`, timestamp: Date.now(),
   };
+}
+
+// Does the prompt itself carry the material to work on (pasted code/text)?
+function hasInlineContent(prompt) {
+  const s = String(prompt || '');
+  if (estimateTokens(s) >= 200 || /```/.test(s)) return true;
+  const codeChars = (s.match(/[{}();=<>\[\]]/g) || []).length;
+  return codeChars >= 4 || s.split('\n').length >= 4;
 }
 
 module.exports = {
@@ -94,6 +105,9 @@ module.exports = {
     this.heartbeats.set(task.id, Date.now());
     this._broadcastTaskUpdate(task);
 
+    // cancelTask() aborts this, so a cancelled local call stops using the model.
+    const abort = new AbortController();
+    task._abortController = abort;
     const post = this.lmstudioPost || postJson;
     const health = this.localHealth;
     const load = this.lmstudioEnsureLoaded || ensureLoaded;
@@ -104,8 +118,8 @@ module.exports = {
       try {
         const { prompt: fullPrompt, files } = inlineReferencedFiles(prompt, cwd);
         task.execution.inlinedFiles = files;
-        if (requiresRepoContent && !files.length && estimateTokens(prompt) < 200) {
-          throw new Error('local-cannot-read-repo: task needs repo files that a tool-less local model cannot open');
+        if (requiresRepoContent && !files.length && !hasInlineContent(prompt)) {
+          throw new Error('local-cannot-read-repo: task needs repo content that a tool-less local model cannot open (no readable file named, nothing inline)');
         }
         const promptTokens = estimateTokens(SYSTEM_PROMPT) + estimateTokens(fullPrompt);
         task.estimatedPromptTokens = promptTokens;
@@ -125,11 +139,13 @@ module.exports = {
           model: lp.model,
           messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: fullPrompt }],
           temperature: 0.2, max_tokens: lp.outputReserveTokens, stream: false,
-        }, { timeoutMs });
+        }, { timeoutMs, signal: abort.signal });
         if (task.state === STATE.CANCELLED) return;
         const choice = resp && resp.choices && resp.choices[0];
         const text = String(choice && choice.message && choice.message.content || '').trim();
         if (!text) throw new Error('unusable local output: empty completion');
+        // A cut-off answer is not a usable answer: let cloud do it properly.
+        if (choice.finish_reason === 'length') throw new Error('unusable local output: completion truncated (finish_reason=length)');
         task.state = STATE.COMPLETED;
         task.result = text;
         task.usage = { inputTokens: resp.usage && resp.usage.prompt_tokens, outputTokens: resp.usage && resp.usage.completion_tokens };
