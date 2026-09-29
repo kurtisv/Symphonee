@@ -55,6 +55,8 @@ function installCrashGuard({ app, crashReporter, getWin }) {
   // Monitor only: observing must not change Electron's own uncaught-exception
   // handling (its error dialog), just record it.
   process.on('uncaughtExceptionMonitor', (err) => log('uncaughtException', { message: err && err.message, stack: err && String(err.stack).slice(0, 2000) }));
+  // Deliberately a real listener (not a monitor): an unhandled rejection in
+  // the embedded server is logged and must not take the whole app down.
   process.on('unhandledRejection', (err) => log('unhandledRejection', { message: err && err.message, stack: err && String(err.stack || err).slice(0, 2000) }));
   app.on('before-quit', () => log('before-quit'));
   process.on('exit', (code) => log('exit', { code }));

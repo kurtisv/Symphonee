@@ -138,21 +138,31 @@ const EMBED_BREAKER_THRESHOLD = 3;
 const EMBED_BREAKER_BASE_MS = 60 * 1000;
 const EMBED_BREAKER_MAX_MS = 30 * 60 * 1000;
 let _now = () => Date.now();
-const _embedBreaker = { consecutiveFailures: 0, trips: 0, openUntil: 0, lastError: null };
+const _embedBreaker = { consecutiveFailures: 0, consecutiveSuccesses: 0, trips: 0, lastTripAt: 0, openUntil: 0, lastError: null };
+// The escalating cooldown only resets after the runner has been healthy for a
+// while: a flapping runner (1 success per few crashes) must keep backing off.
+const EMBED_HEALTHY_SUCCESSES = 20;
+const EMBED_HEALTHY_MS = 30 * 60 * 1000;
 
 function embedBreakerOpen() { return _embedBreaker.openUntil > _now(); }
+function _resetEmbedBreaker() {
+  Object.assign(_embedBreaker, { consecutiveFailures: 0, consecutiveSuccesses: 0, trips: 0, lastTripAt: 0, openUntil: 0, lastError: null });
+}
 function _recordEmbedSuccess() {
   _embedBreaker.consecutiveFailures = 0;
-  _embedBreaker.trips = 0;
+  _embedBreaker.consecutiveSuccesses++;
   _embedBreaker.openUntil = 0;
   _embedBreaker.lastError = null;
+  if (_embedBreaker.consecutiveSuccesses >= EMBED_HEALTHY_SUCCESSES || _now() - _embedBreaker.lastTripAt >= EMBED_HEALTHY_MS) _embedBreaker.trips = 0;
 }
 function _recordEmbedFailure(err) {
+  _embedBreaker.consecutiveSuccesses = 0;
   _embedBreaker.consecutiveFailures++;
   _embedBreaker.lastError = (err && err.message) || String(err);
   if (_embedBreaker.consecutiveFailures >= EMBED_BREAKER_THRESHOLD) {
     const cooldown = Math.min(EMBED_BREAKER_MAX_MS, EMBED_BREAKER_BASE_MS * Math.pow(2, _embedBreaker.trips));
     _embedBreaker.trips++;
+    _embedBreaker.lastTripAt = _now();
     _embedBreaker.consecutiveFailures = 0;
     _embedBreaker.openUntil = _now() + cooldown;
     console.warn(`[mind/embeddings] Ollama embedder failing (${_embedBreaker.lastError}); pausing embeds for ${Math.round(cooldown / 1000)}s, BM25-only meanwhile`);
@@ -288,7 +298,7 @@ module.exports = {
   _test: {
     ollamaEmbed,
     setNow(fn) { _now = fn || (() => Date.now()); },
-    reset() { _recordEmbedSuccess(); },
+    reset() { _resetEmbedBreaker(); },
     EMBED_BREAKER_THRESHOLD,
   },
 };

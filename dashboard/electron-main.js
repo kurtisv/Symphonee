@@ -118,14 +118,30 @@ if (!gotLock) {
   // itself" report). Only a refused connection, confirmed across a few
   // spaced probes, counts as a zombie; a timeout just focuses/quits.
   const { probeExistingInstance } = require('./electron/instance-probe');
-  probeExistingInstance({ host: HOST, port: PORT }).then((verdict) => {
+  const restart = () => { killStaleProcesses(PORT); setTimeout(() => { app.relaunch(); app.exit(0); }, 800); };
+  probeExistingInstance({ host: HOST, port: PORT }).then(async (verdict) => {
     if (verdict === 'dead') {
-      console.log('Stale instance detected (port refused on every probe) -- killing and relaunching...');
-      killStaleProcesses(PORT);
-      setTimeout(() => { app.relaunch(); app.exit(0); }, 800);
+      console.log('Stale instance detected (port refused for the whole startup window) -- killing and relaunching...');
+      restart();
       return;
     }
-    console.log(`Another instance is running (${verdict}) -- focusing it.`);
+    if (verdict === 'slow') {
+      // Busy or hung: never kill it silently, but don't quit silently either --
+      // let the user decide.
+      try {
+        await app.whenReady();
+        const choice = dialog.showMessageBoxSync({
+          type: 'warning', title: 'Symphonee',
+          message: 'Symphonee est deja ouvert mais ne repond pas.',
+          detail: "Il est peut-etre occupe (machine chargee). Attendre le laisse tourner ; Redemarrer le ferme de force et le relance (travail non enregistre perdu).",
+          buttons: ['Attendre', 'Redemarrer Symphonee'], defaultId: 0, cancelId: 0, noLink: true,
+        });
+        if (choice === 1) { restart(); return; }
+      } catch (_) { /* no dialog available: keep the running instance */ }
+      app.quit();
+      return;
+    }
+    console.log('Another instance is running -- focusing it.');
     app.quit();
   });
 } else {
