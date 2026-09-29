@@ -973,3 +973,38 @@ test('45. end-of-document orders are caught; ordinary e-mail / README endings st
     'Translate this sentence to French: First review and update the document, then email it.',
   ]) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
 });
+
+// ── Round 8: sign-offs never hide an order, remediation verbs, linear trimming ──
+test('46. sign-offs are trimmed without eating orders; remediation/reversal verbs are orders', () => {
+  const notSimple = [
+    'Summarize this ticket:\nLogin crashes.\nFix it.\nThanks, Bob', 'Summarize this ticket:\nLogin crashes.\nFix it.\nBest, Alice',
+    'Résume ce ticket :\nLe login plante.\nCorrige-le.\nMerci, Paul', 'Summarize this ticket:\nLogin crashes.\nFix it.\nThanks,\nBob',
+    'Summarize this ticket:\nBad commit.\nRevert it', 'Summarize this incident:\nBad deploy.\nRollback',
+    'Summarize this incident: bad deploy. Then revert the deploy.', 'Summarize this incident: bad deploy. Then roll it back.',
+    'Résume ce ticket : le module plante. Puis désactive-le.', 'Summarize this log: brute force from 1.2.3.4. Then block the IP.',
+    'Summarize this ticket: spam account. Ban the user', 'Summarize this ticket: the bug is known. Please handle it.',
+    'Summarize this ticket: the bug is known. Take care of it.',
+  ];
+  for (const prompt of notSimple) assert.notEqual(classifyTask({ prompt }).taskClass, 'simple', prompt);
+  for (const v of ['Mitigate', 'Disable', 'Remediate', 'Block', 'Harden', 'Sanitize']) {
+    assert.equal(classifyTask({ prompt: `Summarize this ticket: Auth bypass possible. ${v} it` }).taskClass, 'security', v);
+  }
+  for (const prompt of ['Summarize this ticket:\nAuth bypass possible.\nMitigate it\nThanks!', 'Summarize this ticket:\nAuth bypass possible.\n-- Fix it', 'Summarize this ticket:\nAuth bypass possible.\n— Fix it']) {
+    assert.equal(classifyTask({ prompt }).taskClass, 'security', prompt);
+  }
+  assert.equal(classifyTask({ prompt: 'Summarize this log: disk full. Then empty /tmp.' }).taskClass, 'complex');
+  for (const prompt of [
+    'Summarize this email:\nHi Bob,\nThe release slipped.\nPlease review the attached draft.\nThanks, Alice',
+    'Summarize this ticket:\nThe app crashes when you save it', 'Summarize this issue:\nUser: I tried to change it but it fails',
+    'Summarize this email:\nHi team,\nThe numbers are in.\nCheers,\nBob',
+  ]) assert.equal(classifyTask({ prompt }).taskClass, 'simple', prompt);
+});
+
+test('47. tail trimming stays linear on many short name-like lines', () => {
+  // Claude's round-8 shape: the old trimming loop copied the array for every
+  // trailing name-like line (11.9 s at 100k lines).
+  const p = 'Summarize this ticket:\nFix it\n' + 'ab cd\n'.repeat(100000) + 'Thanks';
+  const t0 = Date.now();
+  classifyTask({ prompt: p });
+  assert.ok(Date.now() - t0 < 1000, `${Date.now() - t0}ms`);
+});
