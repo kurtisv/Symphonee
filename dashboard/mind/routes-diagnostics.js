@@ -14,7 +14,7 @@ function register(addRoute, json, deps) {
     const q = question || prompt;
     if (!q) return json(res, { error: 'question or prompt required' }, 400);
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { suggestions: [], note: 'graph empty' });
 
     const seedIds = query.bestSeeds(g, q, 20);
@@ -51,7 +51,7 @@ function register(addRoute, json, deps) {
   addRoute('POST', '/api/mind/visualize', async (req, res) => {
     const body = await readBody(req).catch(() => ({}));
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     const mode = (body.mode || 'mermaid').toLowerCase();
     if (mode === 'mermaid') {

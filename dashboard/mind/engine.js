@@ -222,6 +222,10 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
   onProgress('Merging fragments...');
   let graph;
   if (incremental) {
+    // Release the shared read-only instance first: the build holds its own
+    // private copy plus the merged result, and a third full copy in memory is
+    // what pushes the main process toward its heap limit on a large graph.
+    if (typeof store.invalidateShared === 'function') store.invalidateShared(repoRoot, space);
     const existing = store.loadGraph(repoRoot, space);
     graph = buildMerge(existing, fragments, { directed: true });
   } else {
@@ -300,6 +304,7 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
     const report = renderReport(out);
     fs.writeFileSync(path.join(store.reportsDir(repoRoot, space), `report-${Date.now()}.md`), report, 'utf8');
   } catch (_) { /* non-fatal */ }
+  try { if (typeof store.pruneReports === 'function') store.pruneReports(repoRoot, space, 50); } catch (_) { /* non-fatal */ }
 
   // Best-effort embedding refresh. Gated behind SYMPHONEE_EMBED_AUTO=1 so we
   // don't surprise users with a network/model request on every build until

@@ -248,7 +248,7 @@ function mountMind(addRoute, json, ctx) {
     if (!q) return json(res, { error: 'q required' }, 400);
     const k = Math.min(50, Math.max(1, body.k || 10));
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     const dense = await tryDenseSeeds(repoRoot, space, q, k);
     if (!dense) return json(res, { error: 'embeddings unavailable - run /api/mind/embed first', q, results: [] }, 200);
@@ -344,7 +344,7 @@ function mountMind(addRoute, json, ctx) {
       ? await embeddings.health({ provider, fresh })
       : await embeddings.health({ fresh });
     let memory = null;
-    try { memory = _miniHealth(store.loadGraph(repoRoot, space)); } catch (_) {}
+    try { memory = _miniHealth(store.loadGraphShared(repoRoot, space)); } catch (_) {}
     return json(res, {
       space,
       embeddings: h,
@@ -762,7 +762,7 @@ function mountMind(addRoute, json, ctx) {
     const space = getSpace();
     let total = 0, archived = 0, unreferenced = 0;
     try {
-      const g = store.loadGraph(repoRoot, space);
+      const g = store.loadGraphShared(repoRoot, space);
       const mem = (g && g.nodes || []).filter((n) => n.kind === 'memory');
       archived = mem.filter((n) => n.status === 'archived').length;
       const live = mem.filter((n) => n.status !== 'archived');
@@ -820,7 +820,7 @@ function mountMind(addRoute, json, ctx) {
   // / a CLI can see what the brain considers stale or self-contradicting.
   addRoute('GET', '/api/mind/contradictions', (req, res) => {
     try {
-      const graph = store.loadGraph(repoRoot, getSpace());
+      const graph = store.loadGraphShared(repoRoot, getSpace());
       if (!graph) return json(res, { supersessions: [], conflicts: [], dormantIds: [] });
       return json(res, require('./contradict').analyze(graph));
     } catch (e) { return json(res, { error: e.message }, 500); }
@@ -891,7 +891,7 @@ function mountMind(addRoute, json, ctx) {
       let healthField = null;
       if (stats) {
         try {
-          const g = store.loadGraph(repoRoot, space);
+          const g = store.loadGraphShared(repoRoot, space);
           if (g) {
             try { healthField = _miniHealth(g); } catch (_) {}
             wakeup = composeWakeUp(g, {
@@ -1113,7 +1113,7 @@ function mountMind(addRoute, json, ctx) {
       let appsLine = '';
       let sitesLine = '';
       try {
-        const g = store.loadGraph(repoRoot, space);
+        const g = store.loadGraphShared(repoRoot, space);
         if (g && Array.isArray(g.nodes)) {
           const byApp = new Map();
           const bySite = new Map();
@@ -1152,7 +1152,7 @@ function mountMind(addRoute, json, ctx) {
       appsLine = appsLine + sitesLine;
       if (opts.minimal) return stamp + appsLine;
       try {
-        const g = store.loadGraph(repoRoot, space);
+        const g = store.loadGraphShared(repoRoot, space);
         if (!g) return stamp + appsLine;
         const ui = getUiContext ? getUiContext() : {};
         const wake = composeWakeUp(g, {

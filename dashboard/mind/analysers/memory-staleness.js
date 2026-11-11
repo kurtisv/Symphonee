@@ -104,7 +104,7 @@ function _isPresent(rel, idx, repoBase) {
  * endpoint.
  */
 function scan({ repoRoot, space, getUiContext, getAllRepos } = {}) {
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g) return { stale: [], total: 0, checked: 0 };
   const repos = (typeof getAllRepos === 'function' ? getAllRepos() : {}) || {};
   const ui = (typeof getUiContext === 'function' ? getUiContext() : {}) || {};

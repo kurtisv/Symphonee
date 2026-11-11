@@ -17,7 +17,7 @@ function register(addRoute, json, deps) {
     const depth = Number.isFinite(body.depth) ? body.depth : 3;
     if (!target) return json(res, { error: 'target required' }, 400);
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     return json(res, impact.getImpact(g, String(target), depth));
   });
@@ -28,7 +28,7 @@ function register(addRoute, json, deps) {
     const depth = Number.isFinite(body.depth) ? body.depth : 5;
     if (!entry) return json(res, { error: 'entrypoint required' }, 400);
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     const flow = impact.getCallFlow(g, String(entry), depth);
     if (!flow) return json(res, { error: 'entrypoint not found' }, 404);
@@ -39,7 +39,7 @@ function register(addRoute, json, deps) {
     const body = await readBody(req).catch(() => ({}));
     if (!body.name) return json(res, { error: 'name required' }, 400);
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     return json(res, { name: body.name, results: impact.getSymbolContext(g, body.name, body.file) });
   });
@@ -47,7 +47,7 @@ function register(addRoute, json, deps) {
   addRoute('POST', '/api/mind/symbols', async (req, res) => {
     const body = await readBody(req).catch(() => ({}));
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     return json(res, {
       results: impact.listSymbols(g, {
@@ -60,14 +60,14 @@ function register(addRoute, json, deps) {
 
   addRoute('POST', '/api/mind/entrypoints', async (req, res) => {
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     return json(res, { entrypoints: impact.detectEntrypoints(g) });
   });
 
   addRoute('POST', '/api/mind/circular', async (req, res) => {
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
     const cycles = impact.detectCircular(g);
     return json(res, { count: cycles.length, cycles });
@@ -81,7 +81,7 @@ function register(addRoute, json, deps) {
   addRoute('POST', '/api/mind/files', async (req, res) => {
     const body = await readBody(req).catch(() => ({}));
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { error: 'graph empty' }, 404);
 
     // Build adjacency for 'imports' edges only.

@@ -33,7 +33,7 @@ async function _embedMissingNodes({ repoRoot, space, getAiApiKeys, maxNodes = 25
   if (!loaded || vs.count() === 0) {
     return { ok: false, reason: 'vector-store-empty', healed: 0 };
   }
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g) return { ok: false, reason: 'no-graph', healed: 0 };
   const have = new Set(vs.ids);
   // Eligible for embedding: nodes with text content. We embed memories,
@@ -105,7 +105,7 @@ function _checkGraphFreshness({ repoRoot, space }) {
 }
 
 function _detectOrphanNodes({ repoRoot, space, sampleLimit = 50 }) {
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g) return { ok: true, healed: 0, count: 0 };
   const referenced = new Set();
   for (const e of g.edges || []) { referenced.add(e.source); referenced.add(e.target); }

@@ -61,6 +61,76 @@ function loadGraph(repoRoot, space) {
   }
 }
 
+// ── Shared read-only view ────────────────────────────────────────────────────
+// loadGraph() reads and parses the whole file on every call and hands back a
+// private copy. That is the right contract for callers that mutate then save,
+// but it is ruinous for readers once the graph is large: measured at 229 MB,
+// one call costs about 1.4 s and 700 MB of heap, synchronously, on the event
+// loop that also serves HTTP, WebSocket and the terminals. /api/bootstrap took
+// 42 s that way.
+//
+// loadGraphShared() returns ONE parsed instance for as long as the file on
+// disk is unchanged (mtime + size, so a write from another process is seen).
+// Contract: the result is READ-ONLY. The top-level object and its nodes/edges
+// arrays are frozen so an in-place push/sort/splice throws instead of leaking
+// into every other reader. Callers that need to change the graph must keep
+// using loadGraph().
+//
+// One entry only: a second space would otherwise pin another few hundred MB.
+// Disable with SY_MIND_GRAPH_CACHE=0.
+const SHARED_ENABLED = process.env.SY_MIND_GRAPH_CACHE !== '0';
+let _shared = null; // { path, mtimeMs, size, graph }
+
+function invalidateShared(repoRoot, space) {
+  if (!_shared) return;
+  if (repoRoot === undefined || _shared.path === graphPath(repoRoot, space)) _shared = null;
+}
+
+function loadGraphShared(repoRoot, space) {
+  if (!SHARED_ENABLED) return loadGraph(repoRoot, space);
+  const p = graphPath(repoRoot, space);
+  let st;
+  try { st = fs.statSync(p); } catch (_) {
+    if (_shared && _shared.path === p) _shared = null;
+    return null;
+  }
+  if (_shared && _shared.path === p && _shared.mtimeMs === st.mtimeMs && _shared.size === st.size) {
+    return _shared.graph;
+  }
+  // Drop the stale instance BEFORE parsing so the two never coexist in memory.
+  _shared = null;
+  const graph = loadGraph(repoRoot, space); // throws on a corrupt file: nothing is cached
+  if (!graph) return null;
+  if (Array.isArray(graph.nodes)) Object.freeze(graph.nodes);
+  if (Array.isArray(graph.edges)) Object.freeze(graph.edges);
+  Object.freeze(graph);
+  // The stat was taken before the read. If the file was replaced in between,
+  // the next call sees a different stat and reloads: stale for one call at most.
+  _shared = { path: p, mtimeMs: st.mtimeMs, size: st.size, graph };
+  return graph;
+}
+
+// Above this many nodes + edges the file is written without indentation. The
+// "human-readable, shows up in the diff viewer" intent only holds for small
+// graphs; at 59k nodes / 481k edges indentation alone was 44 MB of 219 MB.
+const COMPACT_THRESHOLD = 5000;
+
+// Every build writes a report-<ts>.md. Nothing removed them: 28,855 files had
+// accumulated. Keep the newest `keep`, leave any other file alone.
+function pruneReports(repoRoot, space, keep = 50) {
+  let names;
+  try { names = fs.readdirSync(reportsDir(repoRoot, space)); } catch (_) { return 0; }
+  const reports = names
+    .map((f) => { const m = /^report-(\d+)\.md$/.exec(f); return m ? { f, ts: Number(m[1]) } : null; })
+    .filter(Boolean)
+    .sort((a, b) => b.ts - a.ts);
+  let removed = 0;
+  for (const r of reports.slice(Math.max(0, keep))) {
+    try { fs.rmSync(path.join(reportsDir(repoRoot, space), r.f)); removed++; } catch (_) { /* best effort */ }
+  }
+  return removed;
+}
+
 function repairGraph(graph, validationErrors) {
   const warnings = [];
   const out = {
@@ -132,7 +202,11 @@ function saveGraph(repoRoot, space, graph) {
     communities: Object.keys(graph.communities || {}).length,
     tokenCost: (graph.stats && graph.stats.tokenCost) || 0,
   };
-  atomicWrite(graphPath(repoRoot, space), JSON.stringify(graph, null, 2));
+  const large = graph.nodes.length + graph.edges.length > COMPACT_THRESHOLD;
+  atomicWrite(graphPath(repoRoot, space), large ? JSON.stringify(graph) : JSON.stringify(graph, null, 2));
+  // The caller keeps (and may keep mutating) `graph`, so it is not adopted as
+  // the shared instance: the next shared read re-parses the file once.
+  invalidateShared(repoRoot, space);
   return graph.stats;
 }
 
@@ -145,7 +219,7 @@ function listSpaces(repoRoot) {
 }
 
 function statsFor(repoRoot, space) {
-  const g = loadGraph(repoRoot, space);
+  const g = loadGraphShared(repoRoot, space);
   if (!g) return null;
   const lastBuildAt = g.generatedAt;
   return {
@@ -166,6 +240,10 @@ module.exports = {
   reportsDir,
   ensureDirs,
   loadGraph,
+  loadGraphShared,
+  invalidateShared,
+  pruneReports,
+  COMPACT_THRESHOLD,
   saveGraph,
   listSpaces,
   statsFor,

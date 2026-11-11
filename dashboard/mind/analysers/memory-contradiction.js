@@ -49,7 +49,7 @@ function _polarity(card) {
 }
 
 function scan({ repoRoot, space } = {}) {
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g) return { pairs: [] };
   const cards = (g.nodes || [])
     .filter((n) => n.kind === 'memory' && n.status !== 'archived' && ASSERTIVE.has(n.kindOfMemory))
