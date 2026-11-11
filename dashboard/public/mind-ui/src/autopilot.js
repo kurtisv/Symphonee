@@ -16,20 +16,22 @@ import { escapeHtml } from './helpers.js';
     interrupted: { label: 'Interrompu', color: 'var(--red)',      hint: 'Une tache a ete interrompue : inspectez son worktree puis archivez-la avant de relancer.' },
   };
   const STAGE_LABELS = { discover: 'Decouverte', 'plan-review': 'Revue du plan', implement: 'Implementation',
-    'code-review': 'Revue Codex', repair: 'Reparation', done: 'Termine', 'budget-wait': 'En attente de quota' };
+    verify: 'Verification locale', 'code-review': 'Revue Codex', repair: 'Reparation', done: 'Termine', 'budget-wait': 'En attente de quota' };
   const OUTCOME_LABELS = { completed: 'Reussie', 'no-task': 'Aucune tache justifiee', duplicate: 'Doublon ignore',
     interrupted: 'Interrompue', 'plan-rejected': 'Plan refuse' };
   const CATEGORY_LABELS = { correctness: 'Correction', performance: 'Performance', quality: 'Structure',
     cleanup: 'Nettoyage', testing: 'Tests' };
 
-  const ap = { snap: null, busy: false, message: '', poll: null, draftGoal: null, draftRepo: null, draftConsent: false };
+  const ap = { snap: null, busy: false, message: '', poll: null, draftGoal: null, draftRepo: null, draftConsent: false, pilot: 'default' };
+  try { ap.pilot = localStorage.getItem('mind-autopilot-pilot') || 'default'; } catch (_) {}
   const esc = (v) => escapeHtml(v == null ? '' : String(v));
   const fmt = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('fr-CA') : '0');
   const when = (v) => { const t = typeof v === 'number' ? v : Date.parse(v); return t ? new Date(t).toLocaleString('fr-CA') : '-'; };
 
   async function call(pathname, body) {
-    const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-    const r = await fetch(pathname, opts);
+    // Every call names its pilot: POST in the body, GET in the query string.
+    const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, pilot: ap.pilot }) };
+    const r = await fetch(body === undefined ? pathname + '?pilot=' + encodeURIComponent(ap.pilot) : pathname, opts);
     const data = await r.json().catch(() => ({}));
     if (!r.ok || data.ok === false) {
       const err = new Error(data.error || ('HTTP ' + r.status));
@@ -39,15 +41,19 @@ import { escapeHtml } from './helpers.js';
   }
 
   async function load() {
-    try { ap.snap = await call('/api/mind/autopilot'); ap.message = ap.message || ''; }
-    catch (e) { ap.message = 'Lecture impossible : ' + e.message; }
+    try { ap.snap = await call('/api/mind/autopilot'); ap.pilots = ap.snap.pilots || ap.pilots; ap.message = ap.message || ''; }
+    catch (e) {
+      // A remembered pilot that no longer exists falls back to the main loop.
+      if (ap.pilot !== 'default') { ap.pilot = 'default'; return load(); }
+      ap.message = 'Lecture impossible : ' + e.message;
+    }
     paint();
   }
 
   async function act(label, fn) {
     if (ap.busy) return;
     ap.busy = true; ap.message = label + '...'; paint();
-    try { ap.snap = await fn(); ap.message = label + ' : fait.'; }
+    try { ap.snap = await fn(); if (ap.snap.pilots) ap.pilots = ap.snap.pilots; ap.message = label + ' : fait.'; }
     catch (e) { if (e.state) ap.snap = e.state; ap.message = label + ' : ' + e.message; }
     finally { ap.busy = false; paint(); }
   }
@@ -65,6 +71,12 @@ import { escapeHtml } from './helpers.js';
     tick() { return act('Verification', () => call('/api/mind/autopilot/tick', {})); },
     acknowledge() { return act('Archivage', () => call('/api/mind/autopilot/acknowledge', {})); },
     refresh() { return load(); },
+    select(id) {
+      if (ap.busy || id === ap.pilot) return;
+      ap.pilot = id; ap.snap = null; ap.message = ''; ap.draftGoal = null; ap.draftRepo = null; ap.draftConsent = false;
+      try { localStorage.setItem('mind-autopilot-pilot', id); } catch (_) {}
+      paint(); return load();
+    },
     remember() {
       ap.draftGoal = ($('apGoal') || {}).value;
       ap.draftRepo = ($('apRepo') || {}).value;
@@ -72,6 +84,12 @@ import { escapeHtml } from './helpers.js';
     },
     onUpdate(snapshot) {
       if (!snapshot) return;
+      // Live updates of another loop only refresh its chip in the selector.
+      if ((snapshot.pilot || 'default') !== ap.pilot) {
+        const row = (ap.pilots || []).find(p => p.pilot === snapshot.pilot);
+        if (row) { row.status = snapshot.status; row.today = snapshot.today; if (state.view === 'autopilot') paint(); }
+        return;
+      }
       ap.snap = snapshot;
       if (state.view === 'autopilot') paint();
     },
@@ -80,13 +98,37 @@ import { escapeHtml } from './helpers.js';
 
   function pipeline(s) {
     const a = s.active;
-    const order = ['discover', 'plan-review', 'implement', 'code-review', 'repair', 'done'];
+    const order = s.pipeline || ['discover', 'plan-review', 'implement', 'code-review', 'repair', 'done'];
     const current = a ? (a.waitingStage || a.stage) : (s.history[0] && s.history[0].outcome === 'completed' ? 'done' : null);
     const idx = order.indexOf(current);
     return '<div class="ap-pipe">' + order.map((st, i) => {
       const cls = st === current ? 'ap-step ap-now' : (idx > i && current !== 'done' ? 'ap-step ap-past' : (current === 'done' ? 'ap-step ap-past' : 'ap-step'));
       return '<span class="' + cls + '">' + esc(STAGE_LABELS[st]) + '</span>';
     }).join('<span class="ap-arrow">></span>') + '</div>';
+  }
+
+  function selector() {
+    const rows = ap.pilots || [];
+    if (rows.length < 2) return '';
+    return '<div class="ap-card" style="padding:8px 12px;"><div class="ap-btns" style="align-items:center;"><span class="ap-muted">Boucles :</span>' + rows.map(p => {
+      const st = STATUS[p.status] || STATUS.disabled;
+      return '<button class="tab-bar-btn' + (p.pilot === ap.pilot ? ' ap-primary' : '') + '" data-pilot="' + esc(p.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" ' + (ap.busy ? 'disabled' : '') + '>' +
+        '<span class="ap-dot" style="background:' + st.color + ';margin-right:6px;"></span>' + esc(p.label) + ' | ' + esc(p.profileLabel) + ' | ' + esc(st.label) + ' | ' + esc((p.today || {}).completed || 0) + '/' + esc((p.limits || {}).dailyCompletions || 0) + '</button>';
+    }).join('') + '<span class="ap-muted">Une seule tache tourne a la fois, toutes boucles confondues.</span></div></div>';
+  }
+
+  // What the deep loop checks by itself, without any AI call.
+  function verifyLine(s) {
+    if (!(s.verify || []).length && !(s.protectedPaths || []).length) return '';
+    const v = s.active && s.active.verify;
+    const names = (s.verify || []).map(n => {
+      const r = v && (v.results || []).find(x => x.name === n);
+      const mark = r ? (r.ok ? ' ok ' + Math.round(r.ms / 1000) + ' s' : ' ECHEC') : (v && v.running && v.current === n ? ' en cours...' : '');
+      return esc(n) + (mark ? '<b>' + esc(mark) + '</b>' : '');
+    }).join(', ');
+    return '<div class="ap-note">Garde-fous sans IA apres chaque implementation : ' + (names ? 'verifications ' + names + ' ; ' : '') +
+      'refus des tests desactives (.skip/.only) et de @ts-ignore ; ' + esc((s.protectedPaths || []).length) + ' motifs de chemins proteges' +
+      ((s.protectedPaths || []).length ? ' <span class="ap-muted" title="' + esc((s.protectedPaths || []).join('\n')) + '">(survoler pour la liste)</span>' : '') + '.</div>';
   }
 
   function meter(label, used, max, note) {
@@ -166,6 +208,7 @@ import { escapeHtml } from './helpers.js';
         .ap-err { color:var(--red); font-size:12px; white-space:pre-wrap; }
       </style>
       <div class="ap-wrap">
+        ${selector()}
         <div class="ap-card">
           <div class="ap-status">
             <span class="ap-dot" style="background:${st.color};"></span>
@@ -178,6 +221,7 @@ import { escapeHtml } from './helpers.js';
           </div>
           <div class="ap-note">Depot : <b>${esc(s.repoName || '-')}</b> <span class="ap-path">${esc(s.repoPath || '')}</span> | Objectif : ${esc(s.goal || '-')}</div>
           ${pipeline(s)}
+          ${verifyLine(s)}
           ${a ? '<div class="ap-note">Tache : <b>' + esc(a.plan ? '[' + (CATEGORY_LABELS[a.plan.category] || a.plan.category) + '] ' + a.plan.title : '(decouverte en cours)') + '</b> | revisions du plan ' + esc(a.planRevisions || 0) + '/' + esc(L.planRevisions) + ' | reparations ' + esc(a.repairs || 0) + '/' + esc(L.repairs) + (a.worktree ? ' | worktree <span class="ap-path">' + esc(a.worktree.path) + '</span>' : '') + (a.taskId ? ' | tache Orchestrator ' + esc(a.taskId) : '') + '</div>' : ''}
           ${s.nextAt && s.nextAt > Date.now() ? '<div class="ap-note">Prochaine verification possible : ' + esc(when(s.nextAt)) + '</div>' : ''}
           ${s.error ? '<div class="ap-err">' + esc(s.error) + '</div>' : ''}
@@ -188,7 +232,7 @@ import { escapeHtml } from './helpers.js';
 
         <div class="ap-grid">
           <div class="ap-card">
-            <div class="ap-title">Configuration</div>
+            <div class="ap-title">Configuration - boucle ${esc(s.label || '')} (${esc(s.profileLabel || 'Standard')})</div>
             <div class="ap-form">
               <label>Depot
                 <select id="apRepo" onchange="MindAutopilot.remember()" ${locked ? 'disabled' : ''} style="width:100%;">

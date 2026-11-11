@@ -2003,7 +2003,7 @@
           const msg = JSON.parse(ev.data);
           if (msg.type === "mind-update") onMindUpdate(msg.payload);
           if (msg.type === "skills-changed" && window.MindSkills) window.MindSkills.onChanged(msg.payload);
-          if (msg.type === "mind-update" && msg.payload && msg.payload.kind === "autopilot" && window.MindAutopilot) window.MindAutopilot.onUpdate(msg.payload.state);
+          if (msg.type === "mind-update" && msg.payload && msg.payload.kind === "autopilot" && window.MindAutopilot) window.MindAutopilot.onUpdate(Object.assign({ pilot: msg.payload.pilot || "default" }, msg.payload.state));
         } catch (_) {
         }
       };
@@ -3056,6 +3056,7 @@
     discover: "Decouverte",
     "plan-review": "Revue du plan",
     implement: "Implementation",
+    verify: "Verification locale",
     "code-review": "Revue Codex",
     repair: "Reparation",
     done: "Termine",
@@ -3075,7 +3076,11 @@
     cleanup: "Nettoyage",
     testing: "Tests"
   };
-  var ap = { snap: null, busy: false, message: "", poll: null, draftGoal: null, draftRepo: null, draftConsent: false };
+  var ap = { snap: null, busy: false, message: "", poll: null, draftGoal: null, draftRepo: null, draftConsent: false, pilot: "default" };
+  try {
+    ap.pilot = localStorage.getItem("mind-autopilot-pilot") || "default";
+  } catch (_) {
+  }
   var esc = (v) => escapeHtml(v == null ? "" : String(v));
   var fmt = (n) => typeof n === "number" && Number.isFinite(n) ? n.toLocaleString("fr-CA") : "0";
   var when = (v) => {
@@ -3083,8 +3088,8 @@
     return t ? new Date(t).toLocaleString("fr-CA") : "-";
   };
   async function call(pathname, body) {
-    const opts = body === void 0 ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-    const r = await fetch(pathname, opts);
+    const opts = body === void 0 ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, pilot: ap.pilot }) };
+    const r = await fetch(body === void 0 ? pathname + "?pilot=" + encodeURIComponent(ap.pilot) : pathname, opts);
     const data = await r.json().catch(() => ({}));
     if (!r.ok || data.ok === false) {
       const err = new Error(data.error || "HTTP " + r.status);
@@ -3096,8 +3101,13 @@
   async function load() {
     try {
       ap.snap = await call("/api/mind/autopilot");
+      ap.pilots = ap.snap.pilots || ap.pilots;
       ap.message = ap.message || "";
     } catch (e) {
+      if (ap.pilot !== "default") {
+        ap.pilot = "default";
+        return load();
+      }
       ap.message = "Lecture impossible : " + e.message;
     }
     paint();
@@ -3109,6 +3119,7 @@
     paint();
     try {
       ap.snap = await fn();
+      if (ap.snap.pilots) ap.pilots = ap.snap.pilots;
       ap.message = label + " : fait.";
     } catch (e) {
       if (e.state) ap.snap = e.state;
@@ -3139,6 +3150,21 @@
     refresh() {
       return load();
     },
+    select(id) {
+      if (ap.busy || id === ap.pilot) return;
+      ap.pilot = id;
+      ap.snap = null;
+      ap.message = "";
+      ap.draftGoal = null;
+      ap.draftRepo = null;
+      ap.draftConsent = false;
+      try {
+        localStorage.setItem("mind-autopilot-pilot", id);
+      } catch (_) {
+      }
+      paint();
+      return load();
+    },
     remember() {
       ap.draftGoal = ($("apGoal") || {}).value;
       ap.draftRepo = ($("apRepo") || {}).value;
@@ -3146,6 +3172,15 @@
     },
     onUpdate(snapshot) {
       if (!snapshot) return;
+      if ((snapshot.pilot || "default") !== ap.pilot) {
+        const row = (ap.pilots || []).find((p) => p.pilot === snapshot.pilot);
+        if (row) {
+          row.status = snapshot.status;
+          row.today = snapshot.today;
+          if (state.view === "autopilot") paint();
+        }
+        return;
+      }
       ap.snap = snapshot;
       if (state.view === "autopilot") paint();
     }
@@ -3153,13 +3188,31 @@
   window.MindAutopilot = MindAutopilot;
   function pipeline(s) {
     const a = s.active;
-    const order = ["discover", "plan-review", "implement", "code-review", "repair", "done"];
+    const order = s.pipeline || ["discover", "plan-review", "implement", "code-review", "repair", "done"];
     const current = a ? a.waitingStage || a.stage : s.history[0] && s.history[0].outcome === "completed" ? "done" : null;
     const idx = order.indexOf(current);
     return '<div class="ap-pipe">' + order.map((st, i) => {
       const cls = st === current ? "ap-step ap-now" : idx > i && current !== "done" ? "ap-step ap-past" : current === "done" ? "ap-step ap-past" : "ap-step";
       return '<span class="' + cls + '">' + esc(STAGE_LABELS[st]) + "</span>";
     }).join('<span class="ap-arrow">></span>') + "</div>";
+  }
+  function selector() {
+    const rows = ap.pilots || [];
+    if (rows.length < 2) return "";
+    return '<div class="ap-card" style="padding:8px 12px;"><div class="ap-btns" style="align-items:center;"><span class="ap-muted">Boucles :</span>' + rows.map((p) => {
+      const st = STATUS[p.status] || STATUS.disabled;
+      return '<button class="tab-bar-btn' + (p.pilot === ap.pilot ? " ap-primary" : "") + '" data-pilot="' + esc(p.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" ' + (ap.busy ? "disabled" : "") + '><span class="ap-dot" style="background:' + st.color + ';margin-right:6px;"></span>' + esc(p.label) + " | " + esc(p.profileLabel) + " | " + esc(st.label) + " | " + esc((p.today || {}).completed || 0) + "/" + esc((p.limits || {}).dailyCompletions || 0) + "</button>";
+    }).join("") + '<span class="ap-muted">Une seule tache tourne a la fois, toutes boucles confondues.</span></div></div>';
+  }
+  function verifyLine(s) {
+    if (!(s.verify || []).length && !(s.protectedPaths || []).length) return "";
+    const v = s.active && s.active.verify;
+    const names = (s.verify || []).map((n) => {
+      const r = v && (v.results || []).find((x) => x.name === n);
+      const mark = r ? r.ok ? " ok " + Math.round(r.ms / 1e3) + " s" : " ECHEC" : v && v.running && v.current === n ? " en cours..." : "";
+      return esc(n) + (mark ? "<b>" + esc(mark) + "</b>" : "");
+    }).join(", ");
+    return '<div class="ap-note">Garde-fous sans IA apres chaque implementation : ' + (names ? "verifications " + names + " ; " : "") + "refus des tests desactives (.skip/.only) et de @ts-ignore ; " + esc((s.protectedPaths || []).length) + " motifs de chemins proteges" + ((s.protectedPaths || []).length ? ' <span class="ap-muted" title="' + esc((s.protectedPaths || []).join("\n")) + '">(survoler pour la liste)</span>' : "") + ".</div>";
   }
   function meter(label, used, max, note) {
     const pct = Math.max(0, Math.min(100, max ? used / max * 100 : 0));
@@ -3228,6 +3281,7 @@
         .ap-err { color:var(--red); font-size:12px; white-space:pre-wrap; }
       </style>
       <div class="ap-wrap">
+        ${selector()}
         <div class="ap-card">
           <div class="ap-status">
             <span class="ap-dot" style="background:${st.color};"></span>
@@ -3240,6 +3294,7 @@
           </div>
           <div class="ap-note">Depot : <b>${esc(s.repoName || "-")}</b> <span class="ap-path">${esc(s.repoPath || "")}</span> | Objectif : ${esc(s.goal || "-")}</div>
           ${pipeline(s)}
+          ${verifyLine(s)}
           ${a ? '<div class="ap-note">Tache : <b>' + esc(a.plan ? "[" + (CATEGORY_LABELS[a.plan.category] || a.plan.category) + "] " + a.plan.title : "(decouverte en cours)") + "</b> | revisions du plan " + esc(a.planRevisions || 0) + "/" + esc(L.planRevisions) + " | reparations " + esc(a.repairs || 0) + "/" + esc(L.repairs) + (a.worktree ? ' | worktree <span class="ap-path">' + esc(a.worktree.path) + "</span>" : "") + (a.taskId ? " | tache Orchestrator " + esc(a.taskId) : "") + "</div>" : ""}
           ${s.nextAt && s.nextAt > Date.now() ? '<div class="ap-note">Prochaine verification possible : ' + esc(when(s.nextAt)) + "</div>" : ""}
           ${s.error ? '<div class="ap-err">' + esc(s.error) + "</div>" : ""}
@@ -3250,7 +3305,7 @@
 
         <div class="ap-grid">
           <div class="ap-card">
-            <div class="ap-title">Configuration</div>
+            <div class="ap-title">Configuration - boucle ${esc(s.label || "")} (${esc(s.profileLabel || "Standard")})</div>
             <div class="ap-form">
               <label>Depot
                 <select id="apRepo" onchange="MindAutopilot.remember()" ${locked ? "disabled" : ""} style="width:100%;">

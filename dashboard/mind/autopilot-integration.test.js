@@ -20,12 +20,18 @@ const plan = (title) => JSON.stringify({ decision: 'TASK', category: 'testing', 
   evidence: ['index.js:2 carries a TODO asking for coverage of run()'],
   acceptance: ['node --test passes with the new test'] });
 
-function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'], tamper = false, escape = false } = {}) {
+function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'], tamper = false, escape = false, def = {}, id = 'default', protect = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-autopilot-e2e-'));
   const repo = path.join(root, 'demo');
   fs.mkdirSync(repo);
   gitc(repo, 'init', '-q');
   fs.writeFileSync(path.join(repo, 'index.js'), 'function run() { return true; }\n// TODO: add coverage\nmodule.exports = { run };\n');
+  // A repository check that passes only once a repair created fixed.flag,
+  // and a heavy ignored folder shared with worktrees through a junction.
+  fs.writeFileSync(path.join(repo, 'check.js'), "process.exit(require('fs').existsSync('fixed.flag') ? 0 : 1);\n");
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'deps/\n');
+  fs.mkdirSync(path.join(repo, 'deps'));
+  fs.writeFileSync(path.join(repo, 'deps', 'lib.txt'), 'shared');
   gitc(repo, 'add', '.');
   gitc(repo, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'init');
 
@@ -57,6 +63,8 @@ function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'
         rec.stage = 'implement';
         fs.writeFileSync(path.join(opts.cwd, 'index.test.js'), "require('./index');\n");
         if (escape) fs.writeFileSync(path.join(repo, 'escaped.js'), '1;\n');
+        rec.sawDeps = fs.existsSync(path.join(opts.cwd, 'deps', 'lib.txt'));
+        if (protect) { fs.mkdirSync(path.join(opts.cwd, 'secrets'), { recursive: true }); fs.writeFileSync(path.join(opts.cwd, 'secrets', 'key.txt'), 'x'); }
         out = claudeJson('implemented');
       } else if (/adversarial CODE review/.test(prompt)) {
         rec.stage = 'code-review';
@@ -65,6 +73,8 @@ function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'
       } else if (/corrective implementer/.test(prompt)) {
         rec.stage = 'repair';
         fs.appendFileSync(path.join(opts.cwd, 'index.test.js'), "// assert run() === true\n");
+        fs.writeFileSync(path.join(opts.cwd, 'fixed.flag'), '1');
+        rec.sawDeps = fs.existsSync(path.join(opts.cwd, 'deps', 'lib.txt'));
         out = claudeJson('repaired');
       }
       setImmediate(() => { proc.stdout.emit('data', Buffer.from(out)); if (err) proc.stderr.emit('data', Buffer.from(err)); proc.emit('close', 0); });
@@ -74,7 +84,7 @@ function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'
   };
   const pilot = new MindAutopilot({ repoRoot: root, orchestrator: orch,
     getUiContext: () => ({ activeRepo: 'demo', activeSpace: '_global' }),
-    getRepoPath: () => repo, getRepos: () => ({ demo: repo }), autoTimer: false });
+    getRepoPath: () => repo, getRepos: () => ({ demo: repo }), autoTimer: false, id, def });
   return { root, repo, orch, pilot, spawns,
     cleanup() { pilot.close(); try { gitc(repo, 'worktree', 'prune'); } catch (_) {} fs.rmSync(root, { recursive: true, force: true }); } };
 }
@@ -192,5 +202,94 @@ test('an implementer that writes into the main checkout is caught and halts', as
     assert.equal(s.enabled, false);
     assert.match(s.error, /main checkout changed during implement/);
     assert.equal(f.spawns.some(x => x.stage === 'code-review'), false);
+  } finally { f.cleanup(); }
+});
+
+// ── Deep profile (second loop) ──────────────────────────────────────────────
+const DEEP = { profile: 'deep', label: 'Deep demo', verify: [{ name: 'check', cmd: ['node', 'check.js'], timeoutMs: 20000 }],
+  linkDirs: ['deps'], protectedPaths: ['^secrets/', 'pleinsens'] };
+
+test('deep loop: failed local verification repairs without a Codex call, two repairs allowed, junction removed', async () => {
+  const f = setup({ planVerdicts: ['PASS'], codeVerdicts: ['FAIL', 'PASS'], def: DEEP, id: 'deep-demo' });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve correctness in depth', allowWorktreeWrites: true });
+    await drive(f.pilot, 400);
+    const s = f.pilot.snapshot();
+    assert.equal(s.error, null, 'no error: ' + s.error);
+    // implement -> verify FAILS -> repair (no review paid) -> verify passes -> review FAIL -> repair 2 -> verify -> review PASS
+    assert.deepEqual(f.spawns.map(x => x.stage), ['discover', 'plan-review', 'implement', 'repair', 'code-review', 'repair', 'code-review']);
+    const done = s.history[0];
+    assert.equal(done.outcome, 'completed');
+    assert.equal(done.repairs, 2, 'the deep profile allows two repairs');
+    assert.deepEqual(done.verified, ['check']);
+    assert.equal(s.profile, 'deep');
+    assert.equal(s.limits.repairs, 2);
+    assert.ok(s.pipeline.includes('verify'));
+    // The first repair was triggered by Symphonee's own check, not by a reviewer.
+    assert.match(f.spawns[3].prompt, /LOCAL VERIFICATION FAILED/);
+    assert.match(f.spawns[3].prompt, /Check "check" failed/);
+    // Deep prompts and protected paths reach every stage that needs them.
+    assert.match(f.spawns[0].prompt, /Consider at least three distinct candidates/);
+    assert.match(f.spawns[0].prompt, /PROTECTED PATHS/);
+    assert.match(f.spawns[4].prompt, /Deep review\./);
+    assert.match(f.spawns[4].prompt, /They PASSED on the current worktree/);
+    // Shared folder: linked right after the worktree is created (the fake CLI runs
+    // synchronously inside the spawn, so it is observed at the repair stage),
+    // gone afterwards, original intact.
+    assert.equal(f.spawns[3].sawDeps, true);
+    assert.equal(fs.existsSync(path.join(done.worktree.path, 'deps')), false, 'junction removed from the kept worktree');
+    assert.equal(fs.readFileSync(path.join(f.repo, 'deps', 'lib.txt'), 'utf8'), 'shared');
+    assert.equal(gitc(f.repo, 'status', '--porcelain'), '');
+    // 7 launches, state kept in its own file.
+    assert.equal(s.budget.calls, 7);
+    assert.ok(fs.existsSync(path.join(f.root, '.symphonee', 'mind-autopilot-deep-demo.json')));
+    assert.equal(fs.existsSync(path.join(f.root, '.symphonee', 'mind-autopilot.json')), false);
+  } finally { f.cleanup(); }
+});
+
+test('deep loop: a change under a protected path halts before any review', async () => {
+  const f = setup({ planVerdicts: ['PASS'], def: DEEP, id: 'deep-demo', protect: true });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve correctness in depth', allowWorktreeWrites: true });
+    await drive(f.pilot, 200);
+    const s = f.pilot.snapshot();
+    assert.equal(s.enabled, false);
+    assert.match(s.error, /Protected path modified during implement: secrets\/key\.txt/);
+    assert.equal(f.spawns.some(x => x.stage === 'code-review'), false);
+    assert.equal(fs.existsSync(path.join(s.active.worktree.path, 'deps')), false, 'junction removed on halt');
+  } finally { f.cleanup(); }
+});
+
+test('deep loop: verification that keeps failing stops after the allowed repairs', async () => {
+  const def = { ...DEEP, verify: [{ name: 'never', cmd: ['node', '-e', 'process.exit(3)'], timeoutMs: 20000 }] };
+  const f = setup({ planVerdicts: ['PASS'], def, id: 'deep-demo' });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve correctness in depth', allowWorktreeWrites: true });
+    await drive(f.pilot, 400);
+    const s = f.pilot.snapshot();
+    assert.match(s.error, /Local verification still failing after max repairs: never/);
+    assert.deepEqual(f.spawns.map(x => x.stage), ['discover', 'plan-review', 'implement', 'repair', 'repair']);
+    assert.equal(f.spawns.some(x => x.stage === 'code-review'), false, 'no Codex review is paid for code that does not pass its own checks');
+  } finally { f.cleanup(); }
+});
+
+test('only one pilot runs a task at a time', async () => {
+  const f = setup({ planVerdicts: ['PASS'], codeVerdicts: ['PASS'] });
+  try {
+    const second = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch, id: 'second', def: {},
+      getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: () => f.repo, getRepos: () => ({ demo: f.repo }), autoTimer: false,
+      peers: () => [f.pilot, second] });
+    f.pilot.peers = () => [f.pilot, second];
+    f.pilot.configure({ enabled: true, goal: 'Improve test coverage', allowWorktreeWrites: true });
+    assert.equal(f.pilot.state.active.stage, 'discover');
+    second.configure({ enabled: true, goal: 'Second loop', allowWorktreeWrites: true });
+    await second.tick();
+    assert.equal(second.state.active, null, 'second pilot waits while the first runs a task');
+    assert.equal(f.spawns.length, 1);
+    await drive(f.pilot, 200);
+    assert.equal(f.pilot.snapshot().history[0].outcome, 'completed');
+    await second.tick();
+    assert.equal(second.state.active.stage, 'discover', 'second pilot starts once the first is idle');
+    second.stop(); second.close();
   } finally { f.cleanup(); }
 });

@@ -101,3 +101,37 @@ requests, and every POST needs the per-boot `x-symphonee-token`.
     node --test --test-force-exit dashboard/mind/autopilot.test.js dashboard/mind/autopilot-budget.test.js dashboard/mind/autopilot-integration.test.js dashboard/orchestrator/spawn-headless.test.js
     npm run test:server
     npm run test:renderer
+
+## Several loops, and the deep profile
+
+One pilot per repository. Each has its own state file
+(`.symphonee/mind-autopilot.json` for the main one,
+`.symphonee/mind-autopilot-<id>.json` for the others), its own budget ledger
+and history. Definitions live in `.symphonee/mind-autopilots.json` and are
+created with `POST /api/mind/autopilots {id, label, profile, verify, linkDirs,
+protectedPaths}`. Every other route takes the pilot as `?pilot=<id>` (GET) or
+`"pilot"` in the body (POST). Only one task runs at a time across all pilots.
+
+The `deep` profile keeps the same stages and adds token-free gates:
+
+- **Protected paths**: case-insensitive patterns. They are stated in every
+  prompt, and any changed or new file that matches one halts the pilot before
+  a review is paid for.
+- **Local verification** (stage `verify`) after every implementation and
+  repair: Symphonee itself runs the repository's checks in the worktree, without
+  a shell. A failure goes straight to a repair with the failing output; Codex is
+  only called on code that passes its own checks.
+- **Diff lint**: added `.skip` / `.only` / `xit` / `@ts-ignore` / `@ts-nocheck`
+  lines fail the verification.
+- **Shared folders** (`linkDirs`, e.g. `node_modules`): junctions created in
+  the worktree for the run and removed when the task completes, halts, stops or
+  is archived, so a kept worktree never points at the real folder.
+- Two repairs per task, a wider discovery (up to 25 files, three candidates,
+  defects first, regression test required) and a deeper review brief.
+
+Daily limits of the deep profile: 2 tasks, 6 discoveries, 24 launches,
+5,000,000 tokens, 200,000 reserved per unmetered call, 1 plan revision,
+2 repairs.
+
+Gas Saver (2026-11-11) uses it with `tsc --noEmit` for the app and the API and
+the full Jest suite (2,087 tests): 131 s measured, working tree left clean.
