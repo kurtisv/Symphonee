@@ -42,6 +42,16 @@ Run one immediate poll without waiting for the 20-second timer:
 
     Invoke-RestMethod -Uri 'http://127.0.0.1:3800/api/mind/autopilot/tick' -Method Post
 
+If an interrupted run remains, inspect its worktree first, then explicitly
+acknowledge it before starting a fresh run:
+
+    $body = @{
+      enabled = $true
+      acknowledgeInterrupted = $true
+      goal = "Improve verified correctness without duplicating completed work"
+    } | ConvertTo-Json
+    Invoke-RestMethod -Uri 'http://127.0.0.1:3800/api/mind/autopilot/configure' -Method Post -ContentType 'application/json' -Body $body
+
 The status reports the current stage, task ID, rejected findings, and the
 finished worktree branch/path. This first release intentionally provides a
 backend/API control surface; a visual Mind tab control can be added separately
