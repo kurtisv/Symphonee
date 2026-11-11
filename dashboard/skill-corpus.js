@@ -24,7 +24,8 @@ function safeId(s) {
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 64);
+    .slice(0, 64)
+    .replace(/-+$/g, '');
 }
 
 // Parse a SKILL.md: leading --- frontmatter --- then markdown body. Frontmatter
@@ -50,6 +51,7 @@ function parseSkill(raw, id) {
     tags,
     body: body.trim(),
     valid: !!(fm.name && fm.description),
+    runnable: REQUIRED_SECTIONS.every(title => body.split(/\r?\n/).includes('## ' + title)) && /^\d+\.\s+\S/m.test(body),
   };
 }
 
@@ -73,20 +75,45 @@ function loadCorpus(repoRoot) {
 // Light catalog (no body) for prompts/bootstrap.
 function catalog(repoRoot) {
   return loadCorpus(repoRoot).map(s => ({
-    id: s.id, name: s.name, description: s.description, when: s.when, tags: s.tags, valid: s.valid,
+    id: s.id, name: s.name, description: s.description, when: s.when, tags: s.tags, valid: s.valid, runnable: s.runnable,
   }));
 }
 
 // Compact text block listing skills, for injection into a dispatched worker's
 // prompt. The worker fetches the full procedure body on demand.
-function catalogText(repoRoot, { max = 24 } = {}) {
-  const cat = catalog(repoRoot);
+function estimateTokens(text) { return Math.ceil(String(text || '').length / 4); }
+
+// Selection is bounded in both rows and approximate tokens. GET /api/skills
+// remains the complete editor catalogue; prompt surfaces use this selection.
+function selectCatalog(repoRoot, { question = '', max = 24, budget = 1800 } = {}) {
+  const full = catalog(repoRoot);
+  const cat = full.filter(s => s.valid && s.runnable);
+  const words = new Set(String(question).toLowerCase().match(/[a-z0-9-]{3,}/g) || []);
+  const rank = s => {
+    const text = `${s.id} ${s.description} ${s.when} ${s.tags.join(' ')}`.toLowerCase();
+    return [...words].filter(w => text.includes(w)).length * 10 + (s.tags.includes('core') ? 1 : 0);
+  };
+  cat.sort((a, b) => rank(b) - rank(a) || a.id.localeCompare(b.id));
+  const selected = []; let used = 0;
+  for (const s of cat) {
+    const cost = estimateTokens(JSON.stringify(s));
+    if (selected.length >= Math.max(0, Math.min(24, max))) break;
+    if (used + cost > Math.max(0, Math.min(2400, budget))) continue;
+    selected.push(s); used += cost;
+  }
+  return { skills: selected, total: full.length, selected: selected.length, estimatedTokens: used,
+    fullCatalogTokens: estimateTokens(JSON.stringify(full)), omitted: full.length - selected.length };
+}
+
+function catalogText(repoRoot, opts = {}) {
+  const selection = selectCatalog(repoRoot, opts);
+  const cat = selection.skills;
   if (!cat.length) return '';
-  const lines = cat.slice(0, max).map(s => {
+  const lines = cat.map(s => {
     const trigger = s.when ? ` (when: ${s.when})` : '';
     return `  - ${s.id}: ${s.description}${trigger}`;
   });
-  return `[skills: ${cat.length}] Reusable procedures for HOW to do common tasks consistently. ` +
+  return `[skills: ${selection.selected}/${selection.total}] Reusable procedures for HOW to do common tasks consistently. Full catalogue: GET /api/skills. ` +
     `Before substantive work, if one matches, fetch and FOLLOW it: GET /api/skills/item?id=<id>.\n` +
     lines.join('\n');
 }
@@ -110,8 +137,60 @@ function renderSkill({ name, description, when, tags, body }) {
   return fm.join('\n') + '\n' + String(body || '').trim() + '\n';
 }
 
+const REQUIRED_SECTIONS = ['Use when', 'Do not use when', 'Steps (primary path)', 'Safety', 'Verification'];
+function safetyIssue(text) {
+  text = String(text || '');
+  if (/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|AIza[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})|-----BEGIN .*PRIVATE KEY-----/i.test(text)) return 'potential-secret';
+  if (/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bBearer\s+[A-Za-z0-9_\-.=]{12,}/.test(text)) return 'potential-secret';
+  if (/\b(?:password|passwd|secret|api[_-]?key|(?:access[_-]?|session[_-]?|runtime[_-]?)?token|x-symphonee-token|authorization|credential)["']?\s*[=:]\s*["']?(?!\$|<|process\.env|env:|redacted|undefined|null|false)[A-Za-z0-9_+\/=-]{8,}/i.test(text)) return 'potential-secret';
+  if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text)) return 'personal-data';
+  if (/[A-Z]:[\\/]+Users[\\/]+[^\s]+|\/(?:home|Users)\/[^\s]+/i.test(text)) return 'personal-path';
+  return null;
+}
+function validateSkill(skill, { strict = false } = {}) {
+  if (typeof skill.body !== 'string' || typeof skill.name !== 'string' || typeof skill.description !== 'string') return 'name, description and body must be strings';
+  if (!safeId(skill.id || skill.name) || !skill.name || !skill.description || !skill.body) return 'id/name, description and body are required';
+  for (const k of ['name', 'description', 'when']) if (/[\r\n]/.test(String(skill[k] || ''))) return 'frontmatter must be single-line';
+  if ((Array.isArray(skill.tags) ? skill.tags : [skill.tags || '']).some(t => /[\r\n]/.test(String(t)))) return 'tags must be single-line';
+  const issue = safetyIssue(JSON.stringify(skill)); if (issue) return issue;
+  if (strict) {
+    if (/[^\x09\x0a\x0d\x20-\x7e]/.test(JSON.stringify(skill))) return 'generated skills must be ASCII';
+    if (!skill.when || String(skill.body).length > 8000) return 'generated skill trigger/body invalid';
+    let previous = -1;
+    for (const title of REQUIRED_SECTIONS) {
+      const marker = '## ' + title;
+      const i = skill.body.search(new RegExp('^' + marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\r?$', 'm'));
+      if (i <= previous || !skill.body.slice(i + marker.length).split('\n## ')[0].trim()) return 'missing or empty section: ' + title;
+      previous = i;
+    }
+    const steps = skill.body.split('## Steps (primary path)')[1].split('\n## ')[0];
+    if ((steps.match(/^\d+\.\s+\S.+/gm) || []).length < 2) return 'at least two concrete steps required';
+  }
+  return null;
+}
+function atomicWrite(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + '.tmp-' + process.pid;
+  try { fs.writeFileSync(tmp, text, 'utf8'); fs.renameSync(tmp, file); }
+  finally { try { fs.unlinkSync(tmp); } catch (_) {} }
+}
+function provenancePath(repoRoot, id) { return path.join(corpusDir(repoRoot), '.provenance', safeId(id) + '.json'); }
+function readProvenance(repoRoot, id) { try { return JSON.parse(fs.readFileSync(provenancePath(repoRoot, id), 'utf8')); } catch (_) { return null; } }
+function upsertSkill(repoRoot, input, { strict = false, provenance = null, broadcast } = {}) {
+  const skill = { ...input, id: safeId(input.id || input.name) };
+  const issue = validateSkill(skill, { strict });
+  if (issue) throw new Error(issue);
+  if (provenance && safetyIssue(JSON.stringify(provenance))) throw new Error('unsafe provenance');
+  const file = path.join(corpusDir(repoRoot), skill.id, 'SKILL.md');
+  const existed = fs.existsSync(file);
+  atomicWrite(file, renderSkill(skill));
+  if (provenance) atomicWrite(provenancePath(repoRoot, skill.id), JSON.stringify(provenance, null, 2));
+  if (broadcast) broadcast({ type: 'skills-changed', payload: { action: existed ? 'updated' : 'created', id: skill.id } });
+  return { ok: true, id: skill.id, action: existed ? 'UPDATED' : 'CREATED' };
+}
+
 function mountSkills(addRoute, json, ctx) {
-  const { repoRoot, broadcast } = ctx;
+  const { repoRoot, broadcast, permGate } = ctx;
 
   // List the catalog (no bodies).
   addRoute('GET', '/api/skills', (req, res) => {
@@ -126,12 +205,13 @@ function mountSkills(addRoute, json, ctx) {
     if (!id) return json(res, { ok: false, error: 'id required' }, 400);
     const skill = loadCorpus(repoRoot).find(s => s.id === id);
     if (!skill) return json(res, { ok: false, error: 'not found' }, 404);
-    return json(res, { ok: true, skill });
+    return json(res, { ok: true, skill, provenance: readProvenance(repoRoot, id), estimatedBodyTokens: estimateTokens(skill.body) });
   });
 
   // Author or update a skill. This is the learning-loop seed: a correction or a
   // recurring procedure becomes a durable, shared skill the next CLI inherits.
   addRoute('POST', '/api/skills', async (req, res) => {
+    if (permGate && !await permGate(res, 'api', 'POST /api/skills', 'Save canonical skill')) return;
     const b = await readBody(req).catch(() => ({}));
     const id = safeId(b.id || b.name);
     const name = String(b.name || '').trim();
@@ -140,20 +220,17 @@ function mountSkills(addRoute, json, ctx) {
     if (!id || !name || !description || !body) {
       return json(res, { ok: false, error: 'id/name, description and body are required' }, 400);
     }
-    const dir = path.join(corpusDir(repoRoot), id);
     try {
-      fs.mkdirSync(dir, { recursive: true });
-      const text = renderSkill({ name, description, when: b.when, tags: b.tags, body });
-      fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8');
+      upsertSkill(repoRoot, { id, name, description, when: b.when, tags: b.tags, body }, { broadcast });
     } catch (e) {
       return json(res, { ok: false, error: e.message }, 500);
     }
-    try { if (broadcast) broadcast({ type: 'skills-changed', payload: { action: 'upsert', id } }); } catch (_) {}
     return json(res, { ok: true, id });
   });
 
   // Remove a skill from the corpus.
   addRoute('DELETE', '/api/skills/item', async (req, res) => {
+    if (permGate && !await permGate(res, 'api', 'DELETE /api/skills/item', 'Delete canonical skill')) return;
     const url = new URL(req.url, 'http://x');
     const id = safeId(url.searchParams.get('id'));
     if (!id) return json(res, { ok: false, error: 'id required' }, 400);
@@ -172,11 +249,16 @@ function mountSkills(addRoute, json, ctx) {
   // Surface the catalog in /api/bootstrap so EVERY CLI session opens knowing
   // which procedures exist (it fetches the body of the one it needs).
   return {
-    bootstrapField() {
-      const cat = catalog(repoRoot);
+    bootstrapField(opts = {}) {
+      const selection = selectCatalog(repoRoot, opts);
+      const cat = selection.skills;
       return {
         enabled: cat.length > 0,
-        total: cat.length,
+        total: selection.total,
+        selected: selection.selected,
+        omitted: selection.omitted,
+        estimatedCatalogTokens: selection.estimatedTokens,
+        fullCatalogTokens: selection.fullCatalogTokens,
         skills: cat,
         itemUrl: '/api/skills/item?id=<id>',
         listUrl: '/api/skills',
@@ -191,4 +273,4 @@ function mountSkills(addRoute, json, ctx) {
   };
 }
 
-module.exports = { mountSkills, loadCorpus, catalog, catalogText, parseSkill, renderSkill, safeId, corpusDir };
+module.exports = { mountSkills, loadCorpus, catalog, catalogText, selectCatalog, estimateTokens, parseSkill, renderSkill, safeId, corpusDir, upsertSkill, validateSkill, safetyIssue, REQUIRED_SECTIONS, atomicWrite, readProvenance };

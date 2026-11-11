@@ -20,6 +20,7 @@ function loadModule() {
     toast: () => {},
     setTimeout: () => 0,
     addEventListener: () => {}, // window.addEventListener (iframe message bridge)
+    fetch: () => new Promise(() => {}), // initPlugins() auto-runs at load; keep it pending so it stays silent
     console,
   };
   ctx.window = ctx;

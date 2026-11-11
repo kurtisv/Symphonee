@@ -14,6 +14,7 @@ import { refreshSmartHealth } from './views.js';
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'mind-update') onMindUpdate(msg.payload);
+          if (msg.type === 'skills-changed' && window.MindSkills) window.MindSkills.onChanged(msg.payload);
         } catch (_) {}
       };
       ws.onclose = () => { state.ws = null; setTimeout(connectWS, 3000); };

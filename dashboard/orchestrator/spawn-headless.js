@@ -12,7 +12,7 @@ const { classifyError, retryDelay, maxRetriesFor } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { classifyTask } = require('./task-roles');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
-const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync } = require('./gemini-runtime');
+const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync, shellSafeCommand } = require('./gemini-runtime');
 const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint, isLoopbackUrl, prepareIsolatedHome, killProcessTree } = require('./local-providers');
 module.exports = {
   // ── PTY Injection (Tier 1) ───────────────────────────────────────────────
@@ -66,7 +66,7 @@ module.exports = {
    * @param {number} [opts.timeout] — ms before killing (default 5 min)
    * @param {string} [opts.from]    — termId of the requesting agent
    * @param {string} [opts.taskId]  — tie to existing task
-   * @param {string} [opts.model]   — model override (e.g. 'opus', 'gpt-5.4', 'flash')
+   * @param {string} [opts.model]   — model override (e.g. 'opus', 'gpt-5.5', 'flash')
    * @param {string} [opts.effort]  — effort level (e.g. 'low', 'high', 'max')
    * @param {boolean} [opts.autoPermit] — auto-approve all permissions
    * @returns {Task}
@@ -123,7 +123,7 @@ module.exports = {
     // is fetched on demand (GET /api/skills/item?id=<id>). Skipped if no skills.
     if (typeof this.getSkillsHint === 'function' && _retryAttempt === 0) {
       try {
-        const sh = this.getSkillsHint();
+        const sh = this.getSkillsHint(prompt);
         if (sh && typeof prompt === 'string' && !prompt.includes('[skills:')) {
           prompt = `${sh}\n\n${prompt}`;
         }
@@ -330,7 +330,8 @@ module.exports = {
       task.execution.changeCheck = treeBefore ? 'armed' : 'unverifiable-not-a-git-repo';
     }
 
-    const proc = (this._spawnImpl || spawn)(command, finalArgs, {
+    // Chemin avec espace + shell Windows : voir shellSafeCommand (gemini-runtime.js).
+    const proc = (this._spawnImpl || spawn)(useShell ? shellSafeCommand(command) : command, finalArgs, {
       cwd: cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,

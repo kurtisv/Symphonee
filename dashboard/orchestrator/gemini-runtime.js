@@ -30,6 +30,16 @@ function buildGeminiEnv(baseEnv = process.env, nodeExecPath = process.execPath) 
   return env;
 }
 
+// Sous Windows avec shell: true, Node concatene commande et arguments SANS
+// guillemets : un chemin avec espace (C:\Users\kurtis verres\...) etait coupe
+// par cmd.exe (« 'C:\Users\kurtis' n'est pas reconnu »). On le met entre
+// guillemets ; les chemins sans espace et les commandes nues sont inchanges.
+function shellSafeCommand(command, platform = process.platform) {
+  const text = String(command || '');
+  if (platform !== 'win32' || !/\s/.test(text) || /^".*"$/.test(text)) return text;
+  return '"' + text + '"';
+}
+
 function resolveGeminiCommand({ cwd = process.cwd(), env = process.env, detect = null } = {}) {
   const bin = process.platform === 'win32' ? 'gemini.cmd' : 'gemini';
   const local = path.join(cwd, 'node_modules', '.bin', bin);
@@ -60,7 +70,7 @@ function probeGemini({ cwd = process.cwd(), env = process.env, command, timeoutM
     const finish = (result) => { if (!settled) { settled = true; resolve({ ...result, command: resolved.command }); } };
     let proc;
     try {
-      proc = spawnFn(resolved.command, ['--version'], {
+      proc = spawnFn(process.platform === 'win32' ? shellSafeCommand(resolved.command) : resolved.command, ['--version'], {
         cwd, env: buildGeminiEnv(env), stdio: ['ignore', 'pipe', 'pipe'],
         shell: process.platform === 'win32',
       });
@@ -88,7 +98,7 @@ function probeGeminiSync({ cwd = process.cwd(), env = process.env, command, time
   if (!resolved || (!resolved.command && !resolved.path)) return { state: 'UNAVAILABLE', reason: 'NOT_INSTALLED', command: null };
   const executable = resolved.path || resolved.command;
   try {
-    const output = execFileSyncFn(executable, ['--version'], {
+    const output = execFileSyncFn(process.platform === 'win32' ? shellSafeCommand(executable) : executable, ['--version'], {
       cwd, env: buildGeminiEnv(env), encoding: 'utf8', timeout: timeoutMs,
       shell: process.platform === 'win32', stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -100,4 +110,4 @@ function probeGeminiSync({ cwd = process.cwd(), env = process.env, command, time
   }
 }
 
-module.exports = { buildGeminiEnv, resolveGeminiCommand, probeGemini, probeGeminiSync, classifyProbe, RUNTIME_INCOMPATIBLE };
+module.exports = { buildGeminiEnv, shellSafeCommand, resolveGeminiCommand, probeGemini, probeGeminiSync, classifyProbe, RUNTIME_INCOMPATIBLE };

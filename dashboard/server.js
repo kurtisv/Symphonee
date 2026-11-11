@@ -534,7 +534,7 @@ const server = http.createServer(async (req, res) => {
         // Skills: the procedural catalog -- every CLI sees which reusable
         // procedures exist and fetches the body of the one it needs.
         let skillsField = null;
-        try { skillsField = skills && typeof skills.bootstrapField === 'function' ? skills.bootstrapField() : null; } catch (_) {}
+        try { skillsField = skills && typeof skills.bootstrapField === 'function' ? skills.bootstrapField({ question: url.searchParams.get('question') || context.activeRepo || '' }) : null; } catch (_) {}
         // Append mind instructions to the main instructions blob so every CLI
         // is told how to query and contribute to the shared brain.
         try {
@@ -1054,16 +1054,17 @@ if (orchestrator) {
 // injected into dispatched-worker prompts (so delegated work follows the same
 // procedures). The body of each skill is fetched on demand from /api/skills/item.
 const { mountSkills } = require('./skill-corpus');
-const skills = mountSkills(addRoute, json, { repoRoot, broadcast });
+const skills = mountSkills(addRoute, json, { repoRoot, broadcast, permGate });
 console.log(`  Skill corpus mounted (/api/skills/*) -- ${skills.catalog().length} skill(s)`);
 if (orchestrator) {
-  orchestrator.getSkillsHint = () => skills.catalogText();
+  orchestrator.getSkillsHint = (question) => skills.catalogText({ question });
 }
-// Skill Reflection: the REFLECT->LEARN arc -- mines Mind's corrections into
-// PROPOSED skills (propose-only; the user accepts). Closes the loop so the
-// system improves its own procedures, not just its knowledge.
+// Skill Reflection: existing REFLECT->LEARN arc with compact incremental CLI
+// evidence, conservative attribution and high-confidence canonical updates.
+// Background reflection stays proposal-only; manual Reflect can auto-apply.
 const { mountReflection } = require('./skill-reflection');
-const skillReflection = mountReflection(addRoute, json, { repoRoot, getUiContext: getUiContextWithPath, broadcast });
+const skillReflection = mountReflection(addRoute, json, { repoRoot, getUiContext: getUiContextWithPath, broadcast, permGate,
+  canWrite: () => permissions.evaluate({ type: 'api', value: 'POST /api/skills/reflect' }, permissions.loadSettings(configPath)).decision === 'allow' });
 console.log('  Skill reflection mounted (/api/skills/reflect, /api/skills/proposals)');
 // Contracts: the INTEND arc -- commit substantial/autonomous work to a reviewable
 // plan with acceptance criteria + per-unit evidence, so it is trustworthy and

@@ -67,11 +67,15 @@ const CLI_MODELS = {
     notes: 'Free tier: flash/flash-lite only. Pro models require API billing enabled on Google Cloud project.',
   },
   codex: {
-    models: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.1-codex'],
-    modelIds: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark', 'gpt-5.1-codex', 'gpt-5.1-codex-mini'],
+    // Catalogue reel d'un compte ChatGPT (`codex debug models`, CLI 0.157.1,
+    // 2026-09-28). gpt-5.4 / gpt-5.4-mini / gpt-5.1-codex ont ete retires :
+    // OpenAI repond HTTP 400 « not supported when using Codex with a ChatGPT
+    // account ». Verifier ce catalogue avant d'ajouter un modele ici.
+    models: ['gpt-5.5', 'gpt-5.6-terra', 'gpt-6-sol'],
+    modelIds: ['gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'],
     apiKeyOnlyModels: ['o3', 'o4-mini', 'gpt-4.1'],
-    notSupported: ['gpt-4o'],
-    defaultModel: 'gpt-5.4',
+    notSupported: ['gpt-4o', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.3-codex-spark'],
+    defaultModel: 'gpt-5.5',
     modelFlag: '-m',
     effortFlag: null,
     permissionFlag: '--dangerously-bypass-approvals-and-sandbox',

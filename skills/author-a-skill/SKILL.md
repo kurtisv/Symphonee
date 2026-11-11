@@ -23,19 +23,30 @@ by default -- the user should never have to teach the same procedure twice.
 - It is a one-off specific to this repo state with no reuse value.
 
 ## Steps (primary path)
-1. Name the procedure as an imperative capability ("Ship a code change"), pick a
+1. Inventory the existing catalogue with `GET /api/skills` before creating a
+   skill. Prefer strengthening the same procedure under its existing id.
+   For accumulated history, use Mind > Skills > Reflect now or
+   `POST /api/skills/reflect { autoApply: true }`. The existing reflection engine
+   distils independent procedural evidence and applies only strongly confirmed
+   candidates. Keep medium-confidence cases in proposals for review. A single
+   trivial event or a project fact is not a reusable procedure.
+2. Name the procedure as an imperative capability ("Ship a code change"), pick a
    kebab-case `id`, and write a one-line `description` that states what it does and
    when to use it (this is what other CLIs see in the catalog).
-2. Write the body with these sections: `Use when`, `Do not use when`,
+3. Write the body with these sections: `Use when`, `Do not use when`,
    `Steps (primary path)` (numbered, concrete, ordered), `Safety` (the guardrails
    / the exact mistake to avoid), `Verification` (how to know it was done right).
    Keep it model-neutral -- no provider names, plain ASCII.
-3. If you are upgrading an existing skill rather than creating one, fetch it
+4. If you are upgrading an existing skill rather than creating one, fetch it
    (`GET /api/skills/item?id=<id>`), fold the new lesson into the right section,
    and keep the id stable.
-4. Save it: `POST /api/skills { id, name, description, when?, tags?, body }`. It is
+5. Save it: `POST /api/skills { id, name, description, when?, tags?, body }`. It is
    immediately in the corpus and surfaces in the next bootstrap for every CLI.
-5. Also record the underlying decision in Mind (`use-mind`) if it is a durable
+6. Inspect the reflection summary and provenance separately from the executable
+   body (`GET /api/skills/reflection` and `GET /api/skills/item?id=<id>`).
+   Never copy transcripts or provenance into SKILL.md, and never inject all
+   bodies into bootstrap. Only fetch a selected procedure's body on demand.
+7. Also record the underlying decision in Mind (`use-mind`) if it is a durable
    fact, so knowledge and procedure both persist.
 
 ## Safety
