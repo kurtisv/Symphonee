@@ -20,7 +20,7 @@ const plan = (title) => JSON.stringify({ decision: 'TASK', category: 'testing', 
   evidence: ['index.js:2 carries a TODO asking for coverage of run()'],
   acceptance: ['node --test passes with the new test'] });
 
-function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'], tamper = false } = {}) {
+function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'], tamper = false, escape = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-autopilot-e2e-'));
   const repo = path.join(root, 'demo');
   fs.mkdirSync(repo);
@@ -56,6 +56,7 @@ function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'
       } else if (/Claude implementer in ISOLATED/.test(prompt)) {
         rec.stage = 'implement';
         fs.writeFileSync(path.join(opts.cwd, 'index.test.js'), "require('./index');\n");
+        if (escape) fs.writeFileSync(path.join(repo, 'escaped.js'), '1;\n');
         out = claudeJson('implemented');
       } else if (/adversarial CODE review/.test(prompt)) {
         rec.stage = 'code-review';
@@ -104,8 +105,11 @@ test('full loop: plan rejected then revised, code rejected then repaired, worktr
     // Permission flags per stage, despite the global bypass mode.
     for (const sp of f.spawns) {
       const yolo = sp.args.includes('--dangerously-skip-permissions') || sp.args.includes('--dangerously-bypass-approvals-and-sandbox');
-      if (sp.stage === 'implement' || sp.stage === 'repair') assert.equal(yolo, true, sp.stage + ' is elevated');
-      else assert.equal(yolo, false, sp.stage + ' must not be elevated');
+      assert.equal(yolo, false, sp.stage + ' must never get skip-permissions/bypass');
+      if (sp.stage === 'implement' || sp.stage === 'repair') {
+        assert.equal(sp.args[sp.args.indexOf('--permission-mode') + 1], 'acceptEdits', sp.stage + ' edits confined to cwd');
+        assert.ok(sp.args.some(a => /Bash\(git push:\*\)/.test(a)), 'push denied');
+      }
     }
     const disc = f.spawns[0];
     assert.ok(disc.args.includes('--disallowedTools') && disc.args.includes('Edit') && disc.args.includes('Write'));
@@ -113,7 +117,7 @@ test('full loop: plan rejected then revised, code rejected then repaired, worktr
     const pr = f.spawns[1];
     assert.equal(pr.args[pr.args.indexOf('--sandbox') + 1], 'read-only');
     const cr = f.spawns[5];
-    assert.equal(cr.args[cr.args.indexOf('--sandbox') + 1], 'workspace-write');
+    assert.equal(cr.args[cr.args.indexOf('--sandbox') + 1], 'read-only');
     assert.match(disc.prompt, /^READ-ONLY/, 'compact context: no Mind/skills/ledger preamble');
 
     // Isolation: work happened in a separate worktree; main checkout untouched.
@@ -132,7 +136,7 @@ test('full loop: plan rejected then revised, code rejected then repaired, worktr
     assert.equal(s.budget.byProvider.codex.calls, 4);
     assert.equal(s.budget.unmeteredCalls, 0);
     assert.equal(s.budget.tokenUsageExact, true);
-    assert.equal(s.budget.byProvider.claude.measuredTokens, 4 * 550);
+    assert.equal(s.budget.byProvider.claude.measuredTokens, 4 * (550 + 9000), 'cache reads are charged');
     assert.equal(s.budget.byProvider.claude.cacheReadTokens, 4 * 9000);
     assert.equal(s.budget.byProvider.codex.measuredTokens, 1500 * 2 + 2000 * 2);
     // Both daily discoveries are spent: the pilot now reports quota and does not start a third.
@@ -167,5 +171,17 @@ test('plan rejected twice stops the task after one revision', async () => {
     assert.match(s.error, /Plan rejected after the allowed revision/);
     assert.equal(s.history[0].outcome, 'plan-rejected');
     assert.equal(f.spawns.some(x => x.stage === 'implement'), false, 'no implementation without an approved plan');
+  } finally { f.cleanup(); }
+});
+
+test('an implementer that writes into the main checkout is caught and halts', async () => {
+  const f = setup({ planVerdicts: ['PASS'], escape: true });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve test coverage', allowWorktreeWrites: true });
+    await drive(f.pilot);
+    const s = f.pilot.snapshot();
+    assert.equal(s.enabled, false);
+    assert.match(s.error, /main checkout changed during implement/);
+    assert.equal(f.spawns.some(x => x.stage === 'code-review'), false);
   } finally { f.cleanup(); }
 });

@@ -14,6 +14,22 @@ const { classifyTask } = require('./task-roles');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
 const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync, shellSafeCommand } = require('./gemini-runtime');
 const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint, isLoopbackUrl, prepareIsolatedHome, killProcessTree } = require('./local-providers');
+// Windows + shell:true concatenates args WITHOUT quoting (Node DEP0190), so an
+// argument with spaces (the worker system prompt, "Bash(git diff:*)") was split
+// into separate words. Quote such args using MSVC argv rules.
+function winQuoteArg(a) {
+  const s = String(a);
+  if (s === '') return '""';
+  if (!/[\s"&|<>^()]/.test(s)) return s;
+  return '"' + s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"';
+}
+const CONFINED_ALLOWED_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write',
+  'Bash(node:*)', 'Bash(npm test:*)', 'Bash(npm run test:*)', 'Bash(python -m pytest:*)', 'Bash(pytest:*)',
+  'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git add:*)', 'Bash(git commit:*)']);
+const CONFINED_DENIED_TOOLS = Object.freeze(['WebFetch', 'WebSearch', 'Bash(git push:*)', 'Bash(git merge:*)',
+  'Bash(git rebase:*)', 'Bash(git reset:*)', 'Bash(git branch:*)', 'Bash(git worktree:*)', 'Bash(git checkout:*)',
+  'Bash(npm publish:*)']);
+
 // Real token usage when the CLI reports it; null otherwise (callers must then
 // show an estimate, never a fabricated exact value).
 function parseCliUsage(cli, stdout, stderr, { usageJson = false } = {}) {
@@ -33,7 +49,10 @@ function parseCliUsage(cli, stdout, stderr, { usageJson = false } = {}) {
     }
   }
   if (cli === 'codex') {
-    const m = /tokens used\s*[:\r\n]\s*(\d[\d,. ]*)/i.exec(String(stderr || '') + '\n' + String(stdout || ''));
+    // Codex colours its summary ("ESC[2mtokens usedESC[0m\n107 569"): strip
+    // ANSI first; the count may use spaces, NBSP or commas as separators.
+    const plain = (String(stderr || '') + '\n' + String(stdout || '')).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+    const m = /tokens used\s*:?\s*(\d[\d,.   ]*)/i.exec(plain);
     if (m) {
       const total = parseInt(m[1].replace(/[^\d]/g, ''), 10);
       if (Number.isFinite(total)) out.usage = { totalTokens: total, source: 'codex-stderr' };
@@ -99,7 +118,7 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, sandbox = null, usageJson = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, _retryAttempt = 0 }) {
     cli = canonicalProviderId(cli);
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
@@ -259,8 +278,16 @@ module.exports = {
       } catch (_) {}
       // readOnly is a hard override: a read-only worker never inherits the
       // global bypass/trusted mode, and its edit tools are disabled outright.
-      const shouldYolo = !readOnly && (autoPermit || modeYolo);
+      // confineWrites (Claude only): edits are auto-accepted inside cwd only,
+      // shell is limited to an allow-list, publishing/history-rewriting git
+      // and package commands are denied. It never inherits bypass mode either.
+      const shouldYolo = !readOnly && !confineWrites && (autoPermit || modeYolo);
       if (readOnly && cli === 'claude') finalArgs.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit');
+      else if (confineWrites && cli === 'claude') {
+        finalArgs.push('--permission-mode', 'acceptEdits',
+          '--allowedTools', ...CONFINED_ALLOWED_TOOLS,
+          '--disallowedTools', ...CONFINED_DENIED_TOOLS);
+      }
       // Codex: an explicit sandbox (read-only / workspace-write) instead of the
       // bypass flag. readOnly without an explicit sandbox means read-only.
       const codexSandbox = sandbox || (readOnly ? 'read-only' : null);
@@ -368,7 +395,8 @@ module.exports = {
     }
 
     // Chemin avec espace + shell Windows : voir shellSafeCommand (gemini-runtime.js).
-    const proc = (this._spawnImpl || spawn)(useShell ? shellSafeCommand(command) : command, finalArgs, {
+    const spawnArgs = useShell && process.platform === 'win32' ? finalArgs.map(winQuoteArg) : finalArgs;
+    const proc = (this._spawnImpl || spawn)(useShell ? shellSafeCommand(command) : command, spawnArgs, {
       cwd: cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
@@ -684,3 +712,4 @@ module.exports = {
 
 // Exposed for tests without becoming an Orchestrator mixin method.
 Object.defineProperty(module.exports, 'parseCliUsage', { value: parseCliUsage, enumerable: false });
+Object.defineProperty(module.exports, 'winQuoteArg', { value: winQuoteArg, enumerable: false });

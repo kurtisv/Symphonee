@@ -199,7 +199,7 @@ import { escapeHtml } from './helpers.js';
               </label>
               <label style="display:flex;gap:8px;align-items:flex-start;">
                 <input type="checkbox" id="apConsent" onchange="MindAutopilot.remember()" ${locked ? 'disabled' : ''} ${(ap.draftConsent || consentKnown) ? 'checked' : ''}>
-                <span>J'autorise Claude a modifier des fichiers <b>avec permissions elevees</b> (outils sans confirmation), uniquement dans un worktree Git isole. La decouverte et les revues Codex restent en lecture seule. Rien n'est pousse ni fusionne.${consentKnown ? ' <span class="ap-muted">(deja accorde le ' + esc(when(s.consent.at)) + ')</span>' : ''}</span>
+                <span>J'autorise Claude a modifier des fichiers <b>sans confirmation</b> (permissions elevees) dans un worktree Git isole, et a lancer une liste fermee de commandes (node, npm test, pytest, git status/diff/log/show/add/commit). git push/merge/reset/branch/checkout et npm publish sont refuses. La decouverte et les revues Codex restent en lecture seule ; rien n'est pousse ni fusionne. Ce n'est pas un bac a sable du systeme : les tests executes peuvent faire ce que fait le code du depot, d'ou le controle du checkout principal apres chaque etape.${consentKnown ? ' <span class="ap-muted">(deja accorde le ' + esc(when(s.consent.at)) + ')</span>' : ''}</span>
               </label>
               <div class="ap-btns">
                 ${s.enabled ? '' : '<button class="tab-bar-btn ap-primary" id="apEnable" onclick="MindAutopilot.enable()" ' + ((ap.busy || s.status === 'interrupted') ? 'disabled' : '') + '>Activer</button>'}

@@ -244,7 +244,7 @@ class MindAutopilot {
     // That is elevated, so it needs an explicit, recorded acknowledgement.
     const consent = allowWorktreeWrites === true ? { worktreeWrites: true, at: new Date().toISOString(), repoPath: cwd }
       : (this.state.consent?.worktreeWrites && this.state.consent.repoPath === cwd ? this.state.consent : null);
-    if (!consent) throw new Error('Explicit consent required: allowWorktreeWrites:true lets Claude edit files with skipped permissions inside an isolated worktree');
+    if (!consent) throw new Error('Explicit consent required: allowWorktreeWrites:true lets Claude auto-accept edits inside an isolated worktree and run an allow-listed set of commands');
     this.state = { ...this.state, enabled: true, goal: objective, repoName: name,
       repoPath: cwd, space: ui.activeSpace || '_global', error: null, nextAt: 0, consent };
     this.log('enabled', 'Autopilot enabled on ' + name + ' (' + cwd + ')');
@@ -342,9 +342,10 @@ class MindAutopilot {
         prompt: stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage) });
     } else if (stage === 'implement') {
       a.baseSha = git(this.state.repoPath, ['rev-parse', 'HEAD']);
+      a.mainFingerprint = worktreeFingerprint(this.state.repoPath);
       const branch = 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
       task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch,
-        expectsRepoChanges: true, autoPermit: true, prompt: [
+        expectsRepoChanges: true, autoPermit: false, confineWrites: true, prompt: [
           'Claude implementer in ISOLATED git worktree. Approved plan: ' + JSON.stringify(a.plan),
           RULES, CODE_QUALITY_POLICY, CONTEXT_POLICY,
           'Make the minimal correct code changes. Run relevant tests before and after when feasible.',
@@ -356,13 +357,15 @@ class MindAutopilot {
       if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed');
     } else if (stage === 'code-review') {
       a.reviewFingerprint = worktreeFingerprint(a.worktree.path);
-      // workspace-write lets Codex run tests; the fingerprint proves it
-      // changed nothing. readOnly blocks any inherited bypass mode.
+      // Read-only sandbox (tests can still run); the fingerprint additionally
+      // proves the reviewer left no persistent change. readOnly blocks any
+      // inherited bypass mode.
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path,
-        autoPermit: false, readOnly: true, sandbox: 'workspace-write', prompt: this.reviewPrompt(stage) });
+        autoPermit: false, readOnly: true, sandbox: 'read-only', prompt: this.reviewPrompt(stage) });
     } else if (stage === 'repair') {
+      a.mainFingerprint = worktreeFingerprint(this.state.repoPath);
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path,
-        autoPermit: true, expectsRepoChanges: true, prompt: [
+        autoPermit: false, confineWrites: true, expectsRepoChanges: true, prompt: [
           'Claude corrective implementer. Only work in this isolated worktree.',
           'Approved plan: ' + JSON.stringify(a.plan), RULES, CONTEXT_POLICY,
           'Codex review findings: ' + String(a.review).slice(0, 8000),
@@ -420,6 +423,11 @@ class MindAutopilot {
       return this.dispatch('discover');
     }
     if (a.stage === 'implement' || a.stage === 'repair') {
+      // Claude's tools are confined to the worktree, but this is not an OS
+      // sandbox: prove the user's own checkout was left untouched.
+      if (a.mainFingerprint && worktreeFingerprint(this.state.repoPath) !== a.mainFingerprint) {
+        throw new Error('The main checkout changed during ' + a.stage + '; stopped for inspection: ' + this.state.repoPath);
+      }
       if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('No Git changes despite Claude completion');
       return this.dispatch('code-review');
     }

@@ -84,3 +84,30 @@ test('Antigravity uses agy -p prompt mode and no Gemini API key', () => {
   assert.equal(CLI_MODELS.antigravity.effortFlag, '--effort');
   assert.doesNotMatch(JSON.stringify(CLI_MODELS.antigravity), /GEMINI_API_KEY/);
 });
+
+test('winQuoteArg keeps argv intact through cmd.exe (the worker system prompt used to be split into words)', () => {
+  const { winQuoteArg } = spawnHeadless;
+  assert.equal(winQuoteArg('-p'), '-p');
+  assert.equal(winQuoteArg('Bash(git diff:*)'), '"Bash(git diff:*)"');
+  assert.equal(winQuoteArg(''), '""');
+  if (process.platform === 'win32') {
+    const { spawnSync } = require('child_process');
+    const script = path.join(os.tmpdir(), 'sym-argv-' + process.pid + '.js');
+    fs.writeFileSync(script, 'console.log(JSON.stringify(process.argv.slice(2)))');
+    const raw = ['--append-system-prompt', 'You are a worker agent. NEVER sleep.', 'x"y', 'C:\\my dir\\', 'Bash(git push:*)'];
+    const r = spawnSync('node', ['"' + script + '"', ...raw.map(winQuoteArg)], { shell: true, encoding: 'utf8' });
+    fs.rmSync(script, { force: true });
+    assert.deepEqual(JSON.parse(r.stdout.trim()), raw);
+  }
+});
+
+test('parseCliUsage reads coloured Codex totals and Claude JSON usage, and never invents one', () => {
+  const { parseCliUsage } = spawnHeadless;
+  assert.deepEqual(parseCliUsage('codex', '', '\x1b[2mtokens used\x1b[0m\n107 569\n').usage, { totalTokens: 107569, source: 'codex-stderr' });
+  assert.equal(parseCliUsage('codex', 'no usage here', '').usage, undefined);
+  const j = parseCliUsage('claude', JSON.stringify({ type: 'result', result: 'ok', is_error: false,
+    usage: { input_tokens: 5, cache_creation_input_tokens: 10, cache_read_input_tokens: 100, output_tokens: 7 } }), '', { usageJson: true });
+  assert.equal(j.result, 'ok');
+  assert.deepEqual([j.usage.inputTokens, j.usage.outputTokens, j.usage.cacheReadTokens], [15, 7, 100]);
+  assert.deepEqual(parseCliUsage('claude', 'plain text', '', { usageJson: true }), {});
+});

@@ -53,7 +53,9 @@ function dailyUsage(state, now = Date.now()) {
     v.calls++;
     v.cacheReadTokens += finiteNumber(item.cacheReadTokens) || 0;
     if (finiteNumber(item.actualTokens) !== null) {
-      const tokens = finiteNumber(item.actualTokens);
+      // Cache reads are real processed tokens: they are charged too, so a
+      // "measured" day never undercounts what the provider reported.
+      const tokens = finiteNumber(item.actualTokens) + (finiteNumber(item.cacheReadTokens) || 0);
       measuredTokens += tokens;
       v.measuredTokens += tokens;
     } else {
