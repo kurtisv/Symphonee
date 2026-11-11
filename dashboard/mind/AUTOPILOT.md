@@ -6,13 +6,19 @@ Brain and Orchestrator; it is not a second scheduler or a separate agent app.
 ## Lifecycle
 
 1. Claude discovers a specific, evidence-backed next task from the repository,
-   Mind learning nodes and pending insights; returns structured JSON.
+   Mind learning nodes and pending insights; returns structured JSON. Its five
+   work categories are: correctness, performance, quality, cleanup, testing.
+   All categories require concrete evidence; performance additionally requires
+   a reproducible baseline with benchmark command, conditions, and measurement.
 2. Codex independently reviews the plan. On rejection, Claude must replan.
 3. Claude implements in an **isolated Git worktree**.
 4. Codex reviews the actual diff against the base commit, tests and regressions.
+   Performance changes require before/after measurements on comparable workloads.
+   Cleanup/refactoring must demonstrate unchanged external behavior.
 5. On rejection, Claude fixes the findings, then Codex repeats its review.
-6. On pass, the worktree is preserved for human review. Mind records the
-   completed tasks via the existing Orchestrator-to-Mind integration.
+6. On pass, the worktree is preserved for human review. The autopilot history
+   stores category, task evidence, reviewer findings and worktree information.
+   Mind also records completed CLI tasks via the existing Orchestrator integration.
 7. After a cooldown, Mind discovers another task. If there is no justified
    task, it backs off instead of manufacturing work.
 
@@ -26,7 +32,7 @@ Open Symphonee, select the target repository and use PowerShell:
 
     $body = @{
       enabled = $true
-      goal = "Improve the selected app's verified correctness, reliability and tests, without duplicating existing work"
+      goal = "Fix proven bugs; optimize measured bottlenecks, improve maintainability, clean dead or duplicated code, and add useful tests. Preserve behavior and avoid duplicate work."
     } | ConvertTo-Json
     Invoke-RestMethod -Uri 'http://127.0.0.1:3800/api/mind/autopilot/configure' -Method Post -ContentType 'application/json' -Body $body
 
@@ -74,6 +80,13 @@ without compromising the existing renderer bundle.
   or hard network egress restrictions are guaranteed by this version.
 - The daily success limit is not an exact token budget. Review usage before
   raising limits.
+- An improvement proposal requires concrete repository evidence (not a generic
+  "code could be cleaner" claim).
+- Performance optimization requires measurable before/after comparisons. If no
+  reproducible baseline exists, the plan is rejected.
+- Cleanup, refactoring, and architectural improvements must preserve public
+  behavior; Codex must flag unrelated churn and unintended API changes.
+- Mind may choose NO_TASK when no safe, independently testable benefit exists.
 - Human review is still required before integrating worktree changes into the
   main branch.
 
