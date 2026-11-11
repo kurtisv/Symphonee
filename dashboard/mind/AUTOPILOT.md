@@ -23,8 +23,55 @@ Brain and Orchestrator; it is not a second scheduler or a separate agent app.
    task, it backs off instead of manufacturing work.
 
 The loop **never merges, pushes, deploys, or deletes worktrees**.
-Review/replan is capped at 2 iterations each; at most 2 successful tasks and
-5 discoveries per UTC day. A failure pauses the loop with a recorded error.
+It permits **2 successful tasks and 2 Claude discovery calls per UTC day**,
+at most 1 plan revision and 1 code repair per task. A failure pauses the loop.
+
+## Token and call budget (Mind Autopilot only)
+
+Mind runs a deterministic, local Git scan first (tracked source files, TODO/
+FIXME markers and recent commits). If there are no source files or code markers,
+it makes **no discovery model call**. Discovery, code changes and reviews use
+focused prompts and suppress the Orchestrator's extra Mind/skills/ledger context
+hints. Autopilot passes `noRetry: true` and `noFallback: true` to CLI spawns,
+so hidden provider retries and cloud fallback do not bypass the call budget.
+
+Defaults, counted per **UTC day** and saved in
+`.symphonee/mind-autopilot.json`:
+
+| Guardrail | Default |
+| --- | ---: |
+| Successful tasks | 2 / day |
+| Claude discovery calls (including replans) | 2 / day |
+| Total Claude + Codex launches | 12 / day |
+| Conservative charged token budget | 120,000 / day |
+| Reservation when usage unavailable | 12,000 tokens / call |
+| Plan revisions | 1 / task |
+| Code repairs | 1 / task |
+
+A normal completed task uses four calls (Claude discovery, Codex plan review,
+Claude implementation, Codex code review). Therefore two simple tasks typically
+need eight calls. Two repairs can bring the total to ten; the 120,000-token
+reservation budget admits ten *unmetered* calls. If actual per-task usage is
+reported, the ledger reconciles the reservation to that value. Otherwise the
+12,000-token reservation remains a conservative **estimate**, not an actual
+token count. A task can consume more tokens than its reservation before finishing.
+**This is not a guaranteed provider-enforced token or billing cap.** The
+number of new autopilot launches, unlike token consumption inside a CLI process,
+is capped strictly by the dispatcher.
+
+When the budget runs out between stages, Mind keeps its state and waits until
+the following UTC day rather than launching another worker. A restart with
+unfinished work always requires manual inspection and acknowledgment.
+
+Check counters with:
+
+    Invoke-RestMethod 'http://127.0.0.1:3800/api/mind/autopilot' |
+      Select-Object -ExpandProperty budget
+
+The counters include actual measured token usage where available, estimated
+reserved tokens for unmetered calls, remaining budget and Claude/Codex totals.
+They do not cover manual AI sessions, other Symphonee automations or API
+accounts outside Mind Autopilot.
 
 ## Enable for the selected repository
 
@@ -76,10 +123,11 @@ without compromising the existing renderer bundle.
 - Reboots do not blindly resume unfinished edits.
 - The loop is scoped to the selected repository and does not change repositories
   when the UI changes.
-- Provider costs and local compute still apply. No automatic spending limits
-  or hard network egress restrictions are guaranteed by this version.
-- The daily success limit is not an exact token budget. Review usage before
-  raising limits.
+- Provider costs and local compute still apply. The token reservation is not
+  a hard provider billing cap; actual usage may exceed a reservation.
+- Daily call and token limits apply only to this Mind Autopilot instance; they
+  are not account-wide quotas and do not protect other agents or automation.
+- Never raise the limits solely to consume more budget: review usage first.
 - An improvement proposal requires concrete repository evidence (not a generic
   "code could be cleaner" claim).
 - Performance optimization requires measurable before/after comparisons. If no
@@ -92,7 +140,7 @@ without compromising the existing renderer bundle.
 
 ## Test
 
-    node --test dashboard/mind/autopilot.test.js
+    node --test dashboard/mind/autopilot.test.js dashboard/mind/autopilot-budget.test.js
 
 Full project suite:
 

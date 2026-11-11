@@ -71,7 +71,7 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] — auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, _retryAttempt = 0 }) {
     cli = canonicalProviderId(cli);
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
@@ -105,7 +105,7 @@ module.exports = {
     // worker's own prompt to the hint so L1 becomes the BFS sub-graph
     // for THIS task instead of generic god-nodes. Skipped silently if
     // Mind is not available.
-    if (typeof this.getMindHint === 'function' && _retryAttempt === 0) {
+    if (!compactContext && typeof this.getMindHint === 'function' && _retryAttempt === 0) {
       try {
         // Pass the prompt as the question so L1 is task-aware. The hint
         // function accepts an opts object; legacy callers without args still work.
@@ -121,7 +121,7 @@ module.exports = {
     // Skills hint: prepend the procedural catalog so a dispatched worker follows
     // the same consistent procedures as every other CLI. Each skill's full body
     // is fetched on demand (GET /api/skills/item?id=<id>). Skipped if no skills.
-    if (typeof this.getSkillsHint === 'function' && _retryAttempt === 0) {
+    if (!compactContext && typeof this.getSkillsHint === 'function' && _retryAttempt === 0) {
       try {
         const sh = this.getSkillsHint();
         if (sh && typeof prompt === 'string' && !prompt.includes('[skills:')) {
@@ -133,7 +133,7 @@ module.exports = {
     // Ledger hint: prepend a short "what just happened" digest from the action
     // ledger so the worker inherits the same recent-activity view the user has
     // (recent actions/changes + checkpoints it can revert to). Skipped if empty.
-    if (typeof this.getLedgerHint === 'function' && _retryAttempt === 0) {
+    if (!compactContext && typeof this.getLedgerHint === 'function' && _retryAttempt === 0) {
       try {
         const lh = this.getLedgerHint();
         if (lh && typeof prompt === 'string' && !prompt.includes('[recent activity:')) {
@@ -430,7 +430,7 @@ module.exports = {
 
         // Retry with exponential backoff if error is retryable (per-provider cap --
         // codex-oss gets 0 retries; everyone else keeps the global MAX_RETRIES).
-        if (classified.retryable && _retryAttempt < maxRetriesFor(cli)) {
+        if (!noRetry && classified.retryable && _retryAttempt < maxRetriesFor(cli)) {
           const delay = retryDelay(_retryAttempt);
           task.state = STATE.PENDING;
           task._retryAttempt = _retryAttempt + 1;
