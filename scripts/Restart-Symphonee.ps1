@@ -118,10 +118,10 @@ try {
   catch { Log "restart-app failed ($_); closing the window instead" ; try { [void](Get-Process -Id $old).CloseMainWindow() } catch { } }
 
   # 2. The old process must really be gone.
-  $deadline = (Get-Date).AddSeconds(45)
+  $deadline = (Get-Date).AddSeconds(20)
   while ((Get-Process -Id $old -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
   if (Get-Process -Id $old -ErrorAction SilentlyContinue) {
-    Log "old PID $old still alive after 45 s: forcing"
+    Log "old PID $old still alive after 20 s (Electron logs its exit but native teardown can hang on open PTYs): forcing"
     & taskkill /PID $old /T /F 2>&1 | ForEach-Object { Log "taskkill: $_" }
     Start-Sleep -Seconds 3
     if (Get-Process -Id $old -ErrorAction SilentlyContinue) { throw "PID $old could not be terminated. Nothing relaunched." }
