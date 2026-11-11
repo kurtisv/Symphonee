@@ -37,9 +37,9 @@ are listed at the end for scripts.
 | Guardrail | Limit |
 | --- | ---: |
 | Successful tasks | 3 / day |
-| Claude discoveries (including plan revisions) | 4 / day |
-| Claude + Codex launches | 18 / day |
-| Reservation token budget | 2,500,000 / day |
+| Claude discoveries (including plan revisions) | 6 / day |
+| Claude + Codex launches | 20 / day |
+| Reservation token budget | 3,000,000 / day |
 | Reservation when real usage is unknown | 150,000 tokens / call |
 | Plan revisions | 1 / task |
 | Code repairs | 1 / task |
@@ -50,14 +50,14 @@ provider fallback can create an uncounted call.
 
 **Real usage** is recorded when the CLI reports it: Claude via
 `--output-format json` (input + cache creation + cache read + output), Codex
-via its `tokens used` line. Otherwise the 12,000 reservation is shown in the UI
+via its `tokens used` line. Otherwise the per-call reservation is shown in the UI
 as an *estimation*. The token budget is checked before each launch; it is
 **not** a cap enforced inside a running CLI, so a single call can overshoot.
 
 Measured on this machine (2026-11-11): a trivial Claude `-p` call is ~21,600
 tokens (mostly cache); one Codex review of a ~1,400-line diff was 107,569
 tokens. The limits were raised on 2026-11-11 (user decision) from these figures:
-a typical task is ~715k tokens, ~1.33M with one plan revision and one repair, so 2.5M admits two worst-case tasks per day (18 launches >= 2 x 8).
+a typical task is ~715k tokens, ~1.33M with one plan revision and one repair, so 3M admits two worst-case tasks per day plus margin (20 launches >= 2 x 8).
 
 ## Restart and stop
 

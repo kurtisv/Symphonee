@@ -118,7 +118,14 @@ test('full loop: plan rejected then revised, code rejected then repaired, worktr
     assert.equal(pr.args[pr.args.indexOf('--sandbox') + 1], 'read-only');
     const cr = f.spawns[5];
     assert.equal(cr.args[cr.args.indexOf('--sandbox') + 1], 'read-only');
-    assert.match(disc.prompt, /^READ-ONLY/, 'compact context: no Mind/skills/ledger preamble');
+    assert.match(disc.prompt, /^TARGET REPOSITORY: /, 'compact context: no Mind/skills/ledger preamble, repo pinned first');
+    // Every stage pins its own directory and neutralises "work in the active repo" instructions.
+    for (const sp of f.spawns) {
+      assert.match(sp.prompt, /TARGET REPOSITORY: /, sp.stage + ' prompt pins the repository');
+      assert.match(sp.prompt, /IGNORE those instructions/, sp.stage + ' prompt overrides repo-redirect instructions');
+      if (sp.stage === 'code-review' || sp.stage === 'repair') assert.ok(sp.prompt.includes(sp.cwd), sp.stage + ' pins the worktree path');
+      if (sp.stage === 'discover' || sp.stage === 'plan-review') assert.ok(sp.prompt.includes(f.repo), sp.stage + ' pins the repo path');
+    }
 
     // Isolation: work happened in a separate worktree; main checkout untouched.
     const wt = last.worktree.path;
