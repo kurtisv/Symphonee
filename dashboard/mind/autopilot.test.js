@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { MindAutopilot, parsePlan, verdict, WORK_CATEGORIES } = require('./autopilot');
+const { MindAutopilot, parsePlan, verdict, localTriage, WORK_CATEGORIES } = require('./autopilot');
 const { LIMITS } = require('./autopilot-budget');
 const completedToday = (at) => Array.from({ length: LIMITS.dailyCompletions }, () => ({ at, outcome: 'completed' }));
 
@@ -348,4 +348,21 @@ test('daily counters use the local calendar day', () => {
   assert.equal(dayOf(late), '2026-11-11');
   assert.equal(dayOf(startOfNextDay(late)), '2026-11-12');
   assert.equal(new Date(startOfNextDay(late)).getHours(), 0);
+});
+test('local triage: real markers only, and source files without a sibling test', () => {
+  const f = fixture();
+  try {
+    const repo = f.pilot.getRepoPath();
+    fs.writeFileSync(path.join(repo, 'pattern.js'), "const RE = /TODO|FIXME/;\nmodule.exports = RE;\n");
+    fs.writeFileSync(path.join(repo, 'covered.js'), 'module.exports = 1;\n');
+    fs.writeFileSync(path.join(repo, 'covered.test.js'), "require('./covered');\n");
+    execFileSync('git', ['add', '.'], { cwd: repo });
+    const s = localTriage(repo);
+    assert.deepEqual(s.markers, ['index.js:2'], 'the TODO|FIXME regex literal is not a marker');
+    assert.ok(s.untested.sample.includes('index.js'));
+    assert.ok(s.untested.sample.includes('pattern.js'));
+    assert.equal(s.untested.sample.includes('covered.js'), false, 'a file with a sibling test is not untested');
+    assert.equal(s.untested.sample.includes('covered.test.js'), false, 'test files are not targets');
+    assert.equal(s.untested.of, 3);
+  } finally { f.cleanup(); }
 });

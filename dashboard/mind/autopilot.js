@@ -114,10 +114,28 @@ function worktreeFingerprint(cwd) {
   return h.digest('hex');
 }
 // Cheap local signals used BEFORE an AI discovery call; no model tokens spent.
+const TEST_FILE = /(\.test|\.spec|_test)\.[jt]sx?$|(^|\/)test_[^/]*\.py$|_test\.py$|(^|\/)(__tests__|tests?)\//;
+// Generated or vendored code is never a useful target for "add a test".
+const NOT_A_TARGET = /(^|\/)(node_modules|vendor|dist|build|coverage)\/|\.min\.js$|\.bundle\.js$/;
 function localTriage(cwd) {
-  const files = git(cwd, ['ls-files', '--', '*.js', '*.jsx', '*.ts', '*.tsx', '*.py'])
-    .split(/\r?\n/).filter(Boolean).slice(0, 24);
-  const r = runGit(cwd, ['grep', '-n', '-I', '-E', 'TODO|FIXME|HACK|XXX', '--',
+  const all = git(cwd, ['ls-files', '--', '*.js', '*.jsx', '*.ts', '*.tsx', '*.py'])
+    .split(/\r?\n/).filter(Boolean);
+  const files = all.slice(0, 24);
+  // Source files with no sibling test file: a concrete, token-free signal for
+  // the "testing" category (still only a hint; discovery must verify it).
+  const tracked = new Set(all);
+  const testOf = (f) => {
+    const m = /^(.*?)(\.[jt]sx?|\.py)$/.exec(f);
+    if (!m) return [];
+    const dir = path.posix.dirname(f), base = path.posix.basename(m[1]);
+    return [m[1] + '.test' + m[2], m[1] + '.spec' + m[2], m[1] + '_test' + m[2],
+      (dir === '.' ? '' : dir + '/') + 'test_' + base + m[2], (dir === '.' ? '' : dir + '/') + '__tests__/' + base + '.test' + m[2]];
+  };
+  const sources = all.filter(f => !TEST_FILE.test(f) && !NOT_A_TARGET.test(f));
+  const untested = sources.filter(f => !testOf(f).some(t => tracked.has(t)));
+  // Real markers only ("TODO:", "FIXME(" ...), not the words inside a regex
+  // such as this module's own 'TODO|FIXME' pattern.
+  const r = runGit(cwd, ['grep', '-n', '-I', '-E', '\\b(TODO|FIXME|HACK|XXX)\\b[:(]', '--',
     '*.js', '*.jsx', '*.ts', '*.tsx', '*.py']);
   if (r.error || (r.status !== 0 && r.status !== 1)) {
     throw new Error('Local triage failed: ' + String(r.stderr || r.error?.message).slice(0, 200));
@@ -129,7 +147,12 @@ function localTriage(cwd) {
   const recent = git(cwd, ['log', '-5', '--pretty=format:%h %s']).split(/\r?\n/).filter(Boolean)
     .slice(0, 5).map(x => x.slice(0, 120));
   const dirty = git(cwd, ['status', '--porcelain']).split(/\r?\n/).filter(Boolean).length;
-  return { files, markers, recent, dirtyFiles: dirty, useful: files.length > 0 || markers.length > 0 };
+  // Spread the untested sample across the tree instead of the first N paths.
+  const step = Math.max(1, Math.floor(untested.length / 12));
+  const untestedSample = untested.filter((_, i) => i % step === 0).slice(0, 12);
+  return { files, markers, recent, dirtyFiles: dirty,
+    untested: { count: untested.length, of: sources.length, sample: untestedSample },
+    useful: files.length > 0 || markers.length > 0 };
 }
 
 class MindAutopilot {
@@ -313,6 +336,7 @@ class MindAutopilot {
     return ['READ-ONLY independent work discovery. Goal: ' + s.goal,
       CONTEXT_POLICY,
       'Local token-free Git signals (hints, not verified issues): ' + JSON.stringify(a.localSignals || {}),
+      'untested.sample lists source files with no sibling test file. Before answering NO_TASK, inspect at least three of them (and the real markers) and check whether an important path is genuinely untested or buggy.',
       'Inspect only relevant repository tests, TODOs and history. Choose ONE justified, useful, small engineering task.',
       'Allowed categories: ' + WORK_CATEGORIES.join(', ') + '. Select based on evidence and actual impact, not equal quotas.',
       CODE_QUALITY_POLICY,
@@ -371,7 +395,9 @@ class MindAutopilot {
     this.save();
     let task;
     if (stage === 'discover' || stage === 'plan-review') {
-      task = this.orch.spawnHeadless({ ...opts, cli, effort: stage === 'discover' ? 'low' : undefined,
+      // Default effort: a 'low' discovery measured 2026-11-11 looked at one
+      // signal and gave up (NO_TASK) despite real untested modules.
+      task = this.orch.spawnHeadless({ ...opts, cli,
         cwd: this.state.repoPath, autoPermit: false, readOnly: true,
         prompt: repoPin(this.state.repoPath, this.state.repoPath) + '\n\n'
           + (stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage)) });
