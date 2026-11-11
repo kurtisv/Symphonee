@@ -1,6 +1,7 @@
 // mind-ui :: router module. Extracted verbatim from the original single-file
 // mind-ui IIFE; wiring is generated. Build: node scripts/build-renderer.js
 import { $, state } from './core.js';
+import { _autopilotTeardown, renderAutopilot } from './autopilot.js';
 import { renderDashboard } from './dashboard.js';
 import { build, closeDetail } from './detailActions.js';
 import { teardownNetwork } from './graph.js';
@@ -31,6 +32,7 @@ import { renderImpact, renderKnowledge, renderMindmap, renderSearch } from './vi
   function render() {
     teardownNetwork();
     _specsTeardown();
+    _autopilotTeardown();
     // Mind map + Specs + Skills views are full-bleed (they manage their own layout).
     const main = $('mindMain');
     if (main) {
@@ -45,6 +47,8 @@ import { renderImpact, renderKnowledge, renderMindmap, renderSearch } from './vi
     // Skills are procedural recipes, independent of the knowledge graph, so this
     // view renders even before a brain is built.
     if (state.view === 'skills') return renderSkills();
+    // The autopilot is a control surface, not a graph view: it works without a brain.
+    if (state.view === 'autopilot') return renderAutopilot();
     if (!state.graph) {
       $('mindMain').innerHTML = `
         <div style="text-align:center;padding:60px 20px;color:var(--subtext0);">

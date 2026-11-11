@@ -7,6 +7,7 @@ import { fitGraph, loadMindmap, setGraphMode } from './graph.js';
 import { showGpuInfo } from './helpers.js';
 import { onActivate, onDeactivate } from './lifecycle.js';
 import { setView } from './router.js';
+import './autopilot.js';
 import { clearSearch, runSearch, toggleSearchOnly } from './search.js';
 import { artifactsCreate, embedAll, refreshWakeupOutput, renderWakeup, runQueryFromUi, runSmart } from './views.js';
 

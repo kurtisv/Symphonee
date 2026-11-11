@@ -50,8 +50,8 @@ test('ledger enforces daily call count when reported tokens are low', () => {
   assert.equal(dailyUsage(state).calls, LIMITS.dailyCalls);
   assert.equal(canDispatch(state), false);
 });
-test('ledger resets on UTC day boundary without clearing historical entries', () => {
-  const yesterday = Date.UTC(2026, 10, 10, 23, 59);
+test('ledger resets on the local day boundary without clearing historical entries', () => {
+  const yesterday = new Date(2026, 10, 10, 23, 59).getTime();
   const today = startOfNextDay(yesterday);
   const state = { budgetCalls: [] };
   reserveCall(state, { cli: 'claude', stage: 'discover', at: yesterday, ref: 'old' });

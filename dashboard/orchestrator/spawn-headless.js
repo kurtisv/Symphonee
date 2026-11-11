@@ -14,6 +14,34 @@ const { classifyTask } = require('./task-roles');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
 const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync, shellSafeCommand } = require('./gemini-runtime');
 const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint, isLoopbackUrl, prepareIsolatedHome, killProcessTree } = require('./local-providers');
+// Real token usage when the CLI reports it; null otherwise (callers must then
+// show an estimate, never a fabricated exact value).
+function parseCliUsage(cli, stdout, stderr, { usageJson = false } = {}) {
+  const out = {};
+  if (cli === 'claude' && usageJson) {
+    let j = null;
+    try { j = JSON.parse(String(stdout || '').trim()); } catch (_) {}
+    if (j && typeof j === 'object' && j.type === 'result') {
+      out.result = typeof j.result === 'string' ? j.result.trim() : '';
+      out.isError = j.is_error === true;
+      const u = j.usage || {};
+      const n = (x) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : 0);
+      if (typeof u.input_tokens === 'number' || typeof u.output_tokens === 'number') {
+        out.usage = { inputTokens: n(u.input_tokens) + n(u.cache_creation_input_tokens), outputTokens: n(u.output_tokens),
+          cacheReadTokens: n(u.cache_read_input_tokens), costUsd: typeof j.total_cost_usd === 'number' ? j.total_cost_usd : null, source: 'claude-json' };
+      }
+    }
+  }
+  if (cli === 'codex') {
+    const m = /tokens used\s*[:\r\n]\s*(\d[\d,. ]*)/i.exec(String(stderr || '') + '\n' + String(stdout || ''));
+    if (m) {
+      const total = parseInt(m[1].replace(/[^\d]/g, ''), 10);
+      if (Number.isFinite(total)) out.usage = { totalTokens: total, source: 'codex-stderr' };
+    }
+  }
+  return out;
+}
+
 module.exports = {
   // ── PTY Injection (Tier 1) ───────────────────────────────────────────────
 
@@ -21,8 +49,8 @@ module.exports = {
    * Inject text directly into a terminal's stdin.
    * The target AI will process it as if the user typed it.
    *
-   * @param {string} termId  — target terminal
-   * @param {string} text    — text to inject (newline appended if missing)
+   * @param {string} termId  - target terminal
+   * @param {string} text    - text to inject (newline appended if missing)
    * @returns {{ ok: boolean, error?: string }}
    */
   inject(termId, text, opts) {
@@ -60,18 +88,18 @@ module.exports = {
    * The prompt is sent via stdin and stdout is collected as the result.
    *
    * @param {Object} opts
-   * @param {string} opts.cli       — 'claude' | 'gemini' | 'codex' | 'antigravity' | 'copilot' | 'grok' | 'qwen'
-   * @param {string} opts.prompt    — the prompt to send
-   * @param {string} [opts.cwd]     — working directory
-   * @param {number} [opts.timeout] — ms before killing (default 5 min)
-   * @param {string} [opts.from]    — termId of the requesting agent
-   * @param {string} [opts.taskId]  — tie to existing task
-   * @param {string} [opts.model]   — model override (e.g. 'opus', 'gpt-5.5', 'flash')
-   * @param {string} [opts.effort]  — effort level (e.g. 'low', 'high', 'max')
-   * @param {boolean} [opts.autoPermit] — auto-approve all permissions
+   * @param {string} opts.cli       - 'claude' | 'gemini' | 'codex' | 'antigravity' | 'copilot' | 'grok' | 'qwen'
+   * @param {string} opts.prompt    - the prompt to send
+   * @param {string} [opts.cwd]     - working directory
+   * @param {number} [opts.timeout] - ms before killing (default 5 min)
+   * @param {string} [opts.from]    - termId of the requesting agent
+   * @param {string} [opts.taskId]  - tie to existing task
+   * @param {string} [opts.model]   - model override (e.g. 'opus', 'gpt-5.5', 'flash')
+   * @param {string} [opts.effort]  - effort level (e.g. 'low', 'high', 'max')
+   * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, sandbox = null, usageJson = false, _retryAttempt = 0 }) {
     cli = canonicalProviderId(cli);
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
@@ -229,7 +257,16 @@ module.exports = {
         if (mode === 'bypass') modeYolo = true;
         else if (mode === 'trusted' && isWorktree) modeYolo = true;
       } catch (_) {}
-      const shouldYolo = autoPermit || modeYolo;
+      // readOnly is a hard override: a read-only worker never inherits the
+      // global bypass/trusted mode, and its edit tools are disabled outright.
+      const shouldYolo = !readOnly && (autoPermit || modeYolo);
+      if (readOnly && cli === 'claude') finalArgs.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit');
+      // Codex: an explicit sandbox (read-only / workspace-write) instead of the
+      // bypass flag. readOnly without an explicit sandbox means read-only.
+      const codexSandbox = sandbox || (readOnly ? 'read-only' : null);
+      if (cli === 'codex' && codexSandbox && !shouldYolo) finalArgs.push('--sandbox', codexSandbox);
+      // usageJson: Claude reports real token usage only in JSON output.
+      if (usageJson && cli === 'claude') finalArgs.push('--output-format', 'json');
       if (shouldYolo && cliMeta.permissionFlag) {
         if (typeof cliMeta.autoPermission === 'boolean') {
           finalArgs.unshift(cliMeta.permissionFlag); // boolean flag like --yolo or Codex bypass
@@ -402,6 +439,12 @@ module.exports = {
       if (code === 0) {
         task.state = STATE.COMPLETED;
         task.result = stdout.trim();
+        try {
+          const parsed = parseCliUsage(cli, task.result, stderr, { usageJson });
+          if (parsed.result !== undefined) task.result = parsed.result;
+          if (parsed.usage && !task.usage) task.usage = parsed.usage;
+          if (parsed.isError) { task.state = STATE.FAILED; task.error = String(parsed.result || 'CLI reported an error').slice(0, 2000); }
+        } catch (_) {}
         this.circuitBreaker.recordSuccess(cli);
         this.heartbeats.delete(task.id);
       } else {
@@ -558,10 +601,10 @@ module.exports = {
    * to a known file path, then monitors for completion.
    *
    * @param {Object} opts
-   * @param {string} opts.targetTermId — terminal to inject into
-   * @param {string} opts.prompt       — the task prompt
-   * @param {string} [opts.from]       — requesting terminal ID
-   * @param {number} [opts.timeout]    — ms timeout
+   * @param {string} opts.targetTermId - terminal to inject into
+   * @param {string} opts.prompt       - the task prompt
+   * @param {string} [opts.from]       - requesting terminal ID
+   * @param {number} [opts.timeout]    - ms timeout
    * @returns {Task}
    */
   dispatch({ targetTermId, prompt, from, timeout }) {
@@ -573,7 +616,7 @@ module.exports = {
       targetTermId,
       prompt,
       from: from || null,
-      timeout: 0,  // Never timeout — AI runs as long as it needs
+      timeout: 0,  // Never timeout - AI runs as long as it needs
     });
 
     task.state = STATE.RUNNING;
@@ -638,3 +681,6 @@ module.exports = {
     return task;
   },
 };
+
+// Exposed for tests without becoming an Orchestrator mixin method.
+Object.defineProperty(module.exports, 'parseCliUsage', { value: parseCliUsage, enumerable: false });

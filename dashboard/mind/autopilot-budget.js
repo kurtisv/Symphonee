@@ -12,7 +12,13 @@ const LIMITS = Object.freeze({
   planRevisions: 1,
 });
 
-const dayOf = (now = Date.now()) => new Date(now).toISOString().slice(0, 10);
+// Days are LOCAL calendar days (the user's "per day"), not UTC days: a UTC
+// boundary would reset the quota mid-evening in America/Toronto.
+const pad2 = (n) => String(n).padStart(2, '0');
+const dayOf = (now = Date.now()) => {
+  const d = new Date(now);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+};
 const finiteNumber = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
 
 function tokensFromTask(task) {
@@ -42,9 +48,10 @@ function dailyUsage(state, now = Date.now()) {
   let measuredTokens = 0, reservedTokens = 0, unmeteredCalls = 0;
   for (const item of calls) {
     const provider = item.cli || 'unknown';
-    if (!byProvider[provider]) byProvider[provider] = { calls: 0, measuredTokens: 0, reservedTokens: 0, unmeteredCalls: 0 };
+    if (!byProvider[provider]) byProvider[provider] = { calls: 0, measuredTokens: 0, reservedTokens: 0, unmeteredCalls: 0, cacheReadTokens: 0 };
     const v = byProvider[provider];
     v.calls++;
+    v.cacheReadTokens += finiteNumber(item.cacheReadTokens) || 0;
     if (finiteNumber(item.actualTokens) !== null) {
       const tokens = finiteNumber(item.actualTokens);
       measuredTokens += tokens;
@@ -85,11 +92,15 @@ function settleCall(state, ref, task) {
   item.outcome = task?.state || 'unknown';
   const tokens = tokensFromTask(task);
   if (tokens !== null) item.actualTokens = tokens;
+  const usage = task && (task.usage || task.geminiUsage || task.tokenUsage);
+  const cacheRead = usage && finiteNumber(usage.cacheReadTokens);
+  if (cacheRead !== null && cacheRead !== undefined) item.cacheReadTokens = cacheRead;
+  if (usage && usage.source) item.usageSource = String(usage.source).slice(0, 40);
   return true;
 }
 function startOfNextDay(now = Date.now()) {
   const d = new Date(now);
-  d.setUTCHours(24, 0, 0, 0);
+  d.setHours(24, 0, 0, 0);
   return d.getTime();
 }
 module.exports = { LIMITS, dayOf, dailyUsage, canDispatch, reserveCall, settleCall,

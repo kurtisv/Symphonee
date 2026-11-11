@@ -949,6 +949,7 @@ trace.mark('server:mind-mounted');
 const { mountMindAutopilot } = require('./mind/autopilot');
 mountMindAutopilot(addRoute, json, {
   repoRoot, orchestrator, getUiContext: getUiContextWithPath, getRepoPath, broadcast,
+  getRepos: () => (getConfig().Repos || {}),
 });
 console.log('  Mind autopilot mounted (/api/mind/autopilot/*, opt-in)');
 
