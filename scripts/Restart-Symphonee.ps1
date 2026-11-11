@@ -1,104 +1,162 @@
 <#
 .SYNOPSIS
-  Restart Symphonee and bring the Claude session of the main terminal back.
+  Restart Symphonee and bring the Claude sessions back, each in its own terminal.
 
 .DESCRIPTION
-  1. Finds the Claude Code session that was running in Symphonee (most recent
-     transcript of this folder, or -SessionId).
-  2. Closes Symphonee gracefully (falls back to a forced close after 30 s).
-  3. Relaunches it from the Desktop shortcut (launching from a terminal gets
-     it killed when that terminal closes).
-  4. Waits for the server and the main terminal, raises the process priority.
-  5. Types "claude --dangerously-skip-permissions --resume <id>" in the main
-     terminal through POST /api/orchestrator/inject.
+  Safe to call from INSIDE a Symphonee terminal: the script first re-launches
+  itself detached (WMI Win32_Process.Create), because a child of a Symphonee
+  terminal dies when Symphonee closes.
 
-  The resumed session comes back with its history but its interrupted turn is
-  not replayed: type "continue" in it if it was in the middle of something.
+  1. Restarts through Symphonee's own POST /api/restart-app (app.relaunch +
+     app.exit). Falls back to closing the main window, then a forced kill.
+  2. VERIFIES that the old Electron process is gone (it used to report
+     "closed" even when the kill failed) and that a NEW server answers.
+  3. Waits until the terminals to resume exist again (they are restored with
+     their ids, e.g. main, term-3).
+  4. Types "claude --dangerously-skip-permissions --resume <id>" in each target
+     terminal, then optionally a follow-up message (e.g. "continue ...").
 
-.PARAMETER SessionId
-  Claude session id to resume. Default: most recently written transcript.
+  Log: <root>\.symphonee\restart.log
+
+.PARAMETER Resume
+  One or more "termId=sessionId" pairs, e.g. "term-3=86c2d728-...".
+  Default (none given): the most recent transcript of this folder in "main".
+
+.PARAMETER Continue
+  One or more "termId=text" pairs typed after the resumed sessions loaded.
 
 .PARAMETER NoResume
-  Restart only, do not type anything in the terminal.
+  Restart only, do not type anything in any terminal.
+
+.EXAMPLE
+  powershell.exe -ExecutionPolicy Bypass -NoProfile -File scripts\Restart-Symphonee.ps1 `
+    -Resume 'term-3=86c2d728-bcb1-4637-8336-2193dc72369a' -Continue 'term-3=continue'
 #>
 param(
+  [string[]]$Resume = @(),
+  [string[]]$Continue = @(),
   [string]$SessionId = '',
-  [switch]$NoResume
+  [switch]$NoResume,
+  [switch]$Detached
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $port = 3800
 $base = "http://127.0.0.1:$port"
-$lnk = Join-Path $env:USERPROFILE 'Desktop\Symphonee.lnk'
-if (-not (Test-Path $lnk)) { throw "Desktop shortcut not found: $lnk" }
-
-# 1. Which Claude session to bring back
-if (-not $NoResume -and -not $SessionId) {
-  $slug = ($root -replace '[^A-Za-z0-9]', '-')
-  $dir = Join-Path $env:USERPROFILE ".claude\projects\$slug"
-  if (Test-Path $dir) {
-    $last = Get-ChildItem $dir -Filter *.jsonl | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($last) { $SessionId = $last.BaseName }
-  }
-  if (-not $SessionId) { Write-Host "No Claude transcript found in $dir : restarting without resume." }
+$logFile = Join-Path $root '.symphonee\restart.log'
+function Log([string]$m) {
+  $line = "[$(Get-Date -Format s)] $m"
+  Write-Host $line
+  try { Add-Content -Path $logFile -Value $line -Encoding UTF8 } catch { }
 }
-if ($SessionId -and $SessionId -notmatch '^[0-9a-fA-F-]{36}$') { throw "Unexpected session id format: $SessionId" }
-if ($SessionId) { Write-Host "Claude session to resume: $SessionId" }
+function Token { (Get-Content (Join-Path $root 'config\runtime.json') -Raw | ConvertFrom-Json).token }
+function Post([string]$path, $body) {
+  Invoke-RestMethod "$base$path" -Method Post -ContentType 'application/json' -Headers @{ 'x-symphonee-token' = (Token) } `
+    -Body ($body | ConvertTo-Json -Compress) -TimeoutSec 30
+}
+function MainPid {
+  $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($c) { return [int]$c.OwningProcess } else { return $null }
+}
+function Pairs([string[]]$items) {
+  $out = @()
+  foreach ($i in $items) {
+    $k = $i.IndexOf('=')
+    if ($k -lt 1) { throw "Expected termId=value, got: $i" }
+    $out += [pscustomobject]@{ Term = $i.Substring(0, $k).Trim(); Value = $i.Substring($k + 1) }
+  }
+  return $out
+}
 
-# 2. Close Symphonee
-$main = Get-CimInstance Win32_Process -Filter "Name='electron.exe'" |
-  Where-Object { $_.CommandLine -like "*$root*" -and $_.CommandLine -notmatch '--type=' } | Select-Object -First 1
-if ($main) {
+# 0. Detach from the calling terminal.
+if (-not $Detached) {
+  $argList = @('-ExecutionPolicy', 'Bypass', '-NoProfile', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`"", '-Detached')
+  foreach ($r in $Resume) { $argList += @('-Resume', "`"$r`"") }
+  foreach ($c in $Continue) { $argList += @('-Continue', "`"$($c -replace '"', "'")`"") }
+  if ($SessionId) { $argList += @('-SessionId', $SessionId) }
+  if ($NoResume) { $argList += '-NoResume' }
+  $cmd = 'powershell.exe ' + ($argList -join ' ')
+  $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = $root }
+  if ($r.ReturnValue -ne 0) { throw "Could not start the detached restarter (WMI code $($r.ReturnValue))" }
+  Write-Host "Detached restarter started (PID $($r.ProcessId)). Log: $logFile"
+  return
+}
+
+try {
+  Log '--- restart requested'
+  # Which sessions to bring back, in which terminal.
+  $resumePairs = @(Pairs $Resume)
+  if (-not $NoResume -and $resumePairs.Count -eq 0) {
+    if (-not $SessionId) {
+      $slug = ($root -replace '[^A-Za-z0-9]', '-')
+      $dir = Join-Path $env:USERPROFILE ".claude\projects\$slug"
+      $last = Get-ChildItem $dir -Filter *.jsonl -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($last) { $SessionId = $last.BaseName }
+    }
+    if ($SessionId) { $resumePairs = @([pscustomobject]@{ Term = 'main'; Value = $SessionId }) }
+  }
+  foreach ($p in $resumePairs) { if ($p.Value -notmatch '^[0-9a-fA-F-]{36}$') { throw "Unexpected session id: $($p.Value)" } }
+  $continuePairs = @(Pairs $Continue)
+  Log ('resume: ' + (($resumePairs | ForEach-Object { "$($_.Term)=$($_.Value)" }) -join ', '))
+
+  # 1. Restart via the app itself.
+  $old = MainPid
+  if (-not $old) { throw "Nothing listens on port ${port}: is Symphonee running?" }
   $running = try { (Invoke-RestMethod "$base/api/orchestrator/status" -TimeoutSec 20).runningTasks } catch { 0 }
-  if ($running -gt 0) { Write-Host "WARNING: $running orchestrator task(s) running; they will be lost." }
-  $p = Get-Process -Id $main.ProcessId
-  [void]$p.CloseMainWindow()
-  $waited = 0
-  while (-not $p.HasExited -and $waited -lt 30) { Start-Sleep -Milliseconds 500; $waited += 0.5; $p.Refresh() }
-  if (-not $p.HasExited) {
-    Write-Host "Graceful close timed out, forcing."
-    & taskkill /PID $main.ProcessId /T /F | Out-Null
+  if ($running -gt 0) { Log "WARNING: $running orchestrator task(s) running; they will be lost." }
+  try { $null = Post '/api/restart-app' @{}; Log "restart-app accepted by PID $old" }
+  catch { Log "restart-app failed ($_); closing the window instead" ; try { [void](Get-Process -Id $old).CloseMainWindow() } catch { } }
+
+  # 2. The old process must really be gone.
+  $deadline = (Get-Date).AddSeconds(45)
+  while ((Get-Process -Id $old -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+  if (Get-Process -Id $old -ErrorAction SilentlyContinue) {
+    Log "old PID $old still alive after 45 s: forcing"
+    & taskkill /PID $old /T /F 2>&1 | ForEach-Object { Log "taskkill: $_" }
+    Start-Sleep -Seconds 3
+    if (Get-Process -Id $old -ErrorAction SilentlyContinue) { throw "PID $old could not be terminated. Nothing relaunched." }
+    # A forced kill does not relaunch: start it from the shortcut (or npm start).
+    $lnk = Join-Path $env:USERPROFILE 'Desktop\Symphonee.lnk'
+    if (Test-Path $lnk) { Start-Process $lnk } else { Start-Process -FilePath 'npm.cmd' -ArgumentList 'start' -WorkingDirectory $root -WindowStyle Hidden }
+    Log 'relaunched after forced kill'
+  } else { Log "old PID $old exited" }
+
+  # 3. New server + terminals to resume.
+  $need = @($resumePairs | ForEach-Object { $_.Term }) + @($continuePairs | ForEach-Object { $_.Term }) | Select-Object -Unique
+  $ready = $false
+  $deadline = (Get-Date).AddSeconds(300)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 2
+    $now = MainPid
+    if (-not $now -or $now -eq $old) { continue }
+    try {
+      $ids = @((Invoke-RestMethod "$base/api/terminals/diag" -TimeoutSec 10).terminals | ForEach-Object { $_.id })
+      if (@($need | Where-Object { $ids -notcontains $_ }).Count -eq 0 -and $ids -contains 'main') { $ready = $true; break }
+    } catch { }
   }
-  Write-Host ("Symphonee closed after {0} s." -f $waited)
-} else {
-  Write-Host "Symphonee was not running."
-}
-# The old Claude process must be gone before the same session is resumed.
-$deadline = (Get-Date).AddSeconds(20)
-do {
-  $old = Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -like "*$root*" }
-  $busy = [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
-  if (-not $old -and -not $busy) { break }
-  Start-Sleep -Milliseconds 500
-} while ((Get-Date) -lt $deadline)
-if ($old -or $busy) { throw "Symphonee is still running or port $port is still in use. Nothing relaunched." }
+  if (-not $ready) { throw "New server or terminals ($($need -join ', ')) not ready after 300 s." }
+  Log "new server PID $(MainPid); terminals ready: $($need -join ', ')"
+  Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -like "*$root*" } | ForEach-Object {
+    try { (Get-Process -Id $_.ProcessId).PriorityClass = 'AboveNormal' } catch { }
+  }
 
-# 3. Relaunch from the shortcut
-Start-Process $lnk
-Write-Host "Relaunched. Waiting for the server and the main terminal..."
-
-# 4. Wait for server + main terminal
-$ready = $false
-$deadline = (Get-Date).AddSeconds(300)
-while ((Get-Date) -lt $deadline) {
-  Start-Sleep -Seconds 2
-  try {
-    $diag = Invoke-RestMethod "$base/api/terminals/diag" -TimeoutSec 10
-    if ($diag.terminals | Where-Object { $_.id -eq 'main' }) { $ready = $true; break }
-  } catch { }
-}
-Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -like "*$root*" } | ForEach-Object {
-  try { (Get-Process -Id $_.ProcessId).PriorityClass = 'AboveNormal' } catch { }
-}
-if (-not $ready) { throw "Server or main terminal not ready after 300 s. Open a terminal in Symphonee and run: claude --dangerously-skip-permissions --resume $SessionId" }
-Write-Host "Server and main terminal ready. Priority set to AboveNormal."
-
-# 5. Resume the Claude session in the main terminal
-if ($SessionId -and -not $NoResume) {
-  Start-Sleep -Seconds 3   # let the shell print its prompt
-  $token = (Get-Content (Join-Path $root 'config\runtime.json') -Raw | ConvertFrom-Json).token
-  $body = @{ termId = 'main'; text = "claude --dangerously-skip-permissions --resume $SessionId" } | ConvertTo-Json
-  $r = Invoke-RestMethod "$base/api/orchestrator/inject" -Method Post -ContentType 'application/json' -Headers @{ 'x-symphonee-token' = $token } -Body $body -TimeoutSec 30
-  if ($r.ok) { Write-Host "Resume command typed in the main terminal. Type 'continue' there if the session was mid-task." }
-  else { throw "Inject failed: $($r | ConvertTo-Json -Compress)" }
+  # 4. Resume each session in its own terminal, then the follow-up messages.
+  if (-not $NoResume) {
+    Start-Sleep -Seconds 3
+    foreach ($p in $resumePairs) {
+      $r = Post '/api/orchestrator/inject' @{ termId = $p.Term; text = "claude --dangerously-skip-permissions --resume $($p.Value)" }
+      Log "resume typed in $($p.Term): ok=$($r.ok)"
+    }
+    if ($continuePairs.Count -gt 0) {
+      Start-Sleep -Seconds 40
+      foreach ($c in $continuePairs) {
+        $r = Post '/api/orchestrator/inject' @{ termId = $c.Term; text = $c.Value }
+        Log "follow-up typed in $($c.Term): ok=$($r.ok)"
+      }
+    }
+  }
+  Log '--- restart done'
+} catch {
+  Log "ERROR: $_"
+  exit 1
 }

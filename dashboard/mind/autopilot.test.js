@@ -267,22 +267,63 @@ test('mid-task budget exhaustion parks the stage until the next day without laun
     assert.equal(f.tasks.size, 1, 'still parked on later ticks the same day');
   } finally { f.cleanup(); }
 });
-test('restart with interrupted work keeps history, never replays, and requires an explicit archive', async () => {
+test('restart of an ACTIVE pilot archives the running stage without replay and the loop continues', async () => {
+  const f = fixture();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
+    const oldId = f.pilot.state.active.taskId;
+    f.pilot.close();
+    f.tasks.delete(oldId); // the process and its task died with the old server
+    const restarted = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch,
+      getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: f.pilot.getRepoPath, autoTimer: false });
+    let s = restarted.snapshot();
+    assert.equal(s.enabled, true, 'configuration and activation survive the restart');
+    assert.equal(s.goal, 'Improve tests');
+    assert.equal(s.active, null);
+    assert.equal(s.history[0].outcome, 'interrupted');
+    assert.match(s.history[0].error, /restarted during stage discover/);
+    assert.equal(s.budget.calls, 1, 'interrupted call stays charged');
+    assert.equal(s.status, 'waiting', 'short cooldown before the next discovery');
+    await restarted.tick();
+    assert.equal(f.tasks.size, 0, 'no replay during the cooldown');
+    restarted.state.nextAt = 0;
+    await restarted.tick();
+    assert.equal(f.tasks.size, 1, 'a fresh discovery starts after the cooldown');
+    assert.match(f.tasks.values().next().value.opts.prompt, /"outcome":"interrupted"/, 'discovery knows the interrupted attempt');
+    s = restarted.snapshot();
+    assert.equal(s.today.discoveries, 2);
+    restarted.close();
+  } finally { f.cleanup(); }
+});
+test('restart while parked on quota keeps waiting instead of relaunching', async () => {
   const f = fixture();
   try {
     f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
     const t = f.tasks.get(f.pilot.state.active.taskId);
-    t.state = 'cancelled'; // the process died with the old server
+    const now = Date.now();
+    for (let i = 0; i < 10; i++) f.pilot.state.budgetCalls.push({ ref: 'q' + i, cli: 'codex', stage: 'x', at: now, reservedTokens: 12000, actualTokens: null });
+    t.state = 'completed'; t.result = JSON.stringify(goodPlan);
+    await f.pilot.tick();
+    assert.equal(f.pilot.state.active.waitingStage, 'plan-review');
     f.pilot.close();
     const restarted = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch,
       getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: f.pilot.getRepoPath, autoTimer: false });
-    const s = restarted.snapshot();
-    assert.equal(s.enabled, false);
-    assert.equal(s.status, 'interrupted');
-    assert.equal(s.goal, 'Improve tests');
-    assert.equal(s.budget.calls, 1, 'ledger persisted across restart');
+    assert.equal(restarted.snapshot().enabled, true);
+    assert.equal(restarted.snapshot().active.waitingStage, 'plan-review');
     await restarted.tick();
-    assert.equal(f.tasks.size, 1, 'no automatic replay');
+    assert.equal(f.tasks.size, 1, 'still parked: nothing launched');
+    restarted.close();
+  } finally { f.cleanup(); }
+});
+test('restart after a user stop keeps the pilot stopped and requires an explicit archive', async () => {
+  const f = fixture();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
+    f.pilot.stop();
+    f.pilot.close();
+    const restarted = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch,
+      getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: f.pilot.getRepoPath, autoTimer: false });
+    assert.equal(restarted.snapshot().status, 'interrupted');
     assert.throws(() => restarted.configure({ enabled: true, goal: 'Improve tests' }), /acknowledgeInterrupted/);
     restarted.acknowledge();
     assert.equal(restarted.snapshot().history[0].outcome, 'interrupted');

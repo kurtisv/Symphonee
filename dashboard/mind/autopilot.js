@@ -134,19 +134,39 @@ class MindAutopilot {
     if (!Array.isArray(this.state.events)) this.state.events = [];
     this.busy = false;
     budget.pruneLedger(this.state);
-    if (this.state.active) {
-      // Never replay a half-finished stage after a restart: the user decides.
-      const wasEnabled = this.state.enabled;
-      this.state.enabled = false;
-      this.state.error = 'Interrupted by restart. Inspect the existing worktree; no automatic replay.';
-      if (wasEnabled || !this.state.active.interruptedAt) {
-        this.state.active.interruptedAt = Date.now();
-        this.log('interrupted', 'Interrupted by restart during stage ' + this.state.active.stage);
-      }
-      this.save();
-    }
+    if (this.state.active) this.recoverAfterRestart();
     this.timer = autoTimer ? setInterval(() => { this.tick().catch(e => this.halt(e)); }, TICK_MS) : null;
     this.timer?.unref?.();
+  }
+  // Restarts are part of the loop. A stage is NEVER replayed:
+  // - enabled + parked on quota (no process was running): keep waiting;
+  // - enabled + a stage was running: that run died with the old server; settle
+  //   its reservation, archive it as interrupted (worktree kept on disk) and let
+  //   the loop continue with a fresh discovery after a short cooldown;
+  // - stopped by the user: stay stopped; the user archives it explicitly.
+  recoverAfterRestart(now = Date.now()) {
+    const a = this.state.active;
+    if (this.state.enabled && a.waitingStage) {
+      this.log('resumed', 'Restart: still waiting for quota before ' + a.waitingStage);
+    } else if (this.state.enabled) {
+      if (a.budgetRef) budget.settleCall(this.state, a.budgetRef, { state: 'interrupted-by-restart' });
+      this.state.history.push({ category: a.plan?.category || null,
+        title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
+        key: a.plan ? taskKey(a.plan) : null, outcome: 'interrupted',
+        worktree: a.worktree || null, error: 'Symphonee restarted during stage ' + a.stage,
+        at: new Date(now).toISOString() });
+      this.state.history = this.state.history.slice(-100);
+      this.state.active = null;
+      this.state.error = null;
+      this.state.nextAt = Math.max(this.state.nextAt || 0, now + 5 * 60_000);
+      this.log('auto-archived', 'Restart during ' + a.stage + ': run archived without replay'
+        + (a.worktree ? '; worktree kept: ' + a.worktree.path : '') + '; loop continues');
+    } else if (!a.interruptedAt) {
+      a.interruptedAt = now;
+      this.state.error = this.state.error || 'Interrupted by restart. Inspect the existing worktree; no automatic replay.';
+      this.log('interrupted', 'Restart while stopped during stage ' + a.stage);
+    }
+    this.save();
   }
   log(kind, msg, extra = {}) {
     this.state.events.push({ at: new Date().toISOString(), kind, msg: String(msg).slice(0, 600),

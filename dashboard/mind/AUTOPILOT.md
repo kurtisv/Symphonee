@@ -62,9 +62,18 @@ two substantial calls. Raise the limit only after reviewing actual usage.
 ## Restart and stop
 
 - Arreter cancels the running Orchestrator task (its reservation is settled).
-- A restart never replays a stage: the task is shown as *Interrompu* with its
-  worktree path. Archive it (the worktree stays on disk) before reactivating.
+- Restarts are part of the loop. A stage is **never replayed**:
+  - pilot active and parked on quota: it keeps waiting;
+  - pilot active with a stage running: that run died with the old server; it
+    is archived as *interrupted* (reservation kept charged, worktree kept on
+    disk), and the loop continues with a fresh discovery after 5 minutes;
+  - pilot stopped by the user: it stays stopped (*Interrompu*) until the user
+    archives the task.
 - Configuration, consent, history, events and the call ledger survive restarts.
+- `scripts/Restart-Symphonee.ps1` restarts the app through `/api/restart-app`,
+  verifies the old process is gone, and resumes each Claude session in its own
+  terminal (`-Resume term-3=<session> -Continue term-3=continue`). It detaches
+  itself, so it can be run from inside a Symphonee terminal.
 
 ## Consent
 
