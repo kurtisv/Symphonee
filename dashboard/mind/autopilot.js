@@ -85,8 +85,10 @@ function localTriage(cwd) {
   if (r.error || (r.status !== 0 && r.status !== 1)) {
     throw new Error('Local triage failed: ' + String(r.stderr || r.error?.message).slice(0, 200));
   }
+  // Send only file:line pointers; never forward arbitrary source-line content
+  // (which could include secrets) to discovery as an untrusted hint.
   const markers = r.status === 0 ? (r.stdout || '').split(/\r?\n/).filter(Boolean)
-    .slice(0, 12).map(x => x.slice(0, 180)) : [];
+    .slice(0, 12).map(x => (/^(.+?:\d+):/.exec(x)?.[1] || '(source marker)')) : [];
   const recent = git(cwd, ['log', '-5', '--pretty=format:%h %s']).split(/\r?\n/).filter(Boolean)
     .slice(0, 5).map(x => x.slice(0, 120));
   return { files, markers, recent, useful: files.length > 0 || markers.length > 0 };
@@ -234,6 +236,7 @@ class MindAutopilot {
     let task;
     if (stage === 'discover' || stage === 'plan-review') {
       task = this.orch.spawnHeadless({ ...opts, cli: stage === 'discover' ? 'claude' : 'codex',
+        effort: stage === 'discover' ? 'low' : undefined,
         cwd: this.state.repoPath, autoPermit: false,
         prompt: stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage) });
     } else if (stage === 'implement') {
