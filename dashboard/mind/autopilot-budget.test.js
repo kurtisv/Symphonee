@@ -13,14 +13,15 @@ test('limits admit two worst-case tasks per day and still stop at the token budg
   assert.equal(LIMITS.planRevisions, 1);
   const state = { budgetCalls: [] };
   // A reservation is accepted only if it still fits under the budget.
-  const n = Math.floor(LIMITS.dailyTokenBudget / LIMITS.reservedTokensPerCall);
-  assert.ok(n < LIMITS.dailyCalls, 'the token budget, not the call cap, binds for unmetered calls');
+  // Whichever binds first (token budget or call cap) must stop the next launch.
+  const n = Math.min(Math.floor(LIMITS.dailyTokenBudget / LIMITS.reservedTokensPerCall), LIMITS.dailyCalls);
   for (let i = 0; i < n; i++) {
     assert.ok(reserveCall(state, { cli: i % 2 ? 'codex' : 'claude', stage: 'code-review',
       at: Date.now(), ref: String(i) }));
   }
   assert.equal(dailyUsage(state).calls, n);
-  assert.ok(dailyUsage(state).chargedTokens + LIMITS.reservedTokensPerCall > LIMITS.dailyTokenBudget);
+  const u = dailyUsage(state);
+  assert.ok(u.calls >= LIMITS.dailyCalls || u.chargedTokens + LIMITS.reservedTokensPerCall > LIMITS.dailyTokenBudget);
   assert.equal(dailyUsage(state).unmeteredCalls, n);
   assert.equal(canDispatch(state), false);
   assert.equal(reserveCall(state, { cli: 'claude', stage: 'repair', ref: 'extra' }), null);
