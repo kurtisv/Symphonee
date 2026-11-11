@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { MindAutopilot, parsePlan, verdict, WORK_CATEGORIES } = require('./autopilot');
 
 const goodPlan = { decision: 'TASK', category: 'correctness',
@@ -16,7 +17,12 @@ const goodPlan = { decision: 'TASK', category: 'correctness',
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'symphonee-autopilot-'));
   const repo = path.join(root, 'demo');
-  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.mkdirSync(repo, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'index.js'), 'function run() { return true; }\n// TODO: add coverage\n');
+  execFileSync('git', ['add', '.'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.name=Autopilot Test', '-c', 'user.email=autopilot@example.invalid',
+    'commit', '-qm', 'Initialize test fixture'], { cwd: repo });
   const tasks = new Map();
   let counter = 0;
   const orch = {
@@ -86,12 +92,20 @@ test('read-only discovery flows to independent Codex plan review', async () => {
     assert.match(t.opts.prompt, /baseline.*benchmark command/);
     assert.equal(t.opts.cli, 'claude');
     assert.equal(t.opts.autoPermit, false);
+    assert.equal(t.opts.noRetry, true);
+    assert.equal(t.opts.noFallback, true);
+    assert.equal(t.opts.compactContext, true);
+    assert.deepEqual(f.pilot.state.active.localSignals.files, ['index.js']);
+    assert.equal(f.pilot.snapshot().budget.calls, 1);
+    assert.equal(f.pilot.snapshot().budget.unmeteredCalls, 1);
+    assert.equal(f.pilot.snapshot().limits.dailyCompletions, 2);
     t.state = 'completed'; t.result = JSON.stringify(goodPlan);
     await f.pilot.tick();
     assert.equal(f.pilot.state.active.stage, 'plan-review');
     t = f.tasks.get(f.pilot.state.active.taskId);
     assert.equal(t.opts.cli, 'codex');
     assert.equal(t.opts.autoPermit, false);
+    assert.equal(f.pilot.snapshot().budget.calls, 2);
     assert.match(t.opts.prompt, /adversarial PLAN review/);
     assert.match(t.opts.prompt, /verify a reproducible baseline/);
   } finally { f.cleanup(); }
@@ -145,5 +159,44 @@ test('completed quality work preserves category and independent review evidence 
     assert.equal(f.pilot.state.history[0].category, 'cleanup');
     assert.match(f.pilot.state.history[0].reviewerEvidence, /before\/after tests passed/);
     assert.deepEqual(f.pilot.state.history[0].evidence, goodPlan.evidence);
+  } finally { f.cleanup(); }
+});
+
+test('two completed tasks block additional discoveries until the next UTC day', async () => {
+  const f = fixture();
+  try {
+    const today = new Date().toISOString();
+    f.pilot.state.history.push({ at: today, outcome: 'completed' },
+      { at: today, outcome: 'completed' });
+    f.pilot.configure({ enabled: true, goal: 'Improve code, no more than two daily tasks' });
+    assert.equal(f.tasks.size, 0);
+    assert.equal(f.pilot.snapshot().limits.dailyCompletions, 2);
+  } finally { f.cleanup(); }
+});
+test('completed provider usage is visible in the autopilot budget', async () => {
+  const f = fixture();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Measure token usage' });
+    const t = f.tasks.get(f.pilot.state.active.taskId);
+    t.state = 'completed'; t.usage = { inputTokens: 900, outputTokens: 100 };
+    t.result = '{"decision":"NO_TASK"}';
+    await f.pilot.tick();
+    assert.equal(f.pilot.snapshot().budget.measuredTokens, 1000);
+    assert.equal(f.pilot.snapshot().budget.unmeteredCalls, 0);
+    assert.equal(f.pilot.snapshot().budget.byProvider.claude.calls, 1);
+  } finally { f.cleanup(); }
+});
+test('budget exhaustion delays new tasks instead of silently ignoring the limit', async () => {
+  const f = fixture();
+  try {
+    const now = Date.now();
+    f.pilot.state.budgetCalls = Array.from({ length: 10 }, (_, i) => ({
+      ref: 'past-' + i, cli: 'claude', stage: 'discover', at: now,
+      reservedTokens: 12000, actualTokens: null,
+    }));
+    f.pilot.configure({ enabled: true, goal: 'Work without exceeding daily budget' });
+    assert.equal(f.tasks.size, 0);
+    assert.equal(f.pilot.snapshot().budget.chargedTokens, 120000);
+    assert.ok(f.pilot.snapshot().nextAt > now);
   } finally { f.cleanup(); }
 });
