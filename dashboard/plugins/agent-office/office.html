@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bureau des agents</title>
+<style>
+  :root { --bg:#16141f; --panel:#1e1b2b; --line:#322d47; --text:#e6e2f2; --dim:#948fb0; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.4 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  #app { display: flex; height: 100%; }
+  #stage { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
+  #mode { position: absolute; top: 10px; left: 12px; font-size: 11px; letter-spacing: .08em; padding: 2px 8px;
+    border-radius: 10px; border: 1px solid var(--line); color: var(--dim); background: rgba(22,20,31,.8); }
+  #mode.live { color: #7be0a0; border-color: #2f6b47; }
+  #mode.demo { color: #f0c36a; border-color: #6b5527; }
+  #side { width: 290px; flex: none; border-left: 1px solid var(--line); background: var(--panel);
+    display: flex; flex-direction: column; }
+  #side h1 { font-size: 13px; margin: 0; padding: 12px 14px 4px; font-weight: 600; }
+  #counts { padding: 0 14px 10px; color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--line); }
+  #list { flex: 1; overflow-y: auto; padding: 6px; }
+  .row { padding: 8px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+  .row:hover { background: rgba(255,255,255,.04); }
+  .row.sel { border-color: #6f66a8; background: rgba(120,110,190,.12); }
+  .row .top { display: flex; align-items: center; gap: 8px; }
+  .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .name { font-weight: 600; }
+  .model { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip { margin-left: auto; font-size: 10px; padding: 1px 7px; border-radius: 9px; white-space: nowrap; }
+  .chip.working { background: #1f4a37; color: #8ff0b6; }
+  .chip.thinking { background: #2c3a5e; color: #a9c4ff; }
+  .chip.waiting { background: #5c4a14; color: #ffd874; }
+  .chip.idle { background: #33304a; color: #b3adcf; }
+  .chip.done { background: #24473a; color: #a4e8c2; }
+  .chip.failed { background: #5a2330; color: #ff9db0; }
+  .title { color: var(--dim); font-size: 12px; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .meta { color: #6f6a8c; font-size: 11px; margin-top: 2px; }
+  #empty { color: var(--dim); padding: 18px 14px; }
+  #legend { border-top: 1px solid var(--line); padding: 8px 14px; color: var(--dim); font-size: 11px; }
+  @media (max-width: 720px) { #side { display: none; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <div id="mode">...</div>
+    <canvas id="c" width="480" height="270" aria-label="Bureau des agents"></canvas>
+  </div>
+  <aside id="side">
+    <h1>Bureau des agents</h1>
+    <div id="counts"></div>
+    <div id="list"></div>
+    <div id="legend">Point jaune: attend une reponse. Points gris: reflechit. Coche: termine. Croix: echec.</div>
+  </aside>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // Constants
+  // ---------------------------------------------------------------------
+  var W = 480, H = 270, WALL = 66;
+  var DOOR = { x: 27, y: 78 };
+  var DESK_COLS = 4, DESK_ROWS = 2, DESK_W = 48;
+  var DONE_LINGER_MS = 5 * 60 * 1000;
+  var FAILED_LINGER_MS = 10 * 60 * 1000;
+  var THINK_AFTER_MS = 20 * 1000;   // running but silent this long -> thinking
+  var IDLE_AFTER_MS = 90 * 1000;    // terminal CLI silent this long -> idle
+  var SPEED = 46;                   // px per second
+
+  var CLI_PAL = {
+    claude:      { body: '#d97a4a', hair: '#5a3524', name: 'Claude' },
+    codex:       { body: '#2fa58a', hair: '#1d2b33', name: 'Codex' },
+    gemini:      { body: '#4f7fe0', hair: '#2b2350', name: 'Gemini' },
+    'gemini-api':{ body: '#4f7fe0', hair: '#2b2350', name: 'Gemini' },
+    qwen:        { body: '#8e63d6', hair: '#33204f', name: 'Qwen' },
+    grok:        { body: '#8d94a3', hair: '#22252b', name: 'Grok' },
+    copilot:     { body: '#d268a8', hair: '#4a2238', name: 'Copilot' },
+    jules:       { body: '#d9b84a', hair: '#4a3a16', name: 'Jules' },
+    antigravity: { body: '#56b8d6', hair: '#18323d', name: 'Antigravity' }
+  };
+  var DEFAULT_PAL = { body: '#9aa0b5', hair: '#33354a', name: 'Agent' };
+  var SKINS = ['#f1c9a5', '#d9a379', '#b97f56', '#8b5a3c'];
+  var STATE_LABEL = { working: 'travaille', thinking: 'reflechit', waiting: 'attend', idle: 'au repos', done: 'termine', failed: 'echec' };
+
+  function palFor(cli) { return CLI_PAL[String(cli || '').toLowerCase()] || DEFAULT_PAL; }
+  function hash(s) { var h = 2166136261; s = String(s); for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+
+  // ---------------------------------------------------------------------
+  // Data layer: turns Symphonee API responses into a flat list of agents.
+  // Kept free of DOM/canvas so it can be exercised on its own.
+  // ---------------------------------------------------------------------
+  var WAIT_RE = /(do you want to|would you like to|\(y\/n\)|\[y\/n\]|allow this|approve|waiting for (your )?(input|approval)|press enter to)/i;
+
+  function taskTitle(t) {
+    var raw = String(t._originalPrompt || t.prompt || '').replace(/\s+/g, ' ').trim();
+    return raw.length > 140 ? raw.slice(0, 139) + '...' : raw;
+  }
+
+  function taskState(t, hb, now) {
+    var s = String(t.state || '').toLowerCase();
+    if (s === 'completed' || s === 'done' || s === 'success') return 'done';
+    if (s === 'failed' || s === 'error' || s === 'timeout' || s === 'timed_out' || s === 'cancelled' || s === 'canceled' || s === 'killed') return 'failed';
+    if (hb && typeof hb.lastActivity === 'number' && now - hb.lastActivity > THINK_AFTER_MS) return 'thinking';
+    return 'working';
+  }
+
+  // tasks: /api/orchestrator/tasks, heartbeats: /api/orchestrator/heartbeats,
+  // terms: /api/terminals/diag .terminals, aiByTerm: detect-ai .byTerm,
+  // termActivity: { termId: { lastChange, tail } }
+  function buildAgents(tasks, heartbeats, terms, aiByTerm, termActivity, now) {
+    var out = [];
+    var hbById = {};
+    (heartbeats || []).forEach(function (h) { if (h && h.taskId) hbById[h.taskId] = h; });
+
+    (terms || []).forEach(function (t) {
+      if (!t || !t.id) return;
+      var cli = aiByTerm && aiByTerm[t.id];
+      if (!cli) return; // a plain shell is not an agent
+      if (typeof cli === 'object') cli = cli.cli || cli.name || 'agent';
+      var act = (termActivity && termActivity[t.id]) || {};
+      var silent = act.lastChange ? now - act.lastChange : 0;
+      var state = 'working';
+      if (act.tail && WAIT_RE.test(act.tail)) state = 'waiting';
+      else if (silent > IDLE_AFTER_MS) state = 'idle';
+      else if (silent > THINK_AFTER_MS) state = 'thinking';
+      out.push({
+        id: 'term:' + t.id, kind: 'terminal', cli: String(cli), model: '',
+        title: t.label ? 'Terminal ' + t.label : (t.id === 'main' ? 'Terminal principal' : 'Terminal ' + t.id),
+        state: state, since: act.firstSeen || now, endedAt: null
+      });
+    });
+
+    (tasks || []).forEach(function (t) {
+      if (!t || !t.id) return;
+      var st = taskState(t, hbById[t.id], now);
+      var ended = t.completedAt || null;
+      if (st === 'done' && (!ended || now - ended > DONE_LINGER_MS)) return;
+      if (st === 'failed' && (!ended || now - ended > FAILED_LINGER_MS)) return;
+      out.push({
+        id: 'task:' + t.id, kind: 'task', cli: String(t.cli || t.selectedProvider || 'agent'),
+        model: String(t.model || ''), title: taskTitle(t), state: st,
+        since: t.startedAt || t.createdAt || now, endedAt: ended
+      });
+    });
+    return out;
+  }
+
+  // ---------------------------------------------------------------------
+  // Live source (inside Symphonee) and demo source (opened as a file)
+  // ---------------------------------------------------------------------
+  var termActivity = {};
+  var aiByTerm = {};
+  var lastDetect = 0;
+
+  function getJson(url) {
+    return fetch(url, { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error(url + ' -> ' + r.status); return r.json(); });
+  }
+
+  function pollLive() {
+    var now = Date.now();
+    var detect = Promise.resolve();
+    if (now - lastDetect > 30000) {
+      lastDetect = now;
+      // Reads the Windows process tree: keep it rare.
+      detect = fetch('/api/term/detect-ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d && d.byTerm) aiByTerm = d.byTerm; })
+        .catch(function () { /* keep the previous detection */ });
+    }
+    return detect.then(function () {
+      return Promise.all([
+        getJson('/api/orchestrator/tasks'),
+        getJson('/api/orchestrator/heartbeats').catch(function () { return []; }),
+        getJson('/api/terminals/diag').catch(function () { return { terminals: [] }; })
+      ]);
+    }).then(function (res) {
+      var terms = (res[2] && res[2].terminals) || [];
+      var withAi = terms.filter(function (t) { return aiByTerm[t.id]; });
+      return Promise.all(withAi.map(function (t) {
+        return getJson('/api/orchestrator/terminal-output?lines=12&termId=' + encodeURIComponent(t.id)).then(function (o) {
+          var tail = String((o && o.output) || '');
+          var total = (o && o.totalLines) || 0;
+          var a = termActivity[t.id] || (termActivity[t.id] = { firstSeen: Date.now(), lastChange: Date.now(), sig: '' });
+          var sig = total + ':' + tail.length + ':' + hash(tail);
+          if (sig !== a.sig) { a.sig = sig; a.lastChange = Date.now(); }
+          a.tail = tail.slice(-600);
+        }).catch(function () {});
+      })).then(function () {
+        return buildAgents(res[0], res[1], terms, aiByTerm, termActivity, Date.now());
+      });
+    });
+  }
+
+  var demoStart = Date.now();
+  function pollDemo() {
+    var now = Date.now(), t = (now - demoStart) / 1000;
+    var cyc = function (period, offset) { return Math.floor((t + offset) / period); };
+    var list = [
+      { id: 'term:main', kind: 'terminal', cli: 'claude', model: '', title: 'Terminal principal', state: ['working', 'working', 'waiting', 'working', 'thinking'][cyc(7, 0) % 5], since: demoStart },
+      { id: 'task:a1', kind: 'task', cli: 'codex', model: 'gpt-5.5', title: 'Revue de code adverse 10, lecture seule', state: ['working', 'thinking', 'working'][cyc(9, 2) % 3], since: demoStart + 4000 },
+      { id: 'task:b2', kind: 'task', cli: 'gemini', model: 'gemini-pro', title: 'Resumer les changements du lot B', state: 'working', since: demoStart + 9000 },
+      { id: 'task:c3', kind: 'task', cli: 'qwen', model: 'qwen2.5:1.5b', title: 'Classer la demande (local)', state: ['working', 'done'][Math.min(1, cyc(16, 0))], since: demoStart + 2000, endedAt: demoStart + 16000 },
+      { id: 'task:d4', kind: 'task', cli: 'grok', model: 'grok-4', title: 'Chercher les appels restants', state: ['working', 'working', 'failed'][Math.min(2, cyc(11, 0))], since: demoStart + 6000, endedAt: demoStart + 22000 },
+      { id: 'term:term-3', kind: 'terminal', cli: 'copilot', model: '', title: 'Terminal Shell 2', state: ['idle', 'working'][cyc(13, 5) % 2], since: demoStart }
+    ];
+    return Promise.resolve(list.filter(function (a) { return now >= a.since; }));
+  }
+
+  // ---------------------------------------------------------------------
+  // Scene state
+  // ---------------------------------------------------------------------
+  var actors = {};       // id -> actor
+  var deskOwner = [];    // deskIdx -> id
+  var selectedId = null;
+  var mode = 'live';
+  var overflow = 0;
+
+  function deskPos(i) {
+    var c = i % DESK_COLS, r = Math.floor(i / DESK_COLS);
+    return { x: 66 + c * 80, y: 112 + r * 66 };
+  }
+  function seatPos(i) { var d = deskPos(i); return { x: d.x + DESK_W / 2 - 9, y: d.y - 1 }; }
+  function corridorY(i) { return deskPos(i).y - 20; }
+  function loungePos(n) { return { x: 398 + (n % 4) * 18, y: 232 - Math.floor(n / 4) * 14 }; }
+
+  function freeDesk() {
+    for (var i = 0; i < DESK_COLS * DESK_ROWS; i++) if (!deskOwner[i]) return i;
+    return -1;
+  }
+
+  function route(actor, pts) { actor.path = pts.slice(); actor.seated = false; }
+
+  function syncActors(list) {
+    var now = Date.now(), seen = {};
+    overflow = 0;
+    list.forEach(function (a) {
+      seen[a.id] = true;
+      var act = actors[a.id];
+      if (!act) {
+        var desk = freeDesk();
+        if (desk < 0) { overflow++; return; }
+        deskOwner[desk] = a.id;
+        act = actors[a.id] = { id: a.id, desk: desk, x: DOOR.x, y: DOOR.y, path: [], seated: false, leaving: false,
+          atLounge: false, skin: SKINS[hash(a.id) % SKINS.length], born: now, facing: 1 };
+        var s = seatPos(desk), cy = corridorY(desk);
+        route(act, [{ x: DOOR.x, y: cy }, { x: s.x, y: cy }, { x: s.x, y: s.y }]);
+      }
+      act.info = a;
+      // Finished work: get up and go to the lounge, freeing the desk.
+      if (a.state === 'done' && !act.atLounge && !act.leaving) {
+        act.atLounge = true;
+        if (act.desk >= 0) { deskOwner[act.desk] = null; }
+        var cy2 = act.desk >= 0 ? corridorY(act.desk) : act.y;
+        act.desk = -1;
+        var n = Object.keys(actors).filter(function (k) { return actors[k].atLounge; }).length - 1;
+        var lp = loungePos(n);
+        route(act, [{ x: act.x, y: cy2 }, { x: 384, y: cy2 }, { x: 384, y: lp.y }, { x: lp.x, y: lp.y }]);
+      }
+    });
+    Object.keys(actors).forEach(function (id) {
+      var act = actors[id];
+      if (seen[id] || act.leaving) return;
+      // Gone from the data: walk out through the door, then disappear.
+      act.leaving = true;
+      if (act.desk >= 0) { deskOwner[act.desk] = null; }
+      var cy = act.desk >= 0 ? corridorY(act.desk) : Math.min(act.y, 96);
+      act.desk = -1;
+      route(act, [{ x: act.x, y: cy }, { x: DOOR.x, y: cy }, { x: DOOR.x, y: DOOR.y }]);
+    });
+  }
+
+  function step(dt) {
+    Object.keys(actors).forEach(function (id) {
+      var a = actors[id];
+      if (a.path.length) {
+        var p = a.path[0], dx = p.x - a.x, dy = p.y - a.y, d = Math.sqrt(dx * dx + dy * dy), m = SPEED * dt;
+        if (dx) a.facing = dx > 0 ? 1 : -1;
+        if (d <= m) { a.x = p.x; a.y = p.y; a.path.shift(); }
+        else { a.x += dx / d * m; a.y += dy / d * m; }
+        if (!a.path.length) {
+          if (a.leaving) { delete actors[id]; return; }
+          a.seated = a.desk >= 0;
+        }
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Drawing (all in logical pixels on a 480x270 canvas)
+  // ---------------------------------------------------------------------
+  var cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  function R(x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+
+  function skyColors(hour) {
+    if (hour >= 7 && hour < 17) return ['#7cc4f2', '#bfe3fa'];
+    if (hour >= 17 && hour < 20) return ['#e58a5a', '#f3c58a'];
+    if (hour >= 5 && hour < 7) return ['#d98aa0', '#f1c7a6'];
+    return ['#141a36', '#24305a'];
+  }
+
+  function drawRoom(now) {
+    var d = new Date(now), hour = d.getHours();
+    // wall
+    R(0, 0, W, WALL, '#4a4567'); R(0, WALL - 5, W, 5, '#39345233'); R(0, WALL - 3, W, 3, '#2c2840');
+    // floor tiles
+    for (var ty = WALL; ty < H; ty += 16) for (var tx = 0; tx < W; tx += 16) {
+      R(tx, ty, 16, 16, (((tx + ty) / 16) % 2) ? '#35304b' : '#3a3552');
+    }
+    // lounge rug
+    R(386, 196, 88, 62, '#4b3f63'); R(388, 198, 84, 58, '#574a73');
+    // door
+    R(13, 16, 28, 50, '#2c2840'); R(15, 18, 24, 48, '#7a5a3e'); R(17, 20, 20, 20, '#8a6848'); R(17, 43, 20, 21, '#8a6848'); R(35, 42, 2, 3, '#e3c56a');
+    // windows
+    var sky = skyColors(hour), night = hour >= 20 || hour < 5;
+    [82, 150, 218].forEach(function (wx, i) {
+      R(wx - 2, 10, 48, 36, '#2c2840'); R(wx, 12, 44, 16, sky[0]); R(wx, 28, 44, 16, sky[1]);
+      if (night) { R(wx + 6 + i * 3, 16, 1, 1, '#fff'); R(wx + 30 - i * 4, 21, 1, 1, '#fff'); R(wx + 19, 14 + i, 1, 1, '#dfe6ff'); }
+      else { R(wx + 6 + ((now / 900 + i * 17) % 30), 16 + i, 10, 3, '#ffffffcc'); }
+      R(wx + 21, 12, 2, 32, '#2c2840'); R(wx, 27, 44, 2, '#2c2840'); R(wx - 3, 46, 50, 3, '#5d587c');
+    });
+    // whiteboard with live counts
+    R(290, 10, 86, 42, '#2c2840'); R(292, 12, 82, 38, '#e9e6f2'); R(292, 50, 82, 2, '#8b86a6');
+    var list = Object.keys(actors).map(function (k) { return actors[k].info; }).filter(Boolean);
+    var act = list.filter(function (a) { return a.state === 'working' || a.state === 'thinking' || a.state === 'waiting'; }).length;
+    var dn = list.filter(function (a) { return a.state === 'done'; }).length;
+    var fl = list.filter(function (a) { return a.state === 'failed'; }).length;
+    ctx.font = '8px monospace'; ctx.textBaseline = 'top';
+    ctx.fillStyle = '#2f6b47'; ctx.fillText('ACTIFS  ' + act, 297, 15);
+    ctx.fillStyle = '#3d5a99'; ctx.fillText('FINIS   ' + dn, 297, 26);
+    ctx.fillStyle = '#a23a4c'; ctx.fillText('ECHECS  ' + fl, 297, 37);
+    if (overflow) { ctx.fillStyle = '#6b5527'; ctx.fillText('+' + overflow, 356, 15); }
+    // clock
+    R(396, 14, 44, 16, '#1c1a28'); R(397, 15, 42, 14, '#0f2a1f');
+    var hh = ('0' + hour).slice(-2), mm = ('0' + d.getMinutes()).slice(-2);
+    ctx.fillStyle = '#7be0a0'; ctx.fillText(hh + ((d.getSeconds() % 2) ? ':' : ' ') + mm, 404, 18);
+    // lounge furniture: couch, coffee machine, plant
+    R(392, 244, 66, 14, '#6c4f8f'); R(392, 238, 66, 8, '#7d5fa3'); R(390, 240, 4, 18, '#5a4078'); R(456, 240, 4, 18, '#5a4078');
+    R(452, 176, 18, 22, '#2a2738'); R(454, 178, 14, 8, '#3c3950'); R(458, 189, 6, 6, '#e9e6f2'); R(455, 180, 2, 2, (now % 1400 < 700) ? '#7be0a0' : '#2f6b47');
+    R(398, 180, 10, 10, '#7a5a3e'); R(400, 166, 6, 14, '#3f9a5d'); R(396, 170, 5, 8, '#4fb06c'); R(405, 168, 5, 9, '#4fb06c'); R(401, 162, 4, 6, '#62c57f');
+    // plant by the door
+    R(46, 58, 10, 10, '#7a5a3e'); R(48, 44, 6, 14, '#3f9a5d'); R(44, 48, 5, 8, '#4fb06c'); R(53, 46, 5, 9, '#4fb06c');
+  }
+
+  function drawDesk(i, owner, now) {
+    var d = deskPos(i), info = owner && owner.info, seated = owner && owner.seated;
+    R(d.x + 2, d.y + 20, 44, 3, '#00000033');                       // shadow
+    R(d.x, d.y + 6, DESK_W, 6, '#b98a5c'); R(d.x, d.y + 12, DESK_W, 9, '#8c6541');   // top + front
+    R(d.x + 2, d.y + 21, 3, 5, '#6d4d31'); R(d.x + DESK_W - 5, d.y + 21, 3, 5, '#6d4d31');
+    // laptop seen from the back
+    R(d.x + 26, d.y - 3, 16, 10, '#2a2738'); R(d.x + 27, d.y - 2, 14, 8, '#3a3650');
+    var on = seated && info && info.state !== 'idle' && info.state !== 'failed';
+    R(d.x + 32, d.y + 1, 4, 3, on ? palFor(info.cli).body : '#55516e');
+    if (on && info.state === 'working' && (Math.floor(now / 220) + i) % 3 === 0) R(d.x + 24, d.y - 5, 20, 1, '#ffffff22');
+    // desk clutter, stable per desk
+    if (i % 3 === 0) { R(d.x + 2, d.y + 5, 4, 4, '#e9e6f2'); R(d.x + 3, d.y + 4, 2, 1, '#6b4a2c'); }
+    if (i % 3 === 1) { R(d.x + 1, d.y + 7, 6, 2, '#e9e6f2'); R(d.x + 2, d.y + 6, 6, 2, '#d7d2e6'); }
+    if (i % 3 === 2) { R(d.x + 2, d.y + 2, 3, 5, '#3f9a5d'); R(d.x + 1, d.y + 6, 5, 3, '#7a5a3e'); }
+    // name plate
+    if (info) {
+      var label = palFor(info.cli).name.toUpperCase();
+      ctx.font = '7px monospace'; ctx.textBaseline = 'top';
+      var tw = Math.ceil(ctx.measureText(label).width) + 4;
+      R(d.x + (DESK_W - tw) / 2, d.y + 28, tw, 9, '#1c1a28cc');
+      ctx.fillStyle = palFor(info.cli).body; ctx.fillText(label, Math.round(d.x + (DESK_W - tw) / 2 + 2), d.y + 29);
+    }
+  }
+
+  // x = centre, y = feet
+  function drawChar(a, now) {
+    var info = a.info || {}, pal = palFor(info.cli), x = Math.round(a.x), y = Math.round(a.y);
+    var walking = a.path.length > 0, f = Math.floor(now / 160) % 2;
+    var typing = a.seated && info.state === 'working';
+    var slump = a.seated && (info.state === 'failed' || info.state === 'idle') ? 1 : 0;
+    if (!a.seated) R(x - 4, y, 8, 2, '#00000033');
+    // legs
+    if (!a.seated) {
+      R(x - 3, y - 4 + (walking && f ? -1 : 0), 3, 4, '#2b2940'); R(x, y - 4 + (walking && !f ? -1 : 0), 3, 4, '#2b2940');
+    }
+    var by = y - (a.seated ? 6 : 10) + slump;
+    // body + arms
+    R(x - 4, by, 8, 7, pal.body);
+    var armL = typing && f ? 1 : 0, armR = typing && !f ? 1 : 0;
+    R(x - 6, by + 1 + armL, 2, 5, pal.body); R(x + 4, by + 1 + armR, 2, 5, pal.body);
+    R(x - 6, by + 5 + armL, 2, 2, a.skin); R(x + 4, by + 5 + armR, 2, 2, a.skin);
+    R(x - 1, by + 2, 2, 2, '#ffffff66');                              // badge
+    // head
+    var hy = by - 8;
+    R(x - 4, hy, 8, 8, a.skin); R(x - 4, hy, 8, 3, pal.hair); R(x - 5, hy + 1, 1, 4, pal.hair); R(x + 4, hy + 1, 1, 4, pal.hair);
+    var blink = (Math.floor(now / 120) + hash(a.id)) % 37 === 0;
+    if (!blink && !slump) { R(x - 3, hy + 4, 2, 2, '#1c1a28'); R(x + 1, hy + 4, 2, 2, '#1c1a28'); }
+    else { R(x - 3, hy + 5, 2, 1, '#1c1a28'); R(x + 1, hy + 5, 2, 1, '#1c1a28'); }
+    if (selectedId === a.id) { R(x - 2, hy - 9, 5, 2, '#ffffff'); R(x - 1, hy - 7, 3, 1, '#ffffff'); R(x, hy - 6, 1, 1, '#ffffff'); }
+    return { hx: x, hy: hy };
+  }
+
+  function drawBubble(x, y, state, now) {
+    if (state === 'working') return;
+    var bx = x + 5, by = y - 13, bg = '#f4f2fa';
+    if (state === 'waiting') bg = (now % 900 < 450) ? '#ffd24a' : '#f0b429';
+    R(bx, by, 13, 10, '#1c1a28'); R(bx + 1, by + 1, 11, 8, bg); R(bx + 1, by + 10, 3, 1, '#1c1a28'); R(bx + 1, by + 9, 2, 1, bg);
+    if (state === 'thinking') {
+      var n = Math.floor(now / 350) % 4;
+      for (var i = 0; i < 3; i++) R(bx + 3 + i * 3, by + 4, 2, 2, i < n ? '#55516e' : '#c9c5da');
+    } else if (state === 'waiting') {
+      R(bx + 6, by + 2, 2, 4, '#1c1a28'); R(bx + 6, by + 7, 2, 1, '#1c1a28');
+    } else if (state === 'done') {
+      R(bx + 3, by + 5, 1, 1, '#1f8a55'); R(bx + 4, by + 6, 1, 1, '#1f8a55'); R(bx + 5, by + 7, 1, 1, '#1f8a55');
+      R(bx + 6, by + 6, 1, 1, '#1f8a55'); R(bx + 7, by + 5, 1, 1, '#1f8a55'); R(bx + 8, by + 4, 1, 1, '#1f8a55'); R(bx + 9, by + 3, 1, 1, '#1f8a55');
+    } else if (state === 'failed') {
+      for (var k = 0; k < 5; k++) { R(bx + 4 + k, by + 2 + k, 1, 1, '#c23b52'); R(bx + 8 - k, by + 2 + k, 1, 1, '#c23b52'); }
+    } else if (state === 'idle') {
+      ctx.font = '7px monospace'; ctx.textBaseline = 'top'; ctx.fillStyle = '#55516e';
+      ctx.fillText((Math.floor(now / 700) % 2) ? 'z z' : ' z ', bx + 2, by + 1);
+    }
+  }
+
+  function draw(now) {
+    drawRoom(now);
+    var all = Object.keys(actors).map(function (k) { return actors[k]; });
+    // Seated agents sit behind their desk: draw them first, then the desk.
+    for (var i = 0; i < DESK_COLS * DESK_ROWS; i++) {
+      var owner = deskOwner[i] ? actors[deskOwner[i]] : null;
+      var d = deskPos(i);
+      R(d.x + 8, d.y - 12, 14, 14, '#2f2b45'); R(d.x + 9, d.y - 14, 12, 3, '#3b3656');      // chair back
+      if (owner && owner.seated) {
+        var h = drawChar(owner, now);
+        drawDesk(i, owner, now);
+        drawBubble(h.hx, h.hy, owner.info.state, now);
+      } else {
+        drawDesk(i, owner && !owner.leaving ? owner : null, now);
+      }
+    }
+    all.filter(function (a) { return !a.seated; }).sort(function (p, q) { return p.y - q.y; }).forEach(function (a) {
+      var h = drawChar(a, now);
+      if (!a.path.length && a.info) drawBubble(h.hx, h.hy, a.info.state, now);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Side roster
+  // ---------------------------------------------------------------------
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function dur(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000)), m = Math.floor(s / 60), h = Math.floor(m / 60);
+    if (h) return h + ' h ' + ('0' + (m % 60)).slice(-2);
+    if (m) return m + ' min ' + ('0' + (s % 60)).slice(-2) + ' s';
+    return s + ' s';
+  }
+  function renderRoster(list) {
+    var now = Date.now(), order = { waiting: 0, working: 1, thinking: 2, failed: 3, idle: 4, done: 5 };
+    var sorted = list.slice().sort(function (a, b) { return (order[a.state] - order[b.state]) || (a.since - b.since); });
+    var active = list.filter(function (a) { return a.state === 'working' || a.state === 'thinking' || a.state === 'waiting'; }).length;
+    var waiting = list.filter(function (a) { return a.state === 'waiting'; }).length;
+    document.getElementById('counts').textContent = active + ' actif(s)' + (waiting ? ', ' + waiting + ' en attente de reponse' : '') +
+      (overflow ? ', ' + overflow + ' sans bureau' : '');
+    var el = document.getElementById('list');
+    if (!sorted.length) { el.innerHTML = '<div id="empty">Aucun agent au bureau pour le moment.</div>'; return; }
+    el.innerHTML = sorted.map(function (a) {
+      var pal = palFor(a.cli), end = a.endedAt || now;
+      var when = (a.state === 'done' || a.state === 'failed') ? 'duree ' + dur(end - a.since) : 'depuis ' + dur(now - a.since);
+      return '<div class="row' + (a.id === selectedId ? ' sel' : '') + '" data-id="' + esc(a.id) + '">' +
+        '<div class="top"><span class="sw" style="background:' + pal.body + '"></span><span class="name">' + esc(pal.name) + '</span>' +
+        '<span class="model">' + esc(a.model || (a.kind === 'terminal' ? 'terminal' : '')) + '</span>' +
+        '<span class="chip ' + a.state + '">' + STATE_LABEL[a.state] + '</span></div>' +
+        '<div class="title">' + esc(a.title) + '</div><div class="meta">' + when + '</div></div>';
+    }).join('');
+  }
+  document.getElementById('list').addEventListener('click', function (e) {
+    var row = e.target.closest ? e.target.closest('.row') : null;
+    if (!row) return;
+    var id = row.getAttribute('data-id');
+    selectedId = selectedId === id ? null : id;
+    renderRoster(lastList);
+  });
+
+  // ---------------------------------------------------------------------
+  // Loop
+  // ---------------------------------------------------------------------
+  var lastList = [];
+  function setMode(m, detail) {
+    mode = m;
+    var el = document.getElementById('mode');
+    el.className = m;
+    el.textContent = m === 'live' ? 'EN DIRECT' : 'DEMO' + (detail ? ' - ' + detail : '');
+  }
+
+  var forcedDemo = /[?&]demo=1/.test(location.search) || location.protocol === 'file:';
+  var failures = 0, polling = false;
+  function poll() {
+    if (polling) return;
+    polling = true;
+    // Live is retried on every tick, so the page recovers by itself when the
+    // server comes back. Simulated data is never shown without the DEMO badge.
+    var src = forcedDemo ? pollDemo() : pollLive().then(function (list) {
+      failures = 0; setMode('live'); return list;
+    }, function (err) {
+      failures++;
+      if (window.console) console.warn('[agent-office] poll failed:', err && err.message);
+      if (failures < 3) return lastList;
+      setMode('demo', 'serveur injoignable');
+      return pollDemo();
+    });
+    src.then(function (list) {
+      lastList = list; syncActors(list); renderRoster(list);
+    }).catch(function (err) {
+      if (window.console) console.warn('[agent-office] render failed:', err && err.message);
+    }).then(function () { polling = false; });
+  }
+  if (forcedDemo) setMode('demo', 'donnees simulees');
+
+  function fit() {
+    var st = document.getElementById('stage');
+    var s = Math.max(1, Math.floor(Math.min(st.clientWidth / W, st.clientHeight / H)));
+    cv.style.width = (W * s) + 'px'; cv.style.height = (H * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+
+  var prev = performance.now();
+  function frame(t) {
+    var dt = Math.min(0.1, (t - prev) / 1000); prev = t;
+    step(dt); draw(Date.now());
+    requestAnimationFrame(frame);
+  }
+
+  // Exposed for tests only.
+  window.__agentOffice = { buildAgents: buildAgents, taskState: taskState, taskTitle: taskTitle };
+
+  fit(); poll(); setInterval(poll, 3000); setInterval(function () { renderRoster(lastList); }, 1000);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
