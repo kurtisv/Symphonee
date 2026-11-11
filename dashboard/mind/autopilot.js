@@ -215,6 +215,13 @@ class MindAutopilot {
     const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     const opts = { from: 'mind-autopilot', space: this.state.space, timeout: STEP_MS,
       noFallback: true, noRetry: true, compactContext: true };
+    // Every Claude discovery (including a replan) consumes a discovery slot.
+    this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
+    if (stage === 'discover' && this.state.discoveryTimes.length >= MAX_DAILY_DISCOVERIES) {
+      a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null;
+      this.state.nextAt = budget.startOfNextDay(now);
+      this.save(); return;
+    }
     // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
     const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() });
     if (!charge) {
@@ -222,6 +229,7 @@ class MindAutopilot {
       this.state.nextAt = budget.startOfNextDay(now);
       this.save(); return;
     }
+    if (stage === 'discover') this.state.discoveryTimes.push(now);
     this.save();
     let task;
     if (stage === 'discover' || stage === 'plan-review') {
@@ -314,7 +322,6 @@ class MindAutopilot {
           this.state.nextAt = budget.startOfNextDay(now);
           this.save(); return this.snapshot();
         }
-        this.state.discoveryTimes.push(now);
         this.state.active = { stage: 'discover', taskId: null, plan: null, review: '',
           planRevisions: 0, repairs: 0, baseSha: null, worktree: null,
           localSignals: signals, budgetRef: null, waitingStage: null };
