@@ -7,10 +7,13 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const insights = require('./insights');
 const store = require('./store');
+const budget = require('./autopilot-budget');
 
 const RULES = 'Stay in the selected repository. Never touch secrets, credentials, billing, production data, deployments, CI policies or authentication. Never push, merge or delete branches. If the task needs these, reject it.';
-const MAX_REPAIRS = 2, MAX_PLAN_REVISIONS = 2, MAX_DAILY_COMPLETIONS = 2, MAX_DAILY_DISCOVERIES = 5;
+const { dailyCompletions: MAX_DAILY_COMPLETIONS, dailyDiscoveries: MAX_DAILY_DISCOVERIES,
+  repairs: MAX_REPAIRS, planRevisions: MAX_PLAN_REVISIONS } = budget.LIMITS;
 const STEP_MS = 45 * 60_000;
+const CONTEXT_POLICY = 'Conserve tokens: inspect only relevant files (maximum eight unless absolutely needed); prefer git diff and focused tests. Never dump the whole repository, reason verbosely, call extra agents or explore unrelated code. Keep reports concise.';
 
 // Categories guide autonomous discovery without authorizing gratuitous rewrites.
 const WORK_CATEGORIES = Object.freeze(['correctness', 'performance', 'quality', 'cleanup', 'testing']);
@@ -24,7 +27,7 @@ const CODE_QUALITY_POLICY = [
   'Never claim faster, cleaner or better without showing the actual benefit. If there is no justified task, return NO_TASK.',
 ].join('\n');
 const makeState = () => ({ enabled: false, goal: '', repoName: null, repoPath: null, space: '_global',
-  active: null, history: [], discoveryTimes: [], nextAt: 0, error: null });
+  active: null, history: [], discoveryTimes: [], budgetCalls: [], nextAt: 0, error: null });
 
 function parsePlan(raw) {
   if (typeof raw !== 'string') return null;
@@ -70,6 +73,25 @@ function changedFiles(cwd, base) {
   return Boolean(git(cwd, ['diff', '--name-only', base, '--'])
     || git(cwd, ['ls-files', '--others', '--exclude-standard']));
 }
+// Cheap local signals used BEFORE an AI discovery call; no model tokens spent.
+function localTriage(cwd) {
+  const files = git(cwd, ['ls-files', '--', '*.js', '*.jsx', '*.ts', '*.tsx', '*.py'])
+    .split(/\r?\n/).filter(Boolean).slice(0, 24);
+  const r = spawnSync('git', ['grep', '-n', '-I', '-E', 'TODO|FIXME|HACK|XXX', '--',
+    '*.js', '*.jsx', '*.ts', '*.tsx', '*.py'], {
+    cwd, timeout: 10000, encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  if (r.error || (r.status !== 0 && r.status !== 1)) {
+    throw new Error('Local triage failed: ' + String(r.stderr || r.error?.message).slice(0, 200));
+  }
+  const markers = r.status === 0 ? (r.stdout || '').split(/\r?\n/).filter(Boolean)
+    .slice(0, 12).map(x => x.slice(0, 180)) : [];
+  const recent = git(cwd, ['log', '-5', '--pretty=format:%h %s']).split(/\r?\n/).filter(Boolean)
+    .slice(0, 5).map(x => x.slice(0, 120));
+  return { files, markers, recent, useful: files.length > 0 || markers.length > 0 };
+}
+
 class MindAutopilot {
   constructor({ repoRoot, orchestrator, getUiContext, getRepoPath, broadcast, autoTimer = true }) {
     this.orch = orchestrator; this.repoRoot = repoRoot; this.getUiContext = getUiContext;
@@ -78,6 +100,7 @@ class MindAutopilot {
     try { this.state = { ...makeState(), ...JSON.parse(fs.readFileSync(this.file, 'utf8')) }; }
     catch (_) { this.state = makeState(); }
     this.busy = false;
+    budget.pruneLedger(this.state);
     if (this.state.active) {
       this.state.enabled = false;
       this.state.error = 'Interrupted by restart. Inspect the existing worktree; no automatic replay.';
@@ -90,7 +113,7 @@ class MindAutopilot {
     const s = this.state;
     return { enabled: s.enabled, goal: s.goal, repoName: s.repoName, space: s.space,
       categories: [...WORK_CATEGORIES], active: s.active, history: s.history.slice(-12),
-      nextAt: s.nextAt, error: s.error,
+      nextAt: s.nextAt, error: s.error, budget: budget.dailyUsage(s),
       limits: { dailyCompletions: MAX_DAILY_COMPLETIONS, dailyDiscoveries: MAX_DAILY_DISCOVERIES,
         repairs: MAX_REPAIRS, planRevisions: MAX_PLAN_REVISIONS } };
   }
@@ -153,7 +176,9 @@ class MindAutopilot {
     const learnings = (graph?.nodes || []).filter(x => x.kind === 'learning').slice(-8)
       .map(x => ({ label: x.label, body: String(x.body || '').slice(0, 200) }));
     return ['READ-ONLY independent work discovery. Goal: ' + s.goal,
-      'Inspect the repository, its tests, TODOs, and recent history. Choose ONE justified, useful, small engineering task.',
+      CONTEXT_POLICY,
+      'Local token-free Git signals (hints, not verified issues): ' + JSON.stringify(a.localSignals || {}),
+      'Inspect only relevant repository tests, TODOs and history. Choose ONE justified, useful, small engineering task.',
       'Allowed categories: ' + WORK_CATEGORIES.join(', ') + '. Select based on evidence and actual impact, not equal quotas.',
       CODE_QUALITY_POLICY,
       'Evidence from Mind insights: ' + JSON.stringify(items),
@@ -168,7 +193,7 @@ class MindAutopilot {
   reviewPrompt(stage) {
     const a = this.state.active;
     if (stage === 'plan-review') return ['Codex independent adversarial PLAN review. READ-ONLY.',
-      RULES, 'Goal: ' + this.state.goal, 'Plan: ' + JSON.stringify(a.plan),
+      CONTEXT_POLICY, RULES, 'Goal: ' + this.state.goal, 'Plan: ' + JSON.stringify(a.plan),
       CODE_QUALITY_POLICY,
       'Verify EACH evidence item independently. Reject speculative performance claims and cleanup without reference checks.',
       'For performance, verify a reproducible baseline and objective comparison method exist before implementation.',
@@ -176,7 +201,7 @@ class MindAutopilot {
       'Inspect evidence, scope, duplication, tests and safety. FAIL if not verifiable.',
       'FIRST line MUST be exactly VERDICT: PASS or VERDICT: FAIL. Then specific findings.'].join('\n\n');
     return ['Codex independent adversarial CODE review. READ-ONLY. Do not edit files.',
-      RULES, 'Plan: ' + JSON.stringify(a.plan), 'Base commit: ' + a.baseSha,
+      CONTEXT_POLICY, RULES, 'Plan: ' + JSON.stringify(a.plan), 'Base commit: ' + a.baseSha,
       'Review git diff, run relevant tests, inspect regressions and unintended changes.',
       CODE_QUALITY_POLICY,
       'For performance, independently compare baseline vs changed code on the same representative workload; FAIL if there is no demonstrated improvement or there is a meaningful regression.',
@@ -185,9 +210,19 @@ class MindAutopilot {
       'FIRST line MUST be exactly VERDICT: PASS or VERDICT: FAIL. Then list actual tests and evidence.',
       'Fail if no independent evidence or if tests cannot be run.'].join('\n\n');
   }
-  dispatch(stage) {
+  dispatch(stage, now = Date.now()) {
     const a = this.state.active;
-    const opts = { from: 'mind-autopilot', space: this.state.space, timeout: STEP_MS, noFallback: true };
+    const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
+    const opts = { from: 'mind-autopilot', space: this.state.space, timeout: STEP_MS,
+      noFallback: true, noRetry: true, compactContext: true };
+    // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
+    const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() });
+    if (!charge) {
+      a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null;
+      this.state.nextAt = budget.startOfNextDay(now);
+      this.save(); return;
+    }
+    this.save();
     let task;
     if (stage === 'discover' || stage === 'plan-review') {
       task = this.orch.spawnHeadless({ ...opts, cli: stage === 'discover' ? 'claude' : 'codex',
@@ -198,7 +233,7 @@ class MindAutopilot {
       task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath,
         expectsRepoChanges: true, autoPermit: true, prompt: [
           'Claude implementer in ISOLATED git worktree. Approved plan: ' + JSON.stringify(a.plan),
-          RULES, CODE_QUALITY_POLICY,
+          RULES, CODE_QUALITY_POLICY, CONTEXT_POLICY,
           'Make the minimal correct code changes. Run relevant tests before and after when feasible.',
           'For performance report baseline and new measurements, workload and machine environment.',
           'For cleanup prove removed code has no necessary callers; for quality explain the concrete maintainability benefit.',
@@ -211,14 +246,16 @@ class MindAutopilot {
       task = this.orch.spawnHeadless({ ...opts, cli: 'claude', cwd: a.worktree.path,
         autoPermit: true, expectsRepoChanges: true, prompt: [
           'Claude corrective implementer. Only work in this isolated worktree.',
-          'Approved plan: ' + JSON.stringify(a.plan), RULES,
+          'Approved plan: ' + JSON.stringify(a.plan), RULES, CONTEXT_POLICY,
           'Codex review findings: ' + String(a.review).slice(0, 8000),
           CODE_QUALITY_POLICY,
           'Fix findings, rerun relevant tests and repeat performance measurements where applicable.',
           'Do not push, merge or deploy.'].join('\n\n') });
     } else throw new Error('Invalid stage');
     if (!task?.id) throw new Error('No task ID from Orchestrator');
-    a.stage = stage; a.taskId = task.id; a.startedAt = Date.now(); this.save();
+    charge.taskId = task.id;
+    a.stage = stage; a.taskId = task.id; a.budgetRef = charge.ref;
+    a.waitingStage = null; a.startedAt = Date.now(); this.save();
   }
   complete(outcome, reviewerEvidence = null) {
     const a = this.state.active;
@@ -272,18 +309,38 @@ class MindAutopilot {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => new Date(t).toISOString().slice(0, 10) === day);
         if (now < this.state.nextAt || complete >= MAX_DAILY_COMPLETIONS
           || this.state.discoveryTimes.length >= MAX_DAILY_DISCOVERIES) return this.snapshot();
+        const signals = localTriage(this.state.repoPath);
+        if (!signals.useful || !budget.canDispatch(this.state, now)) {
+          this.state.nextAt = budget.startOfNextDay(now);
+          this.save(); return this.snapshot();
+        }
         this.state.discoveryTimes.push(now);
         this.state.active = { stage: 'discover', taskId: null, plan: null, review: '',
-          planRevisions: 0, repairs: 0, baseSha: null, worktree: null };
-        this.dispatch('discover');
+          planRevisions: 0, repairs: 0, baseSha: null, worktree: null,
+          localSignals: signals, budgetRef: null, waitingStage: null };
+        this.dispatch('discover', now);
       } else {
-        const a = this.state.active, t = this.orch.getTask(a.taskId);
+        const a = this.state.active;
+        if (a.waitingStage) {
+          if (now < this.state.nextAt || !budget.canDispatch(this.state, now)) return this.snapshot();
+          this.dispatch(a.waitingStage, now);
+          return this.snapshot();
+        }
+        const t = this.orch.getTask(a.taskId);
         if (!t) throw new Error('Orchestrator task not found: ' + a.taskId);
         if (now - a.startedAt > STEP_MS + 120000) {
-          this.orch.cancelTask(a.taskId); throw new Error('Stage timed out: ' + a.stage);
+          this.orch.cancelTask(a.taskId);
+          budget.settleCall(this.state, a.budgetRef, t);
+          throw new Error('Stage timed out: ' + a.stage);
         }
-        if (t.state === 'completed') this.advance(t.result);
-        else if (!['running', 'pending', 'queued'].includes(t.state)) throw new Error('Stage ' + a.stage + ' failed: ' + (t.error || t.state));
+        if (t.state === 'completed') {
+          budget.settleCall(this.state, a.budgetRef, t);
+          a.budgetRef = null; this.save();
+          this.advance(t.result);
+        } else if (!['running', 'pending', 'queued'].includes(t.state)) {
+          budget.settleCall(this.state, a.budgetRef, t);
+          throw new Error('Stage ' + a.stage + ' failed: ' + (t.error || t.state));
+        }
       }
     } catch (e) { this.halt(e); }
     finally { this.busy = false; }
@@ -310,4 +367,4 @@ function mountMindAutopilot(addRoute, json, deps) {
   addRoute('POST', '/api/mind/autopilot/stop', (_req, res) => json(res, pilot.stop()));
   return pilot;
 }
-module.exports = { MindAutopilot, mountMindAutopilot, parsePlan, verdict, taskKey, changedFiles, WORK_CATEGORIES, CODE_QUALITY_POLICY };
+module.exports = { MindAutopilot, mountMindAutopilot, parsePlan, verdict, taskKey, changedFiles, localTriage, WORK_CATEGORIES, CODE_QUALITY_POLICY };
