@@ -293,3 +293,17 @@ test('only one pilot runs a task at a time', async () => {
     second.stop(); second.close();
   } finally { f.cleanup(); }
 });
+
+test('deep loop without check commands still passes through the diff-lint gate', async () => {
+  const def = { profile: 'deep', label: 'No commands', protectedPaths: ['^secrets/'] };
+  const f = setup({ planVerdicts: ['PASS'], codeVerdicts: ['PASS'], def, id: 'deep-nocmd' });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve correctness in depth', allowWorktreeWrites: true });
+    await drive(f.pilot, 300);
+    const s = f.pilot.snapshot();
+    assert.equal(s.error, null, 'no error: ' + s.error);
+    assert.ok(s.pipeline.includes('verify'));
+    assert.equal(s.history[0].outcome, 'completed');
+    assert.ok(s.events.some(e => /Local verification PASSED: diff lint/.test(e.msg)), 'the gate ran');
+  } finally { f.cleanup(); }
+});

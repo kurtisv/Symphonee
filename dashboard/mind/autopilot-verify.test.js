@@ -79,3 +79,18 @@ test('runVerify stops at the first failure, reports its output and enforces time
     assert.equal(missing.ok, false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('changedPaths also reports files hidden by .gitignore, except the links Symphonee made', () => {
+  const r = repo();
+  try {
+    fs.writeFileSync(path.join(r.dir, '.gitignore'), 'secrets/\nnode_modules/\n');
+    fs.mkdirSync(path.join(r.dir, 'secrets'));
+    fs.writeFileSync(path.join(r.dir, 'secrets', 'key.txt'), 'x');
+    fs.mkdirSync(path.join(r.dir, 'node_modules'));
+    fs.writeFileSync(path.join(r.dir, 'node_modules', 'a.js'), '1');
+    const files = guard.changedPaths(r.dir, r.base, { skip: ['node_modules'] });
+    assert.ok(files.includes('secrets/'), 'ignored directory is reported: ' + files.join(','));
+    assert.equal(files.some(f => f.startsWith('node_modules')), false, 'own junction is skipped');
+    assert.deepEqual(guard.protectedHits(files, ['^secrets/']), ['secrets/']);
+  } finally { r.cleanup(); }
+});

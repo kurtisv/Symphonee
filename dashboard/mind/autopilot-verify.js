@@ -55,10 +55,19 @@ function unlinkDirs(worktreePath, dirs = []) {
   return removed;
 }
 
-function changedPaths(cwd, base) {
-  const tracked = runGit(cwd, ['diff', '--name-only', base, '--']).split(/\r?\n/).filter(Boolean);
-  const untracked = runGit(cwd, ['ls-files', '--others', '--exclude-standard']).split(/\r?\n/).filter(Boolean);
-  return [...new Set([...tracked, ...untracked])];
+// Everything that differs from the base commit: tracked changes, new files,
+// AND files the repository ignores (a fresh worktree has none, so any ignored
+// entry was created by the run; .gitignore must not hide a protected path).
+// Ignored directories are reported collapsed ("secrets/"), which is enough to
+// match a path pattern; `skip` lists the junctions Symphonee created itself.
+function changedPaths(cwd, base, { skip = [] } = {}) {
+  const lines = (args) => runGit(cwd, args).split(/\r?\n/).filter(Boolean);
+  const tracked = lines(['diff', '--name-only', base, '--']);
+  const untracked = lines(['ls-files', '--others', '--exclude-standard']);
+  const own = new Set(skip.map(d => String(d).replace(/\\/g, '/').replace(/\/+$/, '')));
+  const ignored = lines(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'])
+    .filter(p => !own.has(p.replace(/\/+$/, '')));
+  return [...new Set([...tracked, ...untracked, ...ignored])];
 }
 function compilePatterns(patterns = []) {
   return patterns.map((p) => { try { return new RegExp(p, 'i'); } catch (_) { throw new Error('Invalid protected path pattern: ' + p); } });

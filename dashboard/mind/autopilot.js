@@ -122,9 +122,12 @@ function changedFiles(cwd, base) {
 // Stronger than the Orchestrator's fingerprint: covers HEAD (new commits),
 // staged/unstaged diffs AND the content of untracked files. Used to prove a
 // read-only reviewer left the code under review untouched.
-function worktreeFingerprint(cwd) {
+function worktreeFingerprint(cwd, { head = true } = {}) {
   const h = crypto.createHash('sha256');
-  h.update(git(cwd, ['rev-parse', 'HEAD'])).update('\0');
+  // head:false for the user's main checkout: an unrelated commit there (a
+  // scheduled status commit, the user's own work) is not an intrusion; only
+  // working-tree changes are. The implementer cannot commit anyway.
+  if (head) h.update(git(cwd, ['rev-parse', 'HEAD'])).update('\0');
   h.update(git(cwd, ['status', '--porcelain', '--untracked-files=all'])).update('\0');
   h.update(git(cwd, ['diff', 'HEAD', '--binary'])).update('\0');
   const untracked = git(cwd, ['ls-files', '--others', '--exclude-standard']);
@@ -139,10 +142,12 @@ function worktreeFingerprint(cwd) {
 const TEST_FILE = /(\.test|\.spec|_test)\.[jt]sx?$|(^|\/)test_[^/]*\.py$|_test\.py$|(^|\/)(__tests__|tests?)\//;
 // Generated or vendored code is never a useful target for "add a test".
 const NOT_A_TARGET = /(^|\/)(node_modules|vendor|dist|build|coverage)\/|\.min\.js$|\.bundle\.js$/;
-function localTriage(cwd) {
+function localTriage(cwd, { exclude = [] } = {}) {
+  const barred = guard.compilePatterns(exclude);
+  const open = (f) => !barred.some(re => re.test(f));
   const all = git(cwd, ['ls-files', '--', '*.js', '*.jsx', '*.ts', '*.tsx', '*.py'])
     .split(/\r?\n/).filter(Boolean);
-  const files = all.slice(0, 24);
+  const files = all.filter(open).slice(0, 24);
   // Source files with no sibling test file: a concrete, token-free signal for
   // the "testing" category (still only a hint; discovery must verify it).
   const tracked = new Set(all);
@@ -153,8 +158,29 @@ function localTriage(cwd) {
     return [m[1] + '.test' + m[2], m[1] + '.spec' + m[2], m[1] + '_test' + m[2],
       (dir === '.' ? '' : dir + '/') + 'test_' + base + m[2], (dir === '.' ? '' : dir + '/') + '__tests__/' + base + '.test' + m[2]];
   };
-  const sources = all.filter(f => !TEST_FILE.test(f) && !NOT_A_TARGET.test(f));
-  const untested = sources.filter(f => !testOf(f).some(t => tracked.has(t)));
+  // Protected files are never offered to discovery as candidates.
+  const sources = all.filter(f => !TEST_FILE.test(f) && !NOT_A_TARGET.test(f) && open(f));
+  // Repositories that keep tests in a central folder (src/__tests__/...) have
+  // no sibling test files: also count a source as covered when a test file
+  // imports a module of that name (one git grep, no file is read here).
+  const imported = new Set();
+  const ig = runGit(cwd, ['grep', '-h', '-o', '-I', '-E', "(from|require\\(|import\\()[[:space:]]*['\"][^'\"]+['\"]", '--',
+    '*.test.*', '*.spec.*', '*__tests__/*', '*_test.py', 'test_*.py']);
+  if (!ig.error && ig.status === 0) {
+    for (const line of String(ig.stdout).split(/\r?\n/)) {
+      const m = /['"]([^'"]+)['"]/.exec(line);
+      if (!m || !/^[.@~]/.test(m[1]) && !m[1].includes('/')) continue;
+      const parts = m[1].replace(/\.[jt]sx?$/, '').split('/').filter(Boolean);
+      const last = parts[parts.length - 1];
+      if (last) imported.add(last.toLowerCase());
+    }
+  }
+  const moduleName = (f) => {
+    const parts = f.replace(/\.[^./]+$/, '').split('/');
+    const last = parts[parts.length - 1];
+    return (last === 'index' && parts.length > 1 ? parts[parts.length - 2] : last).toLowerCase();
+  };
+  const untested = sources.filter(f => !testOf(f).some(t => tracked.has(t)) && !imported.has(moduleName(f)));
   // Real markers only ("TODO:", "FIXME(" ...), not the words inside a regex
   // such as this module's own 'TODO|FIXME' pattern.
   const r = runGit(cwd, ['grep', '-n', '-I', '-E', '\\b(TODO|FIXME|HACK|XXX)\\b[:(]', '--',
@@ -165,7 +191,8 @@ function localTriage(cwd) {
   // Send only file:line pointers; never forward arbitrary source-line content
   // (which could include secrets) to discovery as an untrusted hint.
   const markers = r.status === 0 ? (r.stdout || '').split(/\r?\n/).filter(Boolean)
-    .slice(0, 12).map(x => (/^(.+?:\d+):/.exec(x)?.[1] || '(source marker)')) : [];
+    .map(x => (/^(.+?:\d+):/.exec(x)?.[1] || '(source marker)'))
+    .filter(x => open(x.replace(/:\d+$/, ''))).slice(0, 12) : [];
   const recent = git(cwd, ['log', '-5', '--pretty=format:%h %s']).split(/\r?\n/).filter(Boolean)
     .slice(0, 5).map(x => x.slice(0, 120));
   const dirty = git(cwd, ['status', '--porcelain']).split(/\r?\n/).filter(Boolean).length;
@@ -281,7 +308,7 @@ class MindAutopilot {
   snapshot(now = Date.now()) {
     const s = this.state;
     const a = s.active;
-    const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length ? ['verify'] : []), 'code-review', 'repair', 'done'];
+    const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length || this.profile.deep ? ['verify'] : []), 'code-review', 'repair', 'done'];
     return { pilot: this.id, label: this.def.label, profile: this.def.profile, profileLabel: this.profile.label,
       verify: this.def.verify.map(v => v.name), protectedPaths: this.def.protectedPaths, linkDirs: this.def.linkDirs, pipeline,
       enabled: s.enabled, status: this.status(now), goal: s.goal, repoName: s.repoName,
@@ -469,7 +496,7 @@ class MindAutopilot {
           + (stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage)) });
     } else if (stage === 'implement') {
       a.baseSha = git(this.state.repoPath, ['rev-parse', 'HEAD']);
-      a.mainFingerprint = worktreeFingerprint(this.state.repoPath);
+      a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
       const branch = 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
       task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch,
         expectsRepoChanges: true, autoPermit: false, confineWrites: true, prompt: [
@@ -494,7 +521,7 @@ class MindAutopilot {
         autoPermit: false, readOnly: true, sandbox: 'read-only',
         prompt: repoPin(a.worktree.path, this.state.repoPath) + '\n\n' + this.reviewPrompt(stage) });
     } else if (stage === 'repair') {
-      a.mainFingerprint = worktreeFingerprint(this.state.repoPath);
+      a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path,
         autoPermit: false, confineWrites: true, expectsRepoChanges: true, prompt: [
           repoPin(a.worktree.path, this.state.repoPath),
@@ -559,13 +586,15 @@ class MindAutopilot {
     if (a.stage === 'implement' || a.stage === 'repair') {
       // Claude's tools are confined to the worktree, but this is not an OS
       // sandbox: prove the user's own checkout was left untouched.
-      if (a.mainFingerprint && worktreeFingerprint(this.state.repoPath) !== a.mainFingerprint) {
+      if (a.mainFingerprint && worktreeFingerprint(this.state.repoPath, { head: false }) !== a.mainFingerprint) {
         throw new Error('The main checkout changed during ' + a.stage + '; stopped for inspection: ' + this.state.repoPath);
       }
       if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('No Git changes despite Claude completion');
-      const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha), this.def.protectedPaths);
+      const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
       if (hits.length) throw new Error('Protected path modified during ' + a.stage + ': ' + hits.slice(0, 6).join(', ') + '. Inspect ' + a.worktree.path);
-      if (this.def.verify.length) return this.startVerify();
+      // The deep profile always passes through the gate: the diff lint runs
+      // even when the repository has no check command configured.
+      if (this.def.verify.length || this.profile.deep) return this.startVerify();
       return this.dispatch('code-review');
     }
     if (a.stage === 'code-review') {
@@ -589,12 +618,13 @@ class MindAutopilot {
     const a = this.state.active;
     a.stage = 'verify'; a.taskId = null; a.budgetRef = null; a.startedAt = Date.now();
     a.verify = { running: true, startedAt: Date.now(), results: [], current: null, lint: [] };
-    this.log('verify', 'Local verification started: ' + this.def.verify.map(v => v.name).join(', '));
+    this.log('verify', 'Local verification started: diff lint' + this.def.verify.map(v => ', ' + v.name).join(''));
     this.save();
     const cwd = a.worktree.path, base = a.baseSha;
     Promise.resolve().then(async () => {
       const lint = guard.diffLint(cwd, base);
       if (lint.length) return { ok: false, results: [], lint };
+      if (!this.def.verify.length) return { ok: true, results: [], lint: [] };
       const r = await guard.runVerify(cwd, this.def.verify, { onStart: (proc, c) => {
         this._verifyProc = proc;
         if (this.state.active === a && a.verify) { a.verify.current = c.name; try { this.save(); } catch (_) {} }
@@ -612,7 +642,7 @@ class MindAutopilot {
   finishVerify() {
     const a = this.state.active, v = a.verify;
     if (v.ok) {
-      this.log('verify', 'Local verification PASSED: ' + v.results.map(r => r.name + ' ' + Math.round(r.ms / 1000) + 's').join(', '));
+      this.log('verify', 'Local verification PASSED: diff lint' + v.results.map(r => ', ' + r.name + ' ' + Math.round(r.ms / 1000) + 's').join(''));
       return this.dispatch('code-review');
     }
     const failed = v.results.find(r => !r.ok);
@@ -632,7 +662,7 @@ class MindAutopilot {
         if (now < this.state.nextAt || this.todayCompleted(now) >= this.limits.dailyCompletions
           || this.state.discoveryTimes.length >= this.limits.dailyDiscoveries) return this.snapshot();
         if (this.blockedByPeer()) return this.snapshot();
-        const signals = localTriage(this.state.repoPath);
+        const signals = localTriage(this.state.repoPath, { exclude: this.def.protectedPaths });
         if (!signals.useful || !budget.canDispatch(this.state, now, this.limits)) {
           this.state.nextAt = budget.startOfNextDay(now);
           this.log(signals.useful ? 'quota' : 'idle', signals.useful ? 'Daily budget reached before discovery'
@@ -732,7 +762,7 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [],
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [] };
       const existing = pilots.get(id);
-      if (existing && existing.state.enabled) throw new Error('Stop this pilot before changing its definition');
+      if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
       const all = readDefs(); all[id] = pilots.get(id).def;
       fs.mkdirSync(path.dirname(defsFile), { recursive: true });

@@ -485,7 +485,17 @@ module.exports = {
         this.circuitBreaker.recordSuccess(cli);
         this.heartbeats.delete(task.id);
       } else {
-        const errText = stderr.trim() || stdout.trim() || '';
+        let errText = stderr.trim() || stdout.trim() || '';
+        // Claude JSON output: surface the readable cause instead of the raw blob.
+        if (usageJson && cli === 'claude') {
+          try {
+            const j = JSON.parse(stdout.trim());
+            if (j && j.type === 'result') {
+              errText = ['Claude ' + (j.terminal_reason || j.subtype || 'error'), typeof j.result === 'string' ? j.result.trim() : '',
+                j.api_error_status ? 'HTTP ' + j.api_error_status : ''].filter(Boolean).join(': ').slice(0, 1500) || errText;
+            }
+          } catch (_) {}
+        }
         const classified = classifyError(errText || `Process exited with code ${code}`, cli);
         if (localSpec) {
           // One local attempt, then cloud: every local failure is failover-eligible.
