@@ -16,19 +16,28 @@ const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync, shellSafeCommand 
 const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint, isLoopbackUrl, prepareIsolatedHome, killProcessTree } = require('./local-providers');
 // Windows + shell:true concatenates args WITHOUT quoting (Node DEP0190), so an
 // argument with spaces (the worker system prompt, "Bash(git diff:*)") was split
-// into separate words. Quote such args using MSVC argv rules.
+// into separate words. Quote such args using MSVC argv rules. Known limit:
+// cmd.exe still expands %VAR% inside quotes; prompts for claude/codex travel on
+// stdin, so only flag/positional-prompt CLIs are exposed (unchanged behaviour).
 function winQuoteArg(a) {
   const s = String(a);
   if (s === '') return '""';
   if (!/[\s"&|<>^()]/.test(s)) return s;
   return '"' + s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"';
 }
-const CONFINED_ALLOWED_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write',
-  'Bash(node:*)', 'Bash(npm test:*)', 'Bash(npm run test:*)', 'Bash(python -m pytest:*)', 'Bash(pytest:*)',
-  'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)', 'Bash(git add:*)', 'Bash(git commit:*)']);
-const CONFINED_DENIED_TOOLS = Object.freeze(['WebFetch', 'WebSearch', 'Bash(git push:*)', 'Bash(git merge:*)',
-  'Bash(git rebase:*)', 'Bash(git reset:*)', 'Bash(git branch:*)', 'Bash(git worktree:*)', 'Bash(git checkout:*)',
-  'Bash(npm publish:*)']);
+// Claude's shell tool is "Bash" or "PowerShell" depending on the machine, so
+// every command rule is declared for both. Only test runners and read-only git
+// are allowed: no generic `node`, no commit, no network tools. NOTE: a test
+// runner still executes repository code; this is tool-level confinement, not
+// an OS sandbox (the autopilot additionally fingerprints the main checkout).
+const SHELL_TOOLS = ['Bash', 'PowerShell'];
+const shellRules = (cmds) => SHELL_TOOLS.flatMap(t => cmds.map(c => t + '(' + c + ':*)'));
+const CONFINED_ALLOWED_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', ...shellRules([
+  'node --test', 'npm test', 'npm run test', 'python -m pytest', 'pytest',
+  'git status', 'git diff', 'git log', 'git show'])]);
+const CONFINED_DENIED_TOOLS = Object.freeze(['WebFetch', 'WebSearch', ...shellRules([
+  'git push', 'git merge', 'git rebase', 'git reset', 'git branch', 'git worktree', 'git checkout',
+  'git commit', 'npm publish', 'npm install', 'npx'])]);
 
 // Real token usage when the CLI reports it; null otherwise (callers must then
 // show an estimate, never a fabricated exact value).
