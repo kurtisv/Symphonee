@@ -944,6 +944,14 @@ const mind = mountMind(addRoute, json, {
 console.log('  Mind mounted (/api/mind/*) - shared knowledge graph');
 trace.mark('server:mind-mounted');
 
+// Opt-in autonomous Mind execution loop. Reuses the existing Orchestrator;
+// disabled by default, and code changes remain in isolated worktrees.
+const { mountMindAutopilot } = require('./mind/autopilot');
+mountMindAutopilot(addRoute, json, {
+  repoRoot, orchestrator, getUiContext: getUiContextWithPath, getRepoPath, broadcast,
+});
+console.log('  Mind autopilot mounted (/api/mind/autopilot/*, opt-in)');
+
 // ── Action Ledger routes ────────────────────────────────────────────────────
 // GET /api/ledger        - newest-first action history (filterable)
 // GET /api/ledger/stats  - aggregate counts for the activity summary
