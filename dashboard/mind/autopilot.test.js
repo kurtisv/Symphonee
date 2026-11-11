@@ -312,7 +312,17 @@ test('restart while parked on quota keeps waiting instead of relaunching', async
     assert.equal(restarted.snapshot().active.waitingStage, 'plan-review');
     await restarted.tick();
     assert.equal(f.tasks.size, 1, 'still parked: nothing launched');
+    // Stopping a parked plan keeps it resumable (no process was running).
+    restarted.stop();
+    assert.equal(restarted.snapshot().status, 'disabled');
     restarted.close();
+    const again = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch,
+      getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: f.pilot.getRepoPath, autoTimer: false });
+    assert.equal(again.snapshot().status, 'disabled', 'restart while stopped keeps the parked plan, not interrupted');
+    again.configure({ enabled: true, goal: 'Improve tests' });
+    assert.equal(again.snapshot().active.waitingStage, 'plan-review', 'reactivation resumes the approved plan');
+    assert.equal(again.snapshot().active.plan.title, goodPlan.title);
+    again.close();
   } finally { f.cleanup(); }
 });
 test('restart after a user stop keeps the pilot stopped and requires an explicit archive', async () => {

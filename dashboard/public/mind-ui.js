@@ -3243,6 +3243,7 @@
           ${a ? '<div class="ap-note">Tache : <b>' + esc(a.plan ? "[" + (CATEGORY_LABELS[a.plan.category] || a.plan.category) + "] " + a.plan.title : "(decouverte en cours)") + "</b> | revisions du plan " + esc(a.planRevisions || 0) + "/" + esc(L.planRevisions) + " | reparations " + esc(a.repairs || 0) + "/" + esc(L.repairs) + (a.worktree ? ' | worktree <span class="ap-path">' + esc(a.worktree.path) + "</span>" : "") + (a.taskId ? " | tache Orchestrator " + esc(a.taskId) : "") + "</div>" : ""}
           ${s.nextAt && s.nextAt > Date.now() ? '<div class="ap-note">Prochaine verification possible : ' + esc(when(s.nextAt)) + "</div>" : ""}
           ${s.error ? '<div class="ap-err">' + esc(s.error) + "</div>" : ""}
+          ${!s.enabled && a && a.waitingStage ? `<div class="ap-note">Plan approuve en attente de quota : il reprendra a l'etape ` + esc(STAGE_LABELS[a.waitingStage] || a.waitingStage) + ' quand vous reactiverez le pilote.</div><div class="ap-btns" style="margin-top:8px;"><button class="tab-bar-btn" onclick="MindAutopilot.acknowledge()" ' + (ap.busy ? "disabled" : "") + ">Abandonner ce plan</button></div>" : ""}
           ${s.status === "interrupted" ? '<div class="ap-btns" style="margin-top:8px;"><button class="tab-bar-btn" onclick="MindAutopilot.acknowledge()" ' + (ap.busy ? "disabled" : "") + ">Archiver la tache interrompue (le worktree est conserve)</button></div>" : ""}
           <div class="ap-msg" id="apMsg">${esc(ap.message)}</div>
         </div>

@@ -161,6 +161,8 @@ class MindAutopilot {
       this.state.nextAt = Math.max(this.state.nextAt || 0, now + 5 * 60_000);
       this.log('auto-archived', 'Restart during ' + a.stage + ': run archived without replay'
         + (a.worktree ? '; worktree kept: ' + a.worktree.path : '') + '; loop continues');
+    } else if (a.waitingStage) {
+      this.log('resumed', 'Restart while stopped: approved work still parked before ' + a.waitingStage);
     } else if (!a.interruptedAt) {
       a.interruptedAt = now;
       this.state.error = this.state.error || 'Interrupted by restart. Inspect the existing worktree; no automatic replay.';
@@ -186,7 +188,8 @@ class MindAutopilot {
   status(now = Date.now()) {
     const s = this.state;
     if (!s.enabled) {
-      if (s.active) return 'interrupted';
+      // A stage parked on quota had no running process: it is resumable.
+      if (s.active && !s.active.waitingStage) return 'interrupted';
       return s.error ? 'error' : 'disabled';
     }
     if (s.active) return s.active.waitingStage ? 'quota' : 'running';
@@ -245,7 +248,9 @@ class MindAutopilot {
   configure({ enabled, goal, repoName, acknowledgeInterrupted = false, allowWorktreeWrites } = {}) {
     if (typeof enabled !== 'boolean') throw new Error('enabled must be boolean');
     if (!enabled) return this.stop();
-    if (this.state.active) {
+    // A parked stage (no process ran) resumes on reactivation; anything that
+    // was mid-flight must be inspected and archived first.
+    if (this.state.active && !this.state.active.waitingStage) {
       // An interrupted branch is never silently resumed. A deliberate
       // acknowledgement retires it, retaining its worktree in history.
       if (!acknowledgeInterrupted || this.state.enabled) {
