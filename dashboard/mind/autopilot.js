@@ -79,10 +79,27 @@ class MindAutopilot {
     fs.renameSync(tmp, this.file);
     this.broadcast({ type: 'mind-update', payload: { kind: 'autopilot', state: this.snapshot() } });
   }
-  configure({ enabled, goal, repoName } = {}) {
+  configure({ enabled, goal, repoName, acknowledgeInterrupted = false } = {}) {
     if (typeof enabled !== 'boolean') throw new Error('enabled must be boolean');
     if (!enabled) return this.stop();
-    if (this.state.active) throw new Error('A previous run must be inspected before enabling a new one');
+    if (this.state.active) {
+      // An interrupted branch is never silently resumed. A deliberate
+      // acknowledgement retires it, retaining its worktree in history.
+      if (!acknowledgeInterrupted || this.state.enabled) {
+        throw new Error('Inspect the previous worktree, then pass acknowledgeInterrupted:true to start fresh');
+      }
+      const id = this.state.active.taskId;
+      const current = id && this.orch.getTask(id);
+      if (current && ['running', 'pending', 'queued'].includes(current.state)) {
+        throw new Error('Previous task is still running. Stop/cancel it before acknowledging');
+      }
+      const prev = this.state.active;
+      this.state.history.push({ title: prev.plan?.title || '(interrupted)',
+        objective: prev.plan?.objective || null, key: prev.plan ? taskKey(prev.plan) : null,
+        outcome: 'interrupted', worktree: prev.worktree || null, at: new Date().toISOString() });
+      this.state.history = this.state.history.slice(-100);
+      this.state.active = null;
+    }
     const ui = this.getUiContext() || {};
     const name = repoName || ui.activeRepo;
     const cwd = name && this.getRepoPath(name);
