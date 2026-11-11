@@ -42,6 +42,10 @@ const makeState = () => ({ enabled: false, goal: '', repoName: null, repoPath: n
   active: null, history: [], events: [], discoveryTimes: [], budgetCalls: [], nextAt: 0, error: null,
   consent: null });
 
+// Measured 2026-11-11: a precise plan was rejected because two items exceeded
+// the former 350-char cap. The caps are now generous and stated in the prompt.
+const MAX_EVIDENCE_CHARS = 1500;
+const MAX_ACCEPTANCE_CHARS = 1000;
 function parsePlan(raw) {
   if (typeof raw !== 'string') return null;
   let p;
@@ -56,9 +60,9 @@ function parsePlan(raw) {
     || typeof p.title !== 'string' || p.title.trim().length < 8
     || p.title.length > 180 || typeof p.objective !== 'string' || p.objective.trim().length < 15
     || p.objective.length > 2000 || !Array.isArray(p.acceptance) || p.acceptance.length < 1
-    || p.acceptance.length > 8 || p.acceptance.some(x => typeof x !== 'string' || x.length > 350)
+    || p.acceptance.length > 8 || p.acceptance.some(x => typeof x !== 'string' || x.length > MAX_ACCEPTANCE_CHARS)
     || !Array.isArray(p.evidence) || p.evidence.length < 1 || p.evidence.length > 8
-    || p.evidence.some(x => typeof x !== 'string' || x.trim().length < 12 || x.length > 350)) return null;
+    || p.evidence.some(x => typeof x !== 'string' || x.trim().length < 12 || x.length > MAX_EVIDENCE_CHARS)) return null;
   // Performance tasks require a reproducible baseline, not vague speed claims.
   if (p.category === 'performance' && (typeof p.baseline !== 'string'
     || p.baseline.trim().length < 20 || p.baseline.length > 1000)) return null;
@@ -347,7 +351,7 @@ class MindAutopilot {
       a.rejectedPlan ? 'Your previous plan was REJECTED by the reviewer. Revise it once to address every finding, or return NO_TASK. Rejected plan: '
         + JSON.stringify(a.rejectedPlan) + '\nReviewer feedback: ' + String(a.review || '').slice(0, 2000) : '',
       RULES, 'Never invent work or repeat a completed objective.',
-      'Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
+      'Limits: title 8-180 chars, objective 15-2000, 1-8 evidence items of 12-' + MAX_EVIDENCE_CHARS + ' chars each, 1-8 acceptance items of at most ' + MAX_ACCEPTANCE_CHARS + ' chars each. Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
       'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].filter(Boolean).join('\n\n');
   }
   reviewPrompt(stage) {

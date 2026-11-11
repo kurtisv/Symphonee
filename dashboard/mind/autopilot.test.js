@@ -366,3 +366,11 @@ test('local triage: real markers only, and source files without a sibling test',
     assert.equal(s.untested.of, 3);
   } finally { f.cleanup(); }
 });
+test('detailed plans with long evidence are accepted; oversized items are still refused', () => {
+  const long = { ...goodPlan, evidence: ['dashboard/lib/x.js: ' + 'branch detail '.repeat(60)],
+    acceptance: ['node --test passes and asserts ' + 'case '.repeat(130)] };
+  assert.ok(long.evidence[0].length > 800 && long.acceptance[0].length > 600);
+  assert.equal(parsePlan(JSON.stringify(long)).evidence.length, 1);
+  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, evidence: ['x'.repeat(1501)] })), null);
+  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, acceptance: ['x'.repeat(1001)] })), null);
+});

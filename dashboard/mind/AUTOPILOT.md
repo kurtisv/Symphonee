@@ -37,7 +37,7 @@ are listed at the end for scripts.
 | Guardrail | Limit |
 | --- | ---: |
 | Successful tasks | 3 / day |
-| Claude discoveries (including plan revisions) | 6 / day |
+| Claude discoveries (including plan revisions) | 8 / day |
 | Claude + Codex launches | 20 / day |
 | Reservation token budget | 3,000,000 / day |
 | Reservation when real usage is unknown | 150,000 tokens / call |
