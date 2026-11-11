@@ -36,11 +36,11 @@ are listed at the end for scripts.
 
 | Guardrail | Limit |
 | --- | ---: |
-| Successful tasks | 2 / day |
-| Claude discoveries (including the plan revision) | 2 / day |
-| Claude + Codex launches | 12 / day |
-| Reservation token budget | 120,000 / day |
-| Reservation when real usage is unknown | 12,000 tokens / call |
+| Successful tasks | 3 / day |
+| Claude discoveries (including plan revisions) | 4 / day |
+| Claude + Codex launches | 18 / day |
+| Reservation token budget | 2,500,000 / day |
+| Reservation when real usage is unknown | 150,000 tokens / call |
 | Plan revisions | 1 / task |
 | Code repairs | 1 / task |
 
@@ -56,8 +56,8 @@ as an *estimation*. The token budget is checked before each launch; it is
 
 Measured on this machine (2026-11-11): a trivial Claude `-p` call is ~21,600
 tokens (mostly cache); one Codex review of a ~1,400-line diff was 107,569
-tokens. With real metering, 120,000 tokens per day usually admits only one or
-two substantial calls. Raise the limit only after reviewing actual usage.
+tokens. The limits were raised on 2026-11-11 (user decision) from these figures:
+a typical task is ~715k tokens, ~1.33M with one plan revision and one repair, so 2.5M admits two worst-case tasks per day (18 launches >= 2 x 8).
 
 ## Restart and stop
 

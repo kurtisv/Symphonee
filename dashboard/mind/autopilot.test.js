@@ -6,6 +6,8 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { MindAutopilot, parsePlan, verdict, WORK_CATEGORIES } = require('./autopilot');
+const { LIMITS } = require('./autopilot-budget');
+const completedToday = (at) => Array.from({ length: LIMITS.dailyCompletions }, () => ({ at, outcome: 'completed' }));
 
 const goodPlan = { decision: 'TASK', category: 'correctness',
   title: 'Repair reproducible failure',
@@ -100,7 +102,7 @@ test('read-only discovery flows to independent Codex plan review', async () => {
     assert.deepEqual(f.pilot.state.active.localSignals.files, ['index.js']);
     assert.equal(f.pilot.snapshot().budget.calls, 1);
     assert.equal(f.pilot.snapshot().budget.unmeteredCalls, 1);
-    assert.equal(f.pilot.snapshot().limits.dailyCompletions, 2);
+    assert.equal(f.pilot.snapshot().limits.dailyCompletions, LIMITS.dailyCompletions);
     t.state = 'completed'; t.result = JSON.stringify(goodPlan);
     await f.pilot.tick();
     assert.equal(f.pilot.state.active.stage, 'plan-review');
@@ -168,11 +170,10 @@ test('two completed tasks block additional discoveries until the next local day'
   const f = fixture();
   try {
     const today = new Date().toISOString();
-    f.pilot.state.history.push({ at: today, outcome: 'completed' },
-      { at: today, outcome: 'completed' });
+    f.pilot.state.history.push(...completedToday(today));
     f.pilot.configure({ enabled: true, goal: 'Improve code, no more than two daily tasks', allowWorktreeWrites: true });
     assert.equal(f.tasks.size, 0);
-    assert.equal(f.pilot.snapshot().limits.dailyCompletions, 2);
+    assert.equal(f.pilot.snapshot().limits.dailyCompletions, LIMITS.dailyCompletions);
   } finally { f.cleanup(); }
 });
 test('completed provider usage is visible in the autopilot budget', async () => {
@@ -192,13 +193,13 @@ test('budget exhaustion delays new tasks instead of silently ignoring the limit'
   const f = fixture();
   try {
     const now = Date.now();
-    f.pilot.state.budgetCalls = Array.from({ length: 10 }, (_, i) => ({
+    f.pilot.state.budgetCalls = Array.from({ length: Math.ceil(LIMITS.dailyTokenBudget / LIMITS.reservedTokensPerCall) }, (_, i) => ({
       ref: 'past-' + i, cli: 'claude', stage: 'discover', at: now,
-      reservedTokens: 12000, actualTokens: null,
+      reservedTokens: LIMITS.reservedTokensPerCall, actualTokens: null,
     }));
     f.pilot.configure({ enabled: true, goal: 'Work without exceeding daily budget', allowWorktreeWrites: true });
     assert.equal(f.tasks.size, 0);
-    assert.equal(f.pilot.snapshot().budget.chargedTokens, 120000);
+    assert.ok(f.pilot.snapshot().budget.chargedTokens >= LIMITS.dailyTokenBudget);
     assert.ok(f.pilot.snapshot().nextAt > now);
   } finally { f.cleanup(); }
 });
@@ -230,20 +231,20 @@ test('third task of the day is blocked and reported as quota', async () => {
   const f = fixture();
   try {
     const today = new Date().toISOString();
-    f.pilot.state.history.push({ at: today, outcome: 'completed' }, { at: today, outcome: 'completed' });
+    f.pilot.state.history.push(...completedToday(today));
     f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
     await f.pilot.tick();
     assert.equal(f.tasks.size, 0);
-    assert.equal(f.pilot.snapshot().today.completed, 2);
+    assert.equal(f.pilot.snapshot().today.completed, LIMITS.dailyCompletions);
     assert.equal(f.pilot.snapshot().status, 'quota');
   } finally { f.cleanup(); }
 });
-test('call quota (12/day) blocks a launch even when measured tokens are tiny', async () => {
+test('daily call quota blocks a launch even when measured tokens are tiny', async () => {
   const f = fixture();
   try {
     const now = Date.now();
-    f.pilot.state.budgetCalls = Array.from({ length: 12 }, (_, i) => ({ ref: 'c' + i, cli: i % 2 ? 'codex' : 'claude',
-      stage: 'plan-review', at: now, reservedTokens: 12000, actualTokens: 10, settled: true }));
+    f.pilot.state.budgetCalls = Array.from({ length: LIMITS.dailyCalls }, (_, i) => ({ ref: 'c' + i, cli: i % 2 ? 'codex' : 'claude',
+      stage: 'plan-review', at: now, reservedTokens: LIMITS.reservedTokensPerCall, actualTokens: 10, settled: true }));
     f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
     assert.equal(f.tasks.size, 0);
     const s = f.pilot.snapshot();
@@ -257,7 +258,7 @@ test('mid-task budget exhaustion parks the stage until the next day without laun
     f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
     const t = f.tasks.get(f.pilot.state.active.taskId);
     const now = Date.now();
-    for (let i = 0; i < 10; i++) f.pilot.state.budgetCalls.push({ ref: 'x' + i, cli: 'codex', stage: 'x', at: now, reservedTokens: 12000, actualTokens: null });
+    for (let i = 0; i < Math.ceil(LIMITS.dailyTokenBudget / LIMITS.reservedTokensPerCall); i++) f.pilot.state.budgetCalls.push({ ref: 'x' + i, cli: 'codex', stage: 'x', at: now, reservedTokens: LIMITS.reservedTokensPerCall, actualTokens: null });
     t.state = 'completed'; t.result = JSON.stringify(goodPlan);
     await f.pilot.tick();
     assert.equal(f.tasks.size, 1, 'plan review was not launched');
@@ -301,7 +302,7 @@ test('restart while parked on quota keeps waiting instead of relaunching', async
     f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
     const t = f.tasks.get(f.pilot.state.active.taskId);
     const now = Date.now();
-    for (let i = 0; i < 10; i++) f.pilot.state.budgetCalls.push({ ref: 'q' + i, cli: 'codex', stage: 'x', at: now, reservedTokens: 12000, actualTokens: null });
+    for (let i = 0; i < Math.ceil(LIMITS.dailyTokenBudget / LIMITS.reservedTokensPerCall); i++) f.pilot.state.budgetCalls.push({ ref: 'q' + i, cli: 'codex', stage: 'x', at: now, reservedTokens: LIMITS.reservedTokensPerCall, actualTokens: null });
     t.state = 'completed'; t.result = JSON.stringify(goodPlan);
     await f.pilot.tick();
     assert.equal(f.pilot.state.active.waitingStage, 'plan-review');

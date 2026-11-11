@@ -139,10 +139,12 @@ test('full loop: plan rejected then revised, code rejected then repaired, worktr
     assert.equal(s.budget.byProvider.claude.measuredTokens, 4 * (550 + 9000), 'cache reads are charged');
     assert.equal(s.budget.byProvider.claude.cacheReadTokens, 4 * 9000);
     assert.equal(s.budget.byProvider.codex.measuredTokens, 1500 * 2 + 2000 * 2);
-    // Both daily discoveries are spent: the pilot now reports quota and does not start a third.
+    // Once the daily discovery quota is spent the pilot reports quota and launches nothing.
     assert.equal(s.today.discoveries, 2);
-    assert.equal(s.status, 'quota');
+    const { LIMITS } = require('./autopilot-budget');
+    while (f.pilot.state.discoveryTimes.length < LIMITS.dailyDiscoveries) f.pilot.state.discoveryTimes.push(Date.now());
     f.pilot.state.nextAt = 0;
+    assert.equal(f.pilot.snapshot().status, 'quota');
     await f.pilot.tick();
     assert.equal(f.spawns.length, 8, 'no further launch once the discovery quota is spent');
   } finally { f.cleanup(); }

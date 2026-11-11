@@ -2,12 +2,17 @@
 // Mind Autopilot-only token/call ledger. Real usage is recorded when available;
 // otherwise a conservative per-call reservation is charged. No provider CLI
 // reliably exposes a hard cap during execution, so calls are the strict guard.
+// Sized from real measurements (2026-11-11, cache reads included): Claude
+// discovery 175k, Codex plan review 34k-107k, Codex code review ~107k, Claude
+// implementation estimated ~350k. Typical task ~715k; with one plan revision and
+// one repair ~1.33M. Budget = two tasks per day even in the worst case, with
+// room for a third cheap one. Raised by the user's explicit decision.
 const LIMITS = Object.freeze({
-  dailyCompletions: 2,
-  dailyDiscoveries: 2,
-  dailyCalls: 12,
-  dailyTokenBudget: 120000,
-  reservedTokensPerCall: 12000,
+  dailyCompletions: 3,
+  dailyDiscoveries: 4,
+  dailyCalls: 18,
+  dailyTokenBudget: 2500000,
+  reservedTokensPerCall: 150000,
   repairs: 1,
   planRevisions: 1,
 });

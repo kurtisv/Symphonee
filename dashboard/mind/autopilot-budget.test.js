@@ -4,18 +4,24 @@ const assert = require('node:assert/strict');
 const { LIMITS, dailyUsage, reserveCall, settleCall, tokensFromTask, canDispatch,
   startOfNextDay, dayOf } = require('./autopilot-budget');
 
-test('two tasks per day stay possible within ten conservative call reservations', () => {
-  assert.equal(LIMITS.dailyCompletions, 2);
-  assert.equal(LIMITS.dailyDiscoveries, 2);
+test('limits admit two worst-case tasks per day and still stop at the token budget', () => {
+  // Worst case per task: 2 discoveries + 2 plan reviews + implement + 2 code reviews + repair = 8 calls.
+  assert.ok(LIMITS.dailyCompletions >= 2);
+  assert.ok(LIMITS.dailyDiscoveries >= 2 * (1 + LIMITS.planRevisions));
+  assert.ok(LIMITS.dailyCalls >= 2 * 8);
   assert.equal(LIMITS.repairs, 1);
+  assert.equal(LIMITS.planRevisions, 1);
   const state = { budgetCalls: [] };
-  for (let i = 0; i < 10; i++) {
+  // A reservation is accepted only if it still fits under the budget.
+  const n = Math.floor(LIMITS.dailyTokenBudget / LIMITS.reservedTokensPerCall);
+  assert.ok(n < LIMITS.dailyCalls, 'the token budget, not the call cap, binds for unmetered calls');
+  for (let i = 0; i < n; i++) {
     assert.ok(reserveCall(state, { cli: i % 2 ? 'codex' : 'claude', stage: 'code-review',
       at: Date.now(), ref: String(i) }));
   }
-  assert.equal(dailyUsage(state).calls, 10);
-  assert.equal(dailyUsage(state).chargedTokens, LIMITS.dailyTokenBudget);
-  assert.equal(dailyUsage(state).unmeteredCalls, 10);
+  assert.equal(dailyUsage(state).calls, n);
+  assert.ok(dailyUsage(state).chargedTokens + LIMITS.reservedTokensPerCall > LIMITS.dailyTokenBudget);
+  assert.equal(dailyUsage(state).unmeteredCalls, n);
   assert.equal(canDispatch(state), false);
   assert.equal(reserveCall(state, { cli: 'claude', stage: 'repair', ref: 'extra' }), null);
 });
