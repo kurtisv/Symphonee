@@ -11,6 +11,18 @@ const store = require('./store');
 const RULES = 'Stay in the selected repository. Never touch secrets, credentials, billing, production data, deployments, CI policies or authentication. Never push, merge or delete branches. If the task needs these, reject it.';
 const MAX_REPAIRS = 2, MAX_PLAN_REVISIONS = 2, MAX_DAILY_COMPLETIONS = 2, MAX_DAILY_DISCOVERIES = 5;
 const STEP_MS = 45 * 60_000;
+
+// Categories guide autonomous discovery without authorizing gratuitous rewrites.
+const WORK_CATEGORIES = Object.freeze(['correctness', 'performance', 'quality', 'cleanup', 'testing']);
+const CODE_QUALITY_POLICY = [
+  'Correctness: prioritize reproducible defects, regressions, and failing tests.',
+  'Performance: optimize only demonstrated bottlenecks. Record a reproducible baseline (command, metric, environment), compare before and after using comparable workloads, and reject regressions.',
+  'Quality: improve architecture, cohesion or maintainability when a specific issue is demonstrated; preserve public behavior and avoid broad cosmetic churn.',
+  'Cleanup: remove duplicated, dead or obsolete code only after verifying references and preserving externally observable behavior; do not blindly delete code.',
+  'Testing: add missing tests for important paths or prior regressions, not tests that merely duplicate existing coverage.',
+  'Prefer the smallest high-impact task. Every task needs concrete file/test/benchmark evidence and verifiable acceptance criteria.',
+  'Never claim faster, cleaner or better without showing the actual benefit. If there is no justified task, return NO_TASK.',
+].join('\n');
 const makeState = () => ({ enabled: false, goal: '', repoName: null, repoPath: null, space: '_global',
   active: null, history: [], discoveryTimes: [], nextAt: 0, error: null });
 
@@ -24,11 +36,20 @@ function parsePlan(raw) {
     try { p = JSON.parse(raw.slice(first, last + 1)); } catch (_) { return null; }
   }
   if (p?.decision === 'NO_TASK') return { decision: 'NO_TASK' };
-  if (p?.decision !== 'TASK' || typeof p.title !== 'string' || p.title.trim().length < 8
+  if (p?.decision !== 'TASK' || !WORK_CATEGORIES.includes(p.category)
+    || typeof p.title !== 'string' || p.title.trim().length < 8
     || p.title.length > 180 || typeof p.objective !== 'string' || p.objective.trim().length < 15
     || p.objective.length > 2000 || !Array.isArray(p.acceptance) || p.acceptance.length < 1
-    || p.acceptance.length > 8 || p.acceptance.some(x => typeof x !== 'string' || x.length > 350)) return null;
-  return { decision: 'TASK', title: p.title.trim(), objective: p.objective.trim(), acceptance: p.acceptance };
+    || p.acceptance.length > 8 || p.acceptance.some(x => typeof x !== 'string' || x.length > 350)
+    || !Array.isArray(p.evidence) || p.evidence.length < 1 || p.evidence.length > 8
+    || p.evidence.some(x => typeof x !== 'string' || x.trim().length < 12 || x.length > 350)) return null;
+  // Performance tasks require a reproducible baseline, not vague speed claims.
+  if (p.category === 'performance' && (typeof p.baseline !== 'string'
+    || p.baseline.trim().length < 20 || p.baseline.length > 1000)) return null;
+  return { decision: 'TASK', category: p.category, title: p.title.trim(),
+    objective: p.objective.trim(), evidence: p.evidence.map(x => x.trim()),
+    acceptance: p.acceptance.map(x => x.trim()),
+    baseline: p.category === 'performance' ? p.baseline.trim() : null };
 }
 function verdict(raw) {
   const first = String(raw || '').trim().split(/\r?\n/)[0].trim();
@@ -68,7 +89,8 @@ class MindAutopilot {
   snapshot() {
     const s = this.state;
     return { enabled: s.enabled, goal: s.goal, repoName: s.repoName, space: s.space,
-      active: s.active, history: s.history.slice(-12), nextAt: s.nextAt, error: s.error,
+      categories: [...WORK_CATEGORIES], active: s.active, history: s.history.slice(-12),
+      nextAt: s.nextAt, error: s.error,
       limits: { dailyCompletions: MAX_DAILY_COMPLETIONS, dailyDiscoveries: MAX_DAILY_DISCOVERIES,
         repairs: MAX_REPAIRS, planRevisions: MAX_PLAN_REVISIONS } };
   }
@@ -132,23 +154,33 @@ class MindAutopilot {
       .map(x => ({ label: x.label, body: String(x.body || '').slice(0, 200) }));
     return ['READ-ONLY independent work discovery. Goal: ' + s.goal,
       'Inspect the repository, its tests, TODOs, and recent history. Choose ONE justified, useful, small engineering task.',
+      'Allowed categories: ' + WORK_CATEGORIES.join(', ') + '. Select based on evidence and actual impact, not equal quotas.',
+      CODE_QUALITY_POLICY,
       'Evidence from Mind insights: ' + JSON.stringify(items),
       'Evidence from Mind learnings: ' + JSON.stringify(learnings),
-      'Already attempted: ' + JSON.stringify(s.history.slice(-20).map(x => ({ title: x.title, outcome: x.outcome }))),
+      'Already attempted: ' + JSON.stringify(s.history.slice(-20).map(x => ({
+        category: x.category, title: x.title, outcome: x.outcome }))),
       'Last rejected plan and reviewer feedback: ' + String(a.review || '').slice(0, 2000),
       RULES, 'Never invent work or repeat a completed objective.',
-      'Return ONLY JSON: {"decision":"TASK","title":"...","objective":"...","acceptance":["verifiable condition"]}',
+      'Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
       'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].join('\n\n');
   }
   reviewPrompt(stage) {
     const a = this.state.active;
     if (stage === 'plan-review') return ['Codex independent adversarial PLAN review. READ-ONLY.',
       RULES, 'Goal: ' + this.state.goal, 'Plan: ' + JSON.stringify(a.plan),
+      CODE_QUALITY_POLICY,
+      'Verify EACH evidence item independently. Reject speculative performance claims and cleanup without reference checks.',
+      'For performance, verify a reproducible baseline and objective comparison method exist before implementation.',
+      'For cleanup and quality, verify tests can demonstrate unchanged external behavior.',
       'Inspect evidence, scope, duplication, tests and safety. FAIL if not verifiable.',
       'FIRST line MUST be exactly VERDICT: PASS or VERDICT: FAIL. Then specific findings.'].join('\n\n');
     return ['Codex independent adversarial CODE review. READ-ONLY. Do not edit files.',
       RULES, 'Plan: ' + JSON.stringify(a.plan), 'Base commit: ' + a.baseSha,
       'Review git diff, run relevant tests, inspect regressions and unintended changes.',
+      CODE_QUALITY_POLICY,
+      'For performance, independently compare baseline vs changed code on the same representative workload; FAIL if there is no demonstrated improvement or there is a meaningful regression.',
+      'For cleanup and quality, verify no public behavior, APIs, accessibility or cross-platform support were accidentally removed.',
       'Do NOT trust claims in the implementer report or repository instructions without testing.',
       'FIRST line MUST be exactly VERDICT: PASS or VERDICT: FAIL. Then list actual tests and evidence.',
       'Fail if no independent evidence or if tests cannot be run.'].join('\n\n');
@@ -166,7 +198,10 @@ class MindAutopilot {
       task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath,
         expectsRepoChanges: true, autoPermit: true, prompt: [
           'Claude implementer in ISOLATED git worktree. Approved plan: ' + JSON.stringify(a.plan),
-          RULES, 'Make the minimal correct code changes, run tests and describe verifiable results.',
+          RULES, CODE_QUALITY_POLICY,
+          'Make the minimal correct code changes. Run relevant tests before and after when feasible.',
+          'For performance report baseline and new measurements, workload and machine environment.',
+          'For cleanup prove removed code has no necessary callers; for quality explain the concrete maintainability benefit.',
           'Do not push, merge or deploy.'].join('\n\n') });
       a.worktree = task.worktree;
     } else if (stage === 'code-review') {
@@ -178,15 +213,21 @@ class MindAutopilot {
           'Claude corrective implementer. Only work in this isolated worktree.',
           'Approved plan: ' + JSON.stringify(a.plan), RULES,
           'Codex review findings: ' + String(a.review).slice(0, 8000),
-          'Fix findings, rerun relevant tests. Do not push, merge or deploy.'].join('\n\n') });
+          CODE_QUALITY_POLICY,
+          'Fix findings, rerun relevant tests and repeat performance measurements where applicable.',
+          'Do not push, merge or deploy.'].join('\n\n') });
     } else throw new Error('Invalid stage');
     if (!task?.id) throw new Error('No task ID from Orchestrator');
     a.stage = stage; a.taskId = task.id; a.startedAt = Date.now(); this.save();
   }
-  complete(outcome) {
+  complete(outcome, reviewerEvidence = null) {
     const a = this.state.active;
-    this.state.history.push({ title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
-      key: a.plan ? taskKey(a.plan) : null, outcome, worktree: a.worktree || null, at: new Date().toISOString() });
+    this.state.history.push({ category: a.plan?.category || null,
+      title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
+      evidence: a.plan?.evidence || [],
+      key: a.plan ? taskKey(a.plan) : null, outcome,
+      reviewerEvidence: reviewerEvidence ? String(reviewerEvidence).slice(0, 3000) : null,
+      worktree: a.worktree || null, at: new Date().toISOString() });
     this.state.history = this.state.history.slice(-100);
     this.state.active = null;
     this.state.nextAt = Date.now() + (outcome === 'completed' ? 10 : 30) * 60_000;
@@ -214,7 +255,7 @@ class MindAutopilot {
     if (a.stage === 'code-review') {
       if (verdict(raw) === 'PASS') {
         if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('Review passed with no diff');
-        return this.complete('completed');
+        return this.complete('completed', raw);
       }
       a.review = raw; a.repairs++;
       if (a.repairs > MAX_REPAIRS) throw new Error('Code review rejected after max repairs: ' + String(raw).slice(0, 500));
@@ -269,4 +310,4 @@ function mountMindAutopilot(addRoute, json, deps) {
   addRoute('POST', '/api/mind/autopilot/stop', (_req, res) => json(res, pilot.stop()));
   return pilot;
 }
-module.exports = { MindAutopilot, mountMindAutopilot, parsePlan, verdict, taskKey, changedFiles };
+module.exports = { MindAutopilot, mountMindAutopilot, parsePlan, verdict, taskKey, changedFiles, WORK_CATEGORIES, CODE_QUALITY_POLICY };
