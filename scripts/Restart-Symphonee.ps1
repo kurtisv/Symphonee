@@ -37,7 +37,8 @@ param(
   [string[]]$Continue = @(),
   [string]$SessionId = '',
   [switch]$NoResume,
-  [switch]$Detached
+  [switch]$DryRun,
+  [string]$ArgsFile = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -68,14 +69,14 @@ function Pairs([string[]]$items) {
   return $out
 }
 
-# 0. Detach from the calling terminal.
-if (-not $Detached) {
-  $argList = @('-ExecutionPolicy', 'Bypass', '-NoProfile', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`"", '-Detached')
-  foreach ($r in $Resume) { $argList += @('-Resume', "`"$r`"") }
-  foreach ($c in $Continue) { $argList += @('-Continue', "`"$($c -replace '"', "'")`"") }
-  if ($SessionId) { $argList += @('-SessionId', $SessionId) }
-  if ($NoResume) { $argList += '-NoResume' }
-  $cmd = 'powershell.exe ' + ($argList -join ' ')
+# 0. Detach from the calling terminal. Parameters travel in a JSON file: a
+# command line cannot carry repeated array parameters (-File rejects them)
+# nor arbitrary message text safely.
+if (-not $ArgsFile) {
+  $argsPath = Join-Path $root ('.symphonee\restart-args-' + [guid]::NewGuid().ToString('N') + '.json')
+  @{ Resume = @($Resume); Continue = @($Continue); SessionId = $SessionId; NoResume = [bool]$NoResume; DryRun = [bool]$DryRun } |
+    ConvertTo-Json -Depth 4 | Set-Content -Path $argsPath -Encoding UTF8
+  $cmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "' + $PSCommandPath + '" -ArgsFile "' + $argsPath + '"'
   $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = $root }
   if ($r.ReturnValue -ne 0) { throw "Could not start the detached restarter (WMI code $($r.ReturnValue))" }
   Write-Host "Detached restarter started (PID $($r.ProcessId)). Log: $logFile"
@@ -83,7 +84,11 @@ if (-not $Detached) {
 }
 
 try {
-  Log '--- restart requested'
+  Log "--- restart requested (args $ArgsFile)"
+  $a = Get-Content $ArgsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+  Remove-Item $ArgsFile -Force -ErrorAction SilentlyContinue
+  $Resume = @($a.Resume | Where-Object { $_ }); $Continue = @($a.Continue | Where-Object { $_ })
+  $SessionId = [string]$a.SessionId; $NoResume = [bool]$a.NoResume; $DryRun = [bool]$a.DryRun
   # Which sessions to bring back, in which terminal.
   $resumePairs = @(Pairs $Resume)
   if (-not $NoResume -and $resumePairs.Count -eq 0) {
@@ -102,6 +107,11 @@ try {
   # 1. Restart via the app itself.
   $old = MainPid
   if (-not $old) { throw "Nothing listens on port ${port}: is Symphonee running?" }
+  if ($DryRun) {
+    Log ("dry run: would restart PID $old; continue: " + (($continuePairs | ForEach-Object { "$($_.Term)=[$($_.Value)]" }) -join ', '))
+    Log '--- dry run done'
+    return
+  }
   $running = try { (Invoke-RestMethod "$base/api/orchestrator/status" -TimeoutSec 20).runningTasks } catch { 0 }
   if ($running -gt 0) { Log "WARNING: $running orchestrator task(s) running; they will be lost." }
   try { $null = Post '/api/restart-app' @{}; Log "restart-app accepted by PID $old" }
