@@ -127,7 +127,11 @@ import { escapeHtml } from './helpers.js';
       const mark = r ? (r.ok ? ' ok ' + Math.round(r.ms / 1000) + ' s' : ' ECHEC') : (v && v.running && v.current === n ? ' en cours...' : '');
       return esc(n) + (mark ? '<b>' + esc(mark) + '</b>' : '');
     }).join(', ');
-    return '<div class="ap-note">Garde-fous sans IA apres chaque implementation : ' + (names ? 'verifications ' + names + ' ; ' : '') +
+    const night = s.schedule ? '<div class="ap-note">Mode nuit : nouvelles taches entre <b>' + esc(s.schedule.start) + '</b> et <b>' + esc(s.schedule.end) + '</b>'
+      + (s.inWindow ? ' (dans la plage)' : ' (hors plage)') + (s.ambition === 'big' ? ' | ambition : <b>gros problemes reels</b>' : '')
+      + ((s.sources && s.sources.files && s.sources.files.length) ? ' | sources : ' + esc(s.sources.files.join(', ')) : '') + ((s.sources && s.sources.sentry) ? ' + Sentry' : '')
+      + ' | en cas de limite de credit : pause, nouvel essai 1 h plus tard ou la nuit suivante.</div>' : '';
+    return night + '<div class="ap-note">Garde-fous sans IA apres chaque implementation : ' + (names ? 'verifications ' + names + ' ; ' : '') +
       'refus des tests desactives (.skip/.only) et de @ts-ignore ; ' + esc((s.protectedPaths || []).length) + ' motifs de chemins proteges' +
       ((s.protectedPaths || []).length ? ' <span class="ap-muted" title="' + esc((s.protectedPaths || []).join('\n')) + '">(survoler pour la liste)</span>' : '') + '.</div>';
   }
@@ -224,6 +228,7 @@ import { escapeHtml } from './helpers.js';
           ${pipeline(s)}
           ${verifyLine(s)}
           ${a ? '<div class="ap-note">Tache : <b>' + esc(a.plan ? '[' + (CATEGORY_LABELS[a.plan.category] || a.plan.category) + '] ' + a.plan.title : '(decouverte en cours)') + '</b> | revisions du plan ' + esc(a.planRevisions || 0) + '/' + esc(L.planRevisions) + ' | reparations ' + esc(a.repairs || 0) + '/' + esc(L.repairs) + (a.worktree ? ' | worktree <span class="ap-path">' + esc(a.worktree.path) + '</span>' : '') + (a.taskId ? ' | tache Orchestrator ' + esc(a.taskId) : '') + '</div>' : ''}
+          ${a && a.parkReason === 'credit' ? '<div class="ap-note" style="color:var(--yellow);">Limite de credit du fournisseur atteinte (' + esc(a.creditHits) + ' fois) : la tache est en pause, rien n\'est perdu. Reprise prevue : ' + esc(when(s.nextAt)) + '.</div>' : ''}
           ${s.nextAt && s.nextAt > Date.now() ? '<div class="ap-note">Prochaine verification possible : ' + esc(when(s.nextAt)) + '</div>' : ''}
           ${s.error ? '<div class="ap-err">' + esc(s.error) + '</div>' : ''}
           ${(!s.enabled && a && a.waitingStage) ? '<div class="ap-note">Plan approuve en attente de quota : il reprendra a l\'etape ' + esc(STAGE_LABELS[a.waitingStage] || a.waitingStage) + ' quand vous reactiverez le pilote.</div><div class="ap-btns" style="margin-top:8px;"><button class="tab-bar-btn" onclick="MindAutopilot.acknowledge()" ' + (ap.busy ? 'disabled' : '') + '>Abandonner ce plan</button></div>' : ''}

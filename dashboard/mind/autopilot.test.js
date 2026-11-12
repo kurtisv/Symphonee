@@ -409,3 +409,77 @@ test('an unparsable discovery answer is kept and Reprendre re-reads it without a
     assert.equal(s.today.discoveries, 1, 'no discovery was paid again');
   } finally { f.cleanup(); }
 });
+
+// ── Night mode ──────────────────────────────────────────────────────────────
+function nightFixture(def) {
+  const f = fixture();
+  f.pilot.applyDefinition({ profile: 'deep', ambition: 'big', schedule: { start: '22:00', end: '07:00' },
+    sources: { files: ['TASKS.md'], sentry: true }, stepMinutes: 120,
+    limits: { dailyCalls: 120, dailyTokenBudget: 100000000, dailyCompletions: 12, dailyDiscoveries: 30 }, ...def });
+  f.pilot.fetchSentry = async () => 'Top issue: TypeError in OfflineQueue.flush (1,240 events)';
+  return f;
+}
+const at = (h, m = 0) => new Date(2026, 10, 12, h, m).getTime();
+
+test('night window: no new task outside 22:00-07:00, next start computed', async () => {
+  const f = nightFixture();
+  try {
+    f.pilot.state = { ...f.pilot.state, enabled: true, goal: 'Night', repoName: 'demo', repoPath: f.pilot.getRepoPath(), consent: { worktreeWrites: true } };
+    await f.pilot.tick(at(12, 0));
+    assert.equal(f.tasks.size, 0, 'nothing at noon');
+    assert.equal(f.pilot.state.nextAt, at(22, 0));
+    await f.pilot.tick(at(23, 30));
+    assert.equal(f.tasks.size, 1, 'starts inside the window');
+    const t = [...f.tasks.values()][0];
+    assert.match(t.opts.prompt, /MOST IMPACTFUL REAL problem/);
+    assert.match(t.opts.prompt, /BACKLOG SOURCES[^\n]*TASKS\.md/);
+    assert.match(t.opts.prompt, /PRODUCTION ERRORS from Sentry[\s\S]*OfflineQueue\.flush/);
+    assert.match(t.opts.prompt, /Prefer the highest-impact task that can be completed and verified in one night/);
+    assert.doesNotMatch(t.opts.prompt, /Prefer the smallest high-impact task/);
+    assert.equal(t.opts.timeout, 120 * 60000, 'two-hour stages');
+    const s = f.pilot.snapshot(at(23, 30));
+    assert.equal(s.limits.dailyCalls, 120);
+    assert.equal(s.limits.repairs, 2, 'profile values kept where not overridden');
+    assert.equal(s.inWindow, true);
+  } finally { f.cleanup(); }
+});
+test('window helpers: crossing midnight and invalid definitions', () => {
+  const { MindAutopilot: _M } = require('./autopilot');
+  const f = nightFixture();
+  try {
+    assert.equal(f.pilot.inWindow(at(2, 0)), true);
+    assert.equal(f.pilot.inWindow(at(7, 0)), false);
+    assert.equal(f.pilot.inWindow(at(21, 59)), false);
+    assert.throws(() => f.pilot.applyDefinition({ schedule: { start: '25:00', end: '07:00' } }), /schedule needs/);
+    assert.throws(() => f.pilot.applyDefinition({ limits: { dailyCalls: 9999 } }), /dailyCalls must be between/);
+  } finally { f.cleanup(); }
+});
+test('a provider credit limit parks the task instead of halting, and continues in the same worktree', async () => {
+  const f = nightFixture();
+  try {
+    f.pilot.state = { ...f.pilot.state, enabled: true, goal: 'Night', repoName: 'demo', repoPath: f.pilot.getRepoPath(), consent: { worktreeWrites: true } };
+    await f.pilot.tick(at(23, 0));
+    const t = [...f.tasks.values()][0];
+    t.state = 'failed'; t.error = 'Claude api_error: You have reached your usage limit. Resets at 2am.';
+    await f.pilot.tick(at(23, 1));
+    let s = f.pilot.snapshot(at(23, 1));
+    assert.equal(s.enabled, true, 'not halted');
+    assert.equal(s.error, null);
+    assert.equal(s.active.waitingStage, 'discover');
+    assert.equal(s.active.parkReason, 'credit');
+    assert.equal(f.pilot.state.nextAt, at(23, 1) + 3600000, 'retry in one hour inside the window');
+    await f.pilot.tick(at(23, 30));
+    assert.equal(f.tasks.size, 1, 'nothing before the retry time');
+    await f.pilot.tick(at(23, 1) + 3600000);
+    assert.equal(f.tasks.size, 2, 'retried after one hour');
+    // Implementation hit by the limit: continue in the same worktree as a non-counted repair.
+    f.pilot.state.active.stage = 'implement'; f.pilot.state.active.worktree = { path: f.pilot.getRepoPath() };
+    f.pilot.state.active.plan = { title: 'x'.repeat(10) }; f.pilot.state.active.repairs = 0;
+    f.pilot.parkForCredit(f.pilot.state.active, '429 Too Many Requests', at(6, 30));
+    s = f.pilot.snapshot(at(6, 30));
+    assert.equal(s.active.waitingStage, 'repair');
+    assert.equal(s.active.repairs, 0, 'a credit pause does not consume a repair');
+    assert.match(f.pilot.state.active.review, /INTERRUPTED BY A PROVIDER USAGE\/CREDIT LIMIT/);
+    assert.equal(f.pilot.state.nextAt, at(22, 0), '07:30 is outside the window: retry at the next 22:00');
+  } finally { f.cleanup(); }
+});
