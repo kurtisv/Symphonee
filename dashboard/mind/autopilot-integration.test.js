@@ -307,3 +307,33 @@ test('deep loop without check commands still passes through the diff-lint gate',
     assert.ok(s.events.some(e => /Local verification PASSED: diff lint/.test(e.msg)), 'the gate ran');
   } finally { f.cleanup(); }
 });
+
+test('deep loop: an interrupted task resumes from its kept worktree without new discovery or implementation', async () => {
+  const f = setup({ planVerdicts: ['PASS'], codeVerdicts: ['PASS'], def: DEEP, id: 'deep-demo' });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve correctness in depth', allowWorktreeWrites: true });
+    // implement -> verify fails (no fixed.flag) -> repair: stop as soon as the repair is dispatched.
+    // The fake repair finishes almost at once, so stop as soon as it has been launched.
+    for (let i = 0; i < 400 && !f.spawns.some(x => x.stage === 'repair'); i++) { await sleep(25); await f.pilot.tick(); }
+    f.pilot.stop();
+    assert.ok(['repair', 'verify'].includes(f.pilot.state.active.stage), 'stopped after the implementation: ' + f.pilot.state.active.stage);
+    assert.equal(f.pilot.snapshot().status, 'interrupted');
+    const wt = f.pilot.state.active.worktree.path;
+    assert.equal(fs.existsSync(path.join(wt, 'deps')), false, 'junction removed on stop');
+    const before = f.spawns.length;
+    f.pilot.resume();
+    assert.equal(f.pilot.snapshot().active.stage, 'verify');
+    await drive(f.pilot, 400);
+    const s = f.pilot.snapshot();
+    assert.equal(s.error, null, 'no error: ' + s.error);
+    assert.equal(s.history[0].outcome, 'completed');
+    assert.equal(s.history[0].repairs, 1, 'repair counter kept across the resume');
+    assert.deepEqual(f.spawns.slice(before).map(x => x.stage), ['code-review'], 'only the review is paid after the resume');
+    assert.equal(f.spawns.filter(x => x.stage === 'discover' || x.stage === 'implement').length, 2);
+    // The reviewer is told the local checks passed and that a sandbox cache error is not a defect.
+    assert.match(f.spawns.at(-1).prompt, /NOT a reason to FAIL/);
+    assert.match(f.spawns.at(-1).prompt, /They PASSED on the current worktree \(check \d+s\)/);
+    assert.ok(s.events.some(e => /Resumed from the kept worktree/.test(e.msg)));
+    assert.throws(() => f.pilot.resume(), /No interrupted implementation to resume|already running/);
+  } finally { f.cleanup(); }
+});
