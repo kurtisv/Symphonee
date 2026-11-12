@@ -1,8 +1,8 @@
 ---
 name: Use Mind (recall, teach, save)
-description: The cross-CLI memory discipline -- recall prior work before answering, teach durable corrections the moment you hear them, and save findings after every substantive reply so the next session of every CLI inherits them.
-when: any substantive turn -- especially questions about prior work, user corrections, or after answering
-tags: mind, memory, core
+description: The cross-CLI memory discipline: recall prior work, teach durable corrections, save findings, and maintain the Mind graph without losing dynamic memory.
+when: any substantive turn, especially prior-work questions, user corrections, code-structure questions, or Mind graph maintenance
+tags: mind, memory, core, maintenance
 ---
 
 # Use Mind
@@ -18,6 +18,8 @@ without writing to Mind has wasted intelligence for every future session.
   "never", "we decided", "prefer X", "the rule is", "watch out for") or corrects
   your earlier behaviour.
 - DURING a code-structure question ("what calls X", "where is Z defined").
+- BEFORE maintaining the Mind graph, rebuilding it, embedding it, or changing its
+  memory/integrity state.
 - AFTER every substantive reply.
 
 ## Do not use when
@@ -31,16 +33,27 @@ without writing to Mind has wasted intelligence for every future session.
 3. Teach durable facts the moment you hear them: `POST /api/mind/teach { title,
    body, kindOfMemory, tags, createdBy }`. You make the call when YOU hear the
    signal -- do not wait for the user to remind you.
-4. Save after answering: `POST /api/mind/save-result { question, answer,
-   citedNodeIds, createdBy }`. It auto-extracts memory cards from teaching
-   language in your answer.
+4. For Mind maintenance, inspect in this order before writing: `/api/mind/lock`,
+   `/api/mind/health`, `/api/mind/integrity`, `/api/mind/quality`, and only then
+   choose update/build/embed. Prefer incremental update over full build.
+5. Before any full `POST /api/mind/build`, preserve or verify a restorable graph
+   backup/export. Full rebuild regenerates source-derived nodes and can drop
+   dynamic memory cards if they are not persisted as an independent source.
+6. Save after answering: `POST /api/mind/save-result { question, answer,
+   citedNodeIds, createdBy }`. Keep the wording factual; avoid accidental teaching
+   phrases unless you really want a memory card created.
 
 ## Safety
 - Do not invent node IDs; cite only IDs returned from a query.
 - Do not mark guesses as EXTRACTED -- inferred edges are INFERRED/AMBIGUOUS.
 - Never record company/client names, URLs, secrets, or credentials in learnings.
+- Do not delete Mind nodes without explicit user authorization.
+- Do not run a full Mind rebuild casually. Check health and prefer update first;
+  if a rebuild is necessary, make sure dynamic memories can be restored.
 
 ## Verification
 - For a prior-work question, you recalled before answering and cited memory IDs.
 - For a durable correction, a teach (or a save-result that auto-extracted it) landed.
+- For graph maintenance, lock/health/integrity/quality were checked before writes.
+- After maintenance, health, integrity, stats, and embeddings are coherent.
 - After a substantive reply, a save-result was written.

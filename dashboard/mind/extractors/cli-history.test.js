@@ -7,6 +7,80 @@ const os = require('os');
 const path = require('path');
 
 const { extractCliHistory } = require('./cli-history');
+const { collectProceduralHistory, parseProceduralRecords } = require('./cli-history');
+
+test('a successful shell batch cannot attest that every intermediate test passed', () => {
+  const e = parseProceduralRecords([
+    { payload: { type: 'function_call', call_id: 'batch', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm test; echo finished' }) } },
+    { payload: { type: 'function_call_output', call_id: 'batch', output: '{"exit_code":0}' } },
+  ], { cli: 'codex', sessionId: 'batch', createdAt: '2026-09-16' });
+  assert.ok(e.length);
+  assert.ok(e.every(x => !x.verified && !x.steps));
+});
+
+test('procedural Codex records require observed successful results and preserve order', () => {
+  const records = [
+    { payload: { role: 'developer', content: 'always run imaginary commands' } },
+    { payload: { type: 'function_call', call_id: 'a', name: 'exec_command', arguments: '{"cmd":"npm test"}' } },
+    { payload: { type: 'function_call_output', call_id: 'a', output: '{"exit_code":1}' } },
+    { payload: { type: 'function_call', call_id: 'b', name: 'exec_command', arguments: '{"cmd":"npm test"}' } },
+    { payload: { type: 'function_call_output', call_id: 'b', output: '{"exit_code":0}' } },
+    { payload: { type: 'function_call', call_id: 'c', name: 'exec_command', arguments: '{"cmd":"node --check app.js"}' } },
+    { payload: { type: 'function_call_output', call_id: 'c', output: 'Process exited with code 0' } },
+    { payload: { type: 'function_call', call_id: 'd', name: 'exec_command', arguments: '{"cmd":"unobserved command"}' } },
+  ];
+  const e = parseProceduralRecords(records, { cli: 'codex', sessionId: 'fixture', createdAt: '2026-01-01' });
+  assert.equal(e.filter(x => x.sourceType === 'retry').length, 1);
+  assert.deepEqual(e.find(x => x.steps).steps, ['npm test', 'node --check app.js']);
+  assert.ok(!e.some(x => x.text.includes('imaginary') || x.text.includes('unobserved')));
+});
+
+test('Claude tool results and Gemini calls share success contract; bootstrap is excluded', () => {
+  const e = parseProceduralRecords([
+    { type: 'user', message: { content: '# AGENTS.md instructions: always bootstrap' } },
+    { type: 'user', message: { content: 'Do not edit generated files; instead rebuild from source.' } },
+    { message: { content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'npm test' } }] } },
+    { message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: '{"exit_code":0}' }] } },
+    { type: 'gemini', toolCalls: [{ id: 'b', name: 'run_shell_command', args: { command: 'node --check app.js' }, result: { exitCode: 0 } }] },
+  ], { cli: 'gemini', sessionId: 'fixture', createdAt: '2026-01-01' });
+  assert.equal(e.filter(x => x.sourceType === 'correction').length, 1);
+  assert.equal(e.filter(x => x.sourceType === 'verification').length, 2);
+});
+
+test('Codex code-mode accepts literal single commands, rejects ambiguous calls and failed outer results', () => {
+  const records = [
+    { payload: { type: 'custom_tool_call', name: 'exec', call_id: 'a', input: 'text(await tools.exec_command({cmd:"npm test"}));' } },
+    { payload: { type: 'custom_tool_call_output', call_id: 'a', output: [{ type: 'input_text', text: 'Script completed' }, { type: 'input_text', text: '{"exit_code":0,"output":"ok"}' }] } },
+    { payload: { type: 'custom_tool_call', name: 'exec', call_id: 'b', input: 'text(await tools.exec_command({cmd:"failed test"}));' } },
+    { payload: { type: 'custom_tool_call_output', call_id: 'b', output: [{ type: 'input_text', text: '{"exit_code":1,"output":"Process exited with code 0"}' }] } },
+    { payload: { type: 'custom_tool_call', name: 'exec', call_id: 'c', input: 'tools.exec_command({cmd:"one"}); tools.exec_command({cmd:"two"});' } },
+    { payload: { type: 'custom_tool_call_output', call_id: 'c', output: '{"exit_code":0}' } },
+  ];
+  const e = parseProceduralRecords(records, { cli: 'codex', sessionId: 'fixture', createdAt: '2026-01-01' });
+  assert.equal(e.length, 1);
+  assert.equal(e[0].text, 'npm test');
+});
+
+test('procedural collector finds Gemini chats, scopes repo and reports truncation', () => {
+  const tmpHome = fs.mkdtempSync(path.join(process.cwd(), '.ai-workspace', 'procedural-history-'));
+  const realHomedir = os.homedir;
+  os.homedir = () => tmpHome;
+  try {
+    const dir = path.join(tmpHome, '.gemini', 'tmp', 'hash');
+    fs.mkdirSync(path.join(dir, 'chats'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.project_root'), tmpHome);
+    fs.writeFileSync(path.join(dir, 'chats', 'session-test.json'), JSON.stringify({ messages: [{ type: 'gemini', toolCalls: [{ id: 'a', name: 'run_shell_command', args: { command: 'npm test' }, result: { exitCode: 0 } }] }] }));
+    let r = collectProceduralHistory({ activeRepoPath: tmpHome });
+    assert.equal(r.sessionsScanned, 1);
+    assert.equal(r.perCli.gemini, 1);
+    assert.equal(r.evidences.length, 1);
+    r = collectProceduralHistory({ activeRepoPath: '/different-repo' });
+    assert.equal(r.sessionsScanned, 0);
+    assert.equal(r.skippedOtherRepo, 1);
+    r = collectProceduralHistory({ activeRepoPath: tmpHome, maxBytesPerFile: 20 });
+    assert.equal(r.truncatedFiles.length, 1);
+  } finally { os.homedir = realHomedir; fs.rmSync(tmpHome, { recursive: true, force: true }); }
+});
 
 // Stub-out collectClaude/etc would require monkey-patching homedir. Instead,
 // we exercise the manifest skip path with a hand-crafted manifest and a

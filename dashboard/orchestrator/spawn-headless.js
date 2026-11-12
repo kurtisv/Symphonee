@@ -12,8 +12,64 @@ const { classifyError, retryDelay, maxRetriesFor } = require('./reliability');
 const { pretrustFolderForCli } = require('./pretrust');
 const { classifyTask } = require('./task-roles');
 const { MAX_HEADLESS_OUTPUT, RESULT_POLL_MS } = require('./constants');
-const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync } = require('./gemini-runtime');
+const { resolveGeminiCommand, buildGeminiEnv, probeGeminiSync, shellSafeCommand } = require('./gemini-runtime');
 const { canonicalProviderId, isLocalProvider, isDirectLocal, getLocalProvider, localFirstConfig, stripCloudEnv, assertCodexOssArgs, prepareCodexOssHome, gitTreeFingerprint, isLoopbackUrl, prepareIsolatedHome, killProcessTree } = require('./local-providers');
+// Windows + shell:true concatenates args WITHOUT quoting (Node DEP0190), so an
+// argument with spaces (the worker system prompt, "Bash(git diff:*)") was split
+// into separate words. Quote such args using MSVC argv rules. Known limit:
+// cmd.exe still expands %VAR% inside quotes; prompts for claude/codex travel on
+// stdin, so only flag/positional-prompt CLIs are exposed (unchanged behaviour).
+function winQuoteArg(a) {
+  const s = String(a);
+  if (s === '') return '""';
+  if (!/[\s"&|<>^()]/.test(s)) return s;
+  return '"' + s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"';
+}
+// Claude's shell tool is "Bash" or "PowerShell" depending on the machine, so
+// every command rule is declared for both. Only test runners and read-only git
+// are allowed: no generic `node`, no commit, no network tools. NOTE: a test
+// runner still executes repository code; this is tool-level confinement, not
+// an OS sandbox (the autopilot additionally fingerprints the main checkout).
+const SHELL_TOOLS = ['Bash', 'PowerShell'];
+const shellRules = (cmds) => SHELL_TOOLS.flatMap(t => cmds.map(c => t + '(' + c + ':*)'));
+const CONFINED_ALLOWED_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', ...shellRules([
+  'node --test', 'npm test', 'npm run test', 'python -m pytest', 'pytest',
+  'git status', 'git diff', 'git log', 'git show'])]);
+const CONFINED_DENIED_TOOLS = Object.freeze(['WebFetch', 'WebSearch', ...shellRules([
+  'git push', 'git merge', 'git rebase', 'git reset', 'git branch', 'git worktree', 'git checkout',
+  'git commit', 'npm publish', 'npm install', 'npx'])]);
+
+// Real token usage when the CLI reports it; null otherwise (callers must then
+// show an estimate, never a fabricated exact value).
+function parseCliUsage(cli, stdout, stderr, { usageJson = false } = {}) {
+  const out = {};
+  if (cli === 'claude' && usageJson) {
+    let j = null;
+    try { j = JSON.parse(String(stdout || '').trim()); } catch (_) {}
+    if (j && typeof j === 'object' && j.type === 'result') {
+      out.result = typeof j.result === 'string' ? j.result.trim() : '';
+      out.isError = j.is_error === true;
+      const u = j.usage || {};
+      const n = (x) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : 0);
+      if (typeof u.input_tokens === 'number' || typeof u.output_tokens === 'number') {
+        out.usage = { inputTokens: n(u.input_tokens) + n(u.cache_creation_input_tokens), outputTokens: n(u.output_tokens),
+          cacheReadTokens: n(u.cache_read_input_tokens), costUsd: typeof j.total_cost_usd === 'number' ? j.total_cost_usd : null, source: 'claude-json' };
+      }
+    }
+  }
+  if (cli === 'codex') {
+    // Codex colours its summary ("ESC[2mtokens usedESC[0m\n107 569"): strip
+    // ANSI first; the count may use spaces, NBSP or commas as separators.
+    const plain = (String(stderr || '') + '\n' + String(stdout || '')).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+    const m = /tokens used\s*:?\s*(\d[\d,.   ]*)/i.exec(plain);
+    if (m) {
+      const total = parseInt(m[1].replace(/[^\d]/g, ''), 10);
+      if (Number.isFinite(total)) out.usage = { totalTokens: total, source: 'codex-stderr' };
+    }
+  }
+  return out;
+}
+
 module.exports = {
   // ── PTY Injection (Tier 1) ───────────────────────────────────────────────
 
@@ -21,8 +77,8 @@ module.exports = {
    * Inject text directly into a terminal's stdin.
    * The target AI will process it as if the user typed it.
    *
-   * @param {string} termId  — target terminal
-   * @param {string} text    — text to inject (newline appended if missing)
+   * @param {string} termId  - target terminal
+   * @param {string} text    - text to inject (newline appended if missing)
    * @returns {{ ok: boolean, error?: string }}
    */
   inject(termId, text, opts) {
@@ -60,18 +116,18 @@ module.exports = {
    * The prompt is sent via stdin and stdout is collected as the result.
    *
    * @param {Object} opts
-   * @param {string} opts.cli       — 'claude' | 'gemini' | 'codex' | 'antigravity' | 'copilot' | 'grok' | 'qwen'
-   * @param {string} opts.prompt    — the prompt to send
-   * @param {string} [opts.cwd]     — working directory
-   * @param {number} [opts.timeout] — ms before killing (default 5 min)
-   * @param {string} [opts.from]    — termId of the requesting agent
-   * @param {string} [opts.taskId]  — tie to existing task
-   * @param {string} [opts.model]   — model override (e.g. 'opus', 'gpt-5.4', 'flash')
-   * @param {string} [opts.effort]  — effort level (e.g. 'low', 'high', 'max')
-   * @param {boolean} [opts.autoPermit] — auto-approve all permissions
+   * @param {string} opts.cli       - 'claude' | 'gemini' | 'codex' | 'antigravity' | 'copilot' | 'grok' | 'qwen'
+   * @param {string} opts.prompt    - the prompt to send
+   * @param {string} [opts.cwd]     - working directory
+   * @param {number} [opts.timeout] - ms before killing (default 5 min)
+   * @param {string} [opts.from]    - termId of the requesting agent
+   * @param {string} [opts.taskId]  - tie to existing task
+   * @param {string} [opts.model]   - model override (e.g. 'opus', 'gpt-5.5', 'flash')
+   * @param {string} [opts.effort]  - effort level (e.g. 'low', 'high', 'max')
+   * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, _retryAttempt = 0 }) {
     cli = canonicalProviderId(cli);
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
@@ -123,7 +179,7 @@ module.exports = {
     // is fetched on demand (GET /api/skills/item?id=<id>). Skipped if no skills.
     if (!compactContext && typeof this.getSkillsHint === 'function' && _retryAttempt === 0) {
       try {
-        const sh = this.getSkillsHint();
+        const sh = this.getSkillsHint(prompt);
         if (sh && typeof prompt === 'string' && !prompt.includes('[skills:')) {
           prompt = `${sh}\n\n${prompt}`;
         }
@@ -229,7 +285,24 @@ module.exports = {
         if (mode === 'bypass') modeYolo = true;
         else if (mode === 'trusted' && isWorktree) modeYolo = true;
       } catch (_) {}
-      const shouldYolo = autoPermit || modeYolo;
+      // readOnly is a hard override: a read-only worker never inherits the
+      // global bypass/trusted mode, and its edit tools are disabled outright.
+      // confineWrites (Claude only): edits are auto-accepted inside cwd only,
+      // shell is limited to an allow-list, publishing/history-rewriting git
+      // and package commands are denied. It never inherits bypass mode either.
+      const shouldYolo = !readOnly && !confineWrites && (autoPermit || modeYolo);
+      if (readOnly && cli === 'claude') finalArgs.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit');
+      else if (confineWrites && cli === 'claude') {
+        finalArgs.push('--permission-mode', 'acceptEdits',
+          '--allowedTools', ...CONFINED_ALLOWED_TOOLS,
+          '--disallowedTools', ...CONFINED_DENIED_TOOLS);
+      }
+      // Codex: an explicit sandbox (read-only / workspace-write) instead of the
+      // bypass flag. readOnly without an explicit sandbox means read-only.
+      const codexSandbox = sandbox || (readOnly ? 'read-only' : null);
+      if (cli === 'codex' && codexSandbox && !shouldYolo) finalArgs.push('--sandbox', codexSandbox);
+      // usageJson: Claude reports real token usage only in JSON output.
+      if (usageJson && cli === 'claude') finalArgs.push('--output-format', 'json');
       if (shouldYolo && cliMeta.permissionFlag) {
         if (typeof cliMeta.autoPermission === 'boolean') {
           finalArgs.unshift(cliMeta.permissionFlag); // boolean flag like --yolo or Codex bypass
@@ -330,7 +403,9 @@ module.exports = {
       task.execution.changeCheck = treeBefore ? 'armed' : 'unverifiable-not-a-git-repo';
     }
 
-    const proc = (this._spawnImpl || spawn)(command, finalArgs, {
+    // Chemin avec espace + shell Windows : voir shellSafeCommand (gemini-runtime.js).
+    const spawnArgs = useShell && process.platform === 'win32' ? finalArgs.map(winQuoteArg) : finalArgs;
+    const proc = (this._spawnImpl || spawn)(useShell ? shellSafeCommand(command) : command, spawnArgs, {
       cwd: cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
@@ -401,10 +476,26 @@ module.exports = {
       if (code === 0) {
         task.state = STATE.COMPLETED;
         task.result = stdout.trim();
+        try {
+          const parsed = parseCliUsage(cli, task.result, stderr, { usageJson });
+          if (parsed.result !== undefined) task.result = parsed.result;
+          if (parsed.usage && !task.usage) task.usage = parsed.usage;
+          if (parsed.isError) { task.state = STATE.FAILED; task.error = String(parsed.result || 'CLI reported an error').slice(0, 2000); }
+        } catch (_) {}
         this.circuitBreaker.recordSuccess(cli);
         this.heartbeats.delete(task.id);
       } else {
-        const errText = stderr.trim() || stdout.trim() || '';
+        let errText = stderr.trim() || stdout.trim() || '';
+        // Claude JSON output: surface the readable cause instead of the raw blob.
+        if (usageJson && cli === 'claude') {
+          try {
+            const j = JSON.parse(stdout.trim());
+            if (j && j.type === 'result') {
+              errText = ['Claude ' + (j.terminal_reason || j.subtype || 'error'), typeof j.result === 'string' ? j.result.trim() : '',
+                j.api_error_status ? 'HTTP ' + j.api_error_status : ''].filter(Boolean).join(': ').slice(0, 1500) || errText;
+            }
+          } catch (_) {}
+        }
         const classified = classifyError(errText || `Process exited with code ${code}`, cli);
         if (localSpec) {
           // One local attempt, then cloud: every local failure is failover-eligible.
@@ -557,10 +648,10 @@ module.exports = {
    * to a known file path, then monitors for completion.
    *
    * @param {Object} opts
-   * @param {string} opts.targetTermId — terminal to inject into
-   * @param {string} opts.prompt       — the task prompt
-   * @param {string} [opts.from]       — requesting terminal ID
-   * @param {number} [opts.timeout]    — ms timeout
+   * @param {string} opts.targetTermId - terminal to inject into
+   * @param {string} opts.prompt       - the task prompt
+   * @param {string} [opts.from]       - requesting terminal ID
+   * @param {number} [opts.timeout]    - ms timeout
    * @returns {Task}
    */
   dispatch({ targetTermId, prompt, from, timeout }) {
@@ -572,7 +663,7 @@ module.exports = {
       targetTermId,
       prompt,
       from: from || null,
-      timeout: 0,  // Never timeout — AI runs as long as it needs
+      timeout: 0,  // Never timeout - AI runs as long as it needs
     });
 
     task.state = STATE.RUNNING;
@@ -637,3 +728,7 @@ module.exports = {
     return task;
   },
 };
+
+// Exposed for tests without becoming an Orchestrator mixin method.
+Object.defineProperty(module.exports, 'parseCliUsage', { value: parseCliUsage, enumerable: false });
+Object.defineProperty(module.exports, 'winQuoteArg', { value: winQuoteArg, enumerable: false });

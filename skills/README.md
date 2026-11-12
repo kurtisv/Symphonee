@@ -7,9 +7,10 @@ every time. They are the procedural layer of Symphonee's cognitive loop, alongsi
 - **plugins** = integrations ("how to reach a system") -> `/api/plugins/*`
 - **skills** = procedures ("how WE do a task, step by step") -> `/api/skills/*`
 
-Every CLI sees the catalog at bootstrap (`bootstrap.skills`) and dispatched
-workers get it injected into their prompt, so behaviour is consistent across CLIs
-and sessions.
+Every CLI sees a bounded relevant catalogue at bootstrap (`bootstrap.skills`)
+and dispatched workers get the same selection. Full bodies load only on demand;
+`GET /api/skills` remains the complete lightweight editor catalogue. Malformed
+skills stay editable but do not enter injected catalogues.
 
 ## Layout
 
@@ -44,6 +45,17 @@ tags: comma, separated (optional)
 - `GET  /api/skills/item?id=<id>` -- one skill, full body
 - `POST /api/skills` -- author/upsert `{ id, name, description, when?, tags?, body }`
 - `DELETE /api/skills/item?id=<id>` -- remove
+- `POST /api/skills/reflect` -- analyze procedural evidence; `{ autoApply: true }`
+  applies high-confidence candidates, `{ dryRun: true }` prevents writes
+- `GET /api/skills/reflection` -- last inventory, results and token estimates
+- `GET /api/skills/proposals` -- reviewable procedures and inventory repair tasks
+- `POST /api/skills/proposals/accept` -- validate and accept (409 on stale targets)
+- `POST /api/skills/proposals/reject` -- reject a pending proposal
+
+Skill Gardener extends the existing reflection engine. Provenance is separate
+under `.provenance/` and never enters SKILL.md or bootstrap. See
+[Skill Gardener](../docs/skill-gardener.md) for evidence rules, scoring weights,
+automatic thresholds, permission behavior and maintenance commands.
 
 ## Authoring
 

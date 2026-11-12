@@ -10,6 +10,22 @@ const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_DEBOUNCE = 3000;
+// A watch-triggered build re-ingests every repo and rewrites the whole graph
+// (about 20 s of work at 59k nodes). The targets include the CLI transcript
+// folders, which change continuously while any agent works, so with the
+// debounce alone builds ran back to back: 371 in one day, one every ~25 s.
+//   minIntervalMs: quiet time enforced between the END of one build and the
+//                  start of the next. Changes seen meanwhile are kept and
+//                  built once when it elapses.
+//   maxWaitMs:     upper bound on how long a steady stream of events may keep
+//                  postponing a trigger through the debounce.
+// Explicit knowledge events (teach, save-result) do not go through here.
+function envMs(name, fallback) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 0 ? v : fallback;
+}
+const DEFAULT_MIN_INTERVAL = envMs('SY_MIND_WATCH_MIN_INTERVAL_MS', 120000);
+const DEFAULT_MAX_WAIT = 30000;
 const WATCH_EXT = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.cs', '.md', '.mdx',
   '.go', '.java', '.kt', '.kts', '.scala', '.sc', '.rs', '.rb', '.php', '.swift',
@@ -25,12 +41,18 @@ function tryRequireChokidar() {
 }
 
 class MindWatcher {
-  constructor({ repoRoot, getUiContext, broadcast, onTrigger, debounceMs = DEFAULT_DEBOUNCE }) {
+  constructor({ repoRoot, getUiContext, broadcast, onTrigger, debounceMs = DEFAULT_DEBOUNCE, minIntervalMs = DEFAULT_MIN_INTERVAL, maxWaitMs = DEFAULT_MAX_WAIT }) {
     this.repoRoot = repoRoot;
     this.getUiContext = getUiContext;
     this.broadcast = broadcast;
     this.onTrigger = onTrigger;
     this.debounceMs = debounceMs;
+    this.minIntervalMs = minIntervalMs;
+    this.maxWaitMs = maxWaitMs;
+    this._firstPendingAt = 0; // when the oldest not-yet-built change arrived
+    this._lastDoneAt = 0;     // when the previous build finished (0 = never)
+    this._running = false;    // a build triggered from here is in flight
+    this._stopped = false;
     this._timer = null;
     this._pending = new Set();
     this._watchers = [];
@@ -39,6 +61,7 @@ class MindWatcher {
 
   start() {
     if (this._enabled) return;
+    this._stopped = false;
     this._enabled = true;
     const ui = this.getUiContext ? this.getUiContext() : {};
     const targets = [];
@@ -102,10 +125,12 @@ class MindWatcher {
 
   stop() {
     this._enabled = false;
+    this._stopped = true;
     for (const w of this._watchers) { try { w.close(); } catch (_) {} }
     this._watchers = [];
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     this._pending.clear();
+    this._firstPendingAt = 0;
   }
 
   _onEvent(event, fullPath) {
@@ -113,14 +138,47 @@ class MindWatcher {
     const ext = path.extname(fullPath).toLowerCase();
     if (!WATCH_EXT.has(ext)) return;
     this._pending.add(fullPath);
+    if (!this._firstPendingAt) this._firstPendingAt = Date.now();
     if (this.broadcast) this.broadcast({ type: 'mind-update', payload: { kind: 'watch-trigger', event, file: fullPath } });
-    if (this._timer) clearTimeout(this._timer);
-    this._timer = setTimeout(() => {
-      const batch = Array.from(this._pending);
-      this._pending.clear();
-      this._timer = null;
-      try { this.onTrigger && this.onTrigger(batch); } catch (e) { console.warn('[mind/watch] onTrigger error:', e.message); }
-    }, this.debounceMs);
+    this._arm();
+  }
+
+  // (Re)schedule the next trigger. Due time = debounce after the latest event,
+  // but no later than maxWait after the oldest pending one, and never before
+  // the cooldown since the previous build has elapsed. While a build is in
+  // flight nothing is scheduled: its completion re-arms if changes are pending.
+  _arm() {
+    if (this._stopped || this._running) return;
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    if (!this._pending.size) return;
+    const now = Date.now();
+    let due = Math.min(now + this.debounceMs, this._firstPendingAt + this.maxWaitMs);
+    if (this._lastDoneAt) due = Math.max(due, this._lastDoneAt + this.minIntervalMs);
+    this._timer = setTimeout(() => this._fire(), Math.max(0, due - now));
+  }
+
+  _fire() {
+    this._timer = null;
+    if (this._stopped || this._running || !this._pending.size) return;
+    const batch = Array.from(this._pending);
+    this._pending.clear();
+    this._firstPendingAt = 0;
+    this._running = true;
+    const done = () => {
+      this._running = false;
+      this._lastDoneAt = Date.now();
+      this._arm();
+    };
+    let result;
+    try { result = this.onTrigger && this.onTrigger(batch); } catch (e) {
+      console.warn('[mind/watch] onTrigger error:', e.message);
+      done();
+      return;
+    }
+    Promise.resolve(result).then(done, (e) => {
+      console.warn('[mind/watch] onTrigger error:', e && e.message);
+      done();
+    });
   }
 }
 

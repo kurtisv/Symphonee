@@ -6,7 +6,7 @@ import { render } from './router.js';
 import { _toast } from './specs.js';
 
   const MindSkills = {
-    state: { skills: [], proposals: [], selectedId: null, editing: false, current: null },
+    state: { skills: [], proposals: [], selectedId: null, editing: false, current: null, reflection: null, reflecting: false },
     md(s) { try { return (typeof window.renderMarkdownToHtml === 'function') ? window.renderMarkdownToHtml(s || '') : escapeHtml(s || '').replace(/\n/g, '<br>'); } catch (_) { return escapeHtml(s || ''); } },
     render() {
       const main = $('mindMain'); if (!main) return;
@@ -15,9 +15,10 @@ import { _toast } from './specs.js';
           '<span style="font-size:13px;font-weight:600;color:var(--text);">Skills</span>' +
           '<span style="font-size:11px;color:var(--subtext0);">how we work, consistently -- procedures every CLI follows</span>' +
           '<span style="flex:1;"></span>' +
-          '<button class="tab-bar-btn" style="font-size:11px;" onclick="MindSkills.reflect()" title="Mine Mind corrections into proposed skills">Reflect now</button>' +
+          '<button id="skReflectButton" class="tab-bar-btn" style="font-size:11px;" onclick="MindSkills.reflect()" title="Analyze history; apply high-confidence procedures and retain proposals for review">Reflect now</button>' +
           '<button class="tab-bar-btn" style="font-size:11px;background:var(--accent);color:#000;border:none;font-weight:600;" onclick="MindSkills.newSkill()">New skill</button>' +
         '</div>' +
+        '<div id="skReflectionSummary" style="padding:10px 16px;border-bottom:1px solid var(--surface0);"></div>' +
         '<div style="flex:1;display:flex;min-height:0;">' +
           '<div id="skMindList" style="width:300px;flex-shrink:0;border-right:1px solid var(--surface0);overflow-y:auto;padding:10px;"></div>' +
           '<div id="skMindDetail" style="flex:1;min-width:0;overflow-y:auto;padding:18px 22px;"></div>' +
@@ -26,16 +27,41 @@ import { _toast } from './specs.js';
     },
     async load() {
       try {
-        const [s, p] = await Promise.all([
+        const [s, p, r] = await Promise.all([
           fetch('/api/skills').then(r => r.json()).catch(() => ({ skills: [] })),
           fetch('/api/skills/proposals').then(r => r.json()).catch(() => ({ proposals: [] })),
+          fetch('/api/skills/reflection').then(r => r.json()).catch(() => ({})),
         ]);
         this.state.skills = s.skills || [];
         this.state.proposals = p.proposals || [];
+        if (r.ok && r.summary) this.state.reflection = r;
       } catch (_) {}
       this.renderList();
+      this.renderSummary();
+      if (this.state.editing) return;
       if (this.state.selectedId && this.state.skills.find(x => x.id === this.state.selectedId)) this.select(this.state.selectedId);
       else this.detailEmpty();
+    },
+    renderSummary() {
+      const host = $('skReflectionSummary'); if (!host) return;
+      const r = this.state.reflection;
+      if (!r || !r.summary) { host.textContent = 'Skill Gardener analyzes repeated procedures from available history. High-confidence skills are applied automatically; other candidates remain proposals.'; return; }
+      const s = r.summary;
+      const metrics = [['Scanned sessions', s.scannedSessions], ['Scanned existing skills', s.scannedExistingSkills],
+        ['Procedural evidences', s.proceduralEvidences], ['Candidate clusters', s.candidateClusters],
+        ['Qualifying procedures', s.proceduralCandidatesFound], ['Inventory reviews', s.inventoryReviewProposals],
+        ['Candidates found', s.candidatesFound], ['Skills created', s.skillsCreated], ['Skills updated', s.skillsUpdated],
+        ['Skills merged', s.skillsMerged], ['Pending proposals', s.pendingProposals], ['Rejected candidates', s.rejectedCandidates],
+        ['Estimated token-saving opportunities', s.estimatedTokenSavingOpportunities]];
+      host.innerHTML = '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;">' + metrics.map(([label, value]) => '<span>' + escapeHtml(label) + ': <b>' + escapeHtml(String(value || 0)) + '</b></span>').join('') + '</div>' +
+        '<div style="font-size:11px;margin-top:6px;">Catalogue tokens (approx.): ' + escapeHtml(String(s.catalogueBeforeTokens)) + ' / ' + escapeHtml(String(s.catalogueAfterTokens)) + '. Bodies load on demand.</div>' +
+        (r.coverage && r.coverage.filesDiscovered ? '<div style="font-size:11px;margin-top:6px;">History files: ' + escapeHtml(String(r.coverage.filesDiscovered)) + '; uncertain sessions: ' + escapeHtml(String(r.coverage.uncertainSessions || 0)) + '; other-project sessions: ' + escapeHtml(String(r.coverage.skippedOtherRepo || 0)) + '. Unchanged files reuse the compact index.</div>' : '') +
+        (r.results || []).filter(x => ['CREATED', 'UPDATED', 'MERGED'].includes(x.status)).map(x => '<button class="tab-bar-btn" onclick="MindSkills.select(\'' + escapeHtml(x.id) + '\')">' + escapeHtml(x.status + ': ' + x.name) + '</button>').join('') +
+        (r.coverage && !r.coverage.gitAvailable ? '<div style="font-size:11px;margin-top:6px;">Git evidence unavailable for this scan.</div>' : '');
+    },
+    onChanged(payload) {
+      if (payload && payload.action === 'reflection') this.state.reflection = { ok: true, ...payload };
+      if ($('skMindList')) this.load();
     },
     renderList() {
       const host = document.getElementById('skMindList'); if (!host) return;
@@ -46,6 +72,8 @@ import { _toast } from './specs.js';
         for (const p of props) {
           html += '<div style="background:color-mix(in srgb, var(--yellow) 10%, var(--surface0));border:1px solid color-mix(in srgb, var(--yellow) 30%, var(--surface2));border-radius:8px;padding:9px 10px;margin-bottom:6px;">' +
             '<div style="font-size:12.5px;font-weight:600;color:var(--text);margin-bottom:3px;">' + escapeHtml(p.name) + '</div>' +
+            (p.reviewReason ? '<div style="font-size:11px;color:var(--yellow);">' + escapeHtml(p.reviewReason + (p.missingSections && p.missingSections.length ? ': ' + p.missingSections.join(', ') : '')) + '</div>' : '') +
+            (p.historicalReassessment ? '<div style="font-size:11px;color:var(--subtext0);">Backfill: ' + escapeHtml(String(p.historicalReassessment.sessionsScanned)) + ' sessions examined; ' + (p.historicalReassessment.independentProcedureSupported ? 'supporting procedure found' : 'no independent procedure confirmation') + '.</div>' : '') +
             '<div style="font-size:10.5px;color:var(--subtext0);line-height:1.4;margin-bottom:7px;">' + escapeHtml(p.description) + '</div>' +
             '<div style="display:flex;gap:6px;">' +
               '<button class="tab-bar-btn" style="font-size:11px;" onclick="MindSkills.review(\'' + escapeHtml(p.id) + '\')">Review</button>' +
@@ -74,8 +102,8 @@ import { _toast } from './specs.js';
       this.state.selectedId = id; this.state.editing = false; this.renderList();
       const d = document.getElementById('skMindDetail'); if (!d) return;
       d.innerHTML = '<div style="color:var(--subtext0);font-size:12px;padding:20px;">Loading...</div>';
-      let skill = null;
-      try { const r = await fetch('/api/skills/item?id=' + encodeURIComponent(id)).then(x => x.json()); if (r.ok) skill = r.skill; } catch (_) {}
+      let skill = null, provenance = null, bodyTokens = 0;
+      try { const r = await fetch('/api/skills/item?id=' + encodeURIComponent(id)).then(x => x.json()); if (r.ok) { skill = r.skill; provenance = r.provenance; bodyTokens = r.estimatedBodyTokens || 0; } } catch (_) {}
       if (!skill) { d.innerHTML = '<div style="color:var(--red);font-size:12px;padding:20px;">Could not load skill.</div>'; return; }
       this.state.current = skill;
       d.innerHTML =
@@ -88,6 +116,7 @@ import { _toast } from './specs.js';
           '<button class="tab-bar-btn" style="font-size:12px;" onclick="MindSkills.edit()">Edit</button>' +
           '<button class="tab-bar-btn" style="font-size:12px;color:var(--red);" onclick="MindSkills.del(\'' + escapeHtml(skill.id) + '\')">Delete</button>' +
         '</div>' +
+        '<div style="font-size:11px;margin-bottom:10px;">Body loaded: ~' + escapeHtml(String(bodyTokens)) + ' tokens.' + (provenance ? ' ' + escapeHtml(provenance.action + ': ' + provenance.evidenceCount + ' evidences across ' + provenance.sessions + ' sessions; score ' + provenance.score + '; confirmed ' + provenance.lastConfirmedAt + '; sources ' + (provenance.sourceTypes || []).join(', ')) : '') + '</div>' +
         '<div style="border-top:1px solid var(--surface0);padding-top:14px;font-size:13px;line-height:1.55;color:var(--text);">' + this.md(skill.body || '') + '</div>';
     },
     edit() { this.editForm(this.state.current || {}, {}); },
@@ -101,7 +130,7 @@ import { _toast } from './specs.js';
         '<div style="display:flex;flex-direction:column;gap:9px;height:100%;">' +
           (opts.accept ? '<div style="font-size:11px;color:var(--yellow);">Reviewing a proposed skill -- edit then Accept to add it to the corpus.</div>' : '') +
           '<input id="skmName" placeholder="Skill name (imperative)" value="' + escapeHtml(skill.name || '') + '" style="' + inp + '">' +
-          '<input id="skmId" placeholder="id (kebab-case; blank = from name)" value="' + escapeHtml(skill.id || '') + '" ' + (skill.id && !opts.accept ? 'readonly' : '') + ' style="' + inp + (skill.id && !opts.accept ? 'opacity:.6;' : '') + '">' +
+          '<input id="skmId" placeholder="id (kebab-case; blank = from name)" value="' + escapeHtml(skill.id || '') + '" ' + (skill.id ? 'readonly' : '') + ' style="' + inp + (skill.id ? 'opacity:.6;' : '') + '">' +
           '<input id="skmDesc" placeholder="One-line description: what it does + when to use it" value="' + escapeHtml(skill.description || '') + '" style="' + inp + '">' +
           '<input id="skmWhen" placeholder="when: short trigger phrase (optional)" value="' + escapeHtml(skill.when || '') + '" style="' + inp + '">' +
           '<input id="skmTags" placeholder="tags, comma, separated" value="' + escapeHtml((skill.tags || []).join(', ')) + '" style="' + inp + '">' +
@@ -122,9 +151,8 @@ import { _toast } from './specs.js';
       const tags = g('skmTags').split(',').map(s => s.trim()).filter(Boolean);
       const body = g('skmBody');
       if (!name || !description || !body.trim()) { _toast('Name, description and body are required', 'error'); return; }
-      const r = await fetch('/api/skills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, name, description, when, tags, body }) }).then(x => x.json()).catch(() => ({}));
+      const r = await fetch(acceptId ? '/api/skills/proposals/accept' : '/api/skills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: acceptId || id, name, description, when, tags, body }) }).then(x => x.json()).catch(() => ({}));
       if (!r.ok) { _toast('Save failed: ' + (r.error || ''), 'error'); return; }
-      if (acceptId) { try { await fetch('/api/skills/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: acceptId }) }); } catch (_) {} }
       this.state.editing = false; this.state.selectedId = r.id; _toast('Skill saved', 'success'); this.load();
     },
     async del(id) {
@@ -139,10 +167,20 @@ import { _toast } from './specs.js';
     },
     async reject(id) { await fetch('/api/skills/proposals/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => {}); this.load(); },
     async reflect() {
-      _toast('Reflecting on Mind corrections...', 'info');
-      const r = await fetch('/api/skills/reflect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(x => x.json()).catch(() => ({}));
-      _toast(r && r.proposals ? (r.proposals.length + ' new proposal(s)') : 'Nothing new to propose', 'success');
-      this.load();
+      if (this.state.reflecting) return;
+      this.state.reflecting = true;
+      const button = $('skReflectButton'); if (button) button.disabled = true;
+      _toast('Analyzing procedural history...', 'info');
+      try {
+        const r = await fetch('/api/skills/reflect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ autoApply: true }) }).then(x => x.json());
+        if (!r.ok) { _toast('Reflection failed: ' + (r.error || r.reason || ''), 'error'); return; }
+        this.state.reflection = r;
+        const first = (r.results || []).find(x => ['CREATED', 'UPDATED', 'MERGED'].includes(x.status));
+        if (first && !this.state.editing) this.state.selectedId = first.id;
+        await this.load();
+        _toast('Reflection complete: ' + r.summary.skillsCreated + ' created, ' + r.summary.skillsUpdated + ' updated, ' + r.summary.pendingProposals + ' pending', 'success');
+      } catch (e) { _toast('Reflection failed: ' + e.message, 'error'); }
+      finally { this.state.reflecting = false; if (button) button.disabled = false; }
     },
   };
   window.MindSkills = MindSkills;

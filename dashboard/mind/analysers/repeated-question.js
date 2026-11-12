@@ -116,7 +116,7 @@ async function _llmSuggestMemoryCard(cluster) {
 }
 
 async function detect({ repoRoot, space, windowDays = 14 } = {}) {
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g) return [];
   const since = Date.now() - windowDays * 24 * 60 * 60 * 1000;
   const recentConvos = g.nodes.filter(n => {

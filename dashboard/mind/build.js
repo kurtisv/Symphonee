@@ -49,9 +49,11 @@ function build(extractions, { directed = true } = {}) {
 
   for (const ext of extractions) {
     if (!ext) continue;
-    if (Array.isArray(ext.nodes)) allNodes.push(...ext.nodes);
-    if (Array.isArray(ext.edges)) allEdges.push(...ext.edges);
-    if (Array.isArray(ext.hyperedges)) allHyper.push(...ext.hyperedges);
+    // Loop instead of push(...arr): spreading a whole-graph array (100k+
+    // edges) as call arguments overflows the stack.
+    if (Array.isArray(ext.nodes)) for (const n of ext.nodes) allNodes.push(n);
+    if (Array.isArray(ext.edges)) for (const e of ext.edges) allEdges.push(e);
+    if (Array.isArray(ext.hyperedges)) for (const h of ext.hyperedges) allHyper.push(h);
     if (typeof ext.tokenCost === 'number') tokenCost += ext.tokenCost;
   }
 

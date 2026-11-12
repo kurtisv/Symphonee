@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { buildMerge, deduplicateEdges } = require('./build');
+const { build, buildMerge, deduplicateEdges } = require('./build');
 
 test('deduplicateEdges collapses semantic duplicates and keeps the stronger edge', () => {
   const edges = deduplicateEdges([
@@ -70,4 +70,16 @@ test('buildMerge incremental path does not double-count mirrored cached edges', 
 
   assert.equal(merged.nodes.length, 2);
   assert.equal(merged.edges.length, 1);
+});
+
+test('build merges a whole-graph fragment too large to spread as call arguments', () => {
+  // Regression: /api/mind/teach merges the full graph through build(); with
+  // 126k edges, push(...ext.edges) threw "Maximum call stack size exceeded".
+  const N = 300000;
+  const nodes = [{ id: 'hub', label: 'hub' }, { id: 'leaf', label: 'leaf' }];
+  const edges = [];
+  for (let i = 0; i < N; i++) edges.push({ source: 'hub', target: 'leaf', relation: 'r' + i });
+  const merged = build([{ nodes, edges }, { nodes: [{ id: 'memory_x', label: 'memory x', kind: 'memory' }], edges: [] }]);
+  assert.equal(merged.nodes.length, 3);
+  assert.ok(merged.edges.length > 0);
 });

@@ -2,11 +2,29 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
 const { mountGit } = require('./git');
 const { SWRCache } = require('../utils/swr-cache');
 const { BusyGuard } = require('../utils/busy-guard');
 
-const repoRoot = path.resolve(__dirname, '..', '..'); // the Symphonee repo (a git repo)
+const workspaceRoot = path.resolve(__dirname, '..', '..', '.ai-workspace');
+let repoRoot;
+test.before(() => {
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  repoRoot = fs.mkdtempSync(path.join(workspaceRoot, 'git-routes-test-'));
+  const git = args => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe', timeout: 10000 });
+  git(['init', '--initial-branch=main']);
+  fs.writeFileSync(path.join(repoRoot, 'fixture.txt'), 'Git route fixture\n');
+  git(['add', 'fixture.txt']);
+  git(['-c', 'user.name=Route Test', '-c', 'user.email=route-test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initialize route fixture']);
+  git(['branch', 'feature/route-fixture']);
+});
+test.after(() => {
+  const resolved = path.resolve(repoRoot);
+  assert.ok(resolved.startsWith(workspaceRoot + path.sep), 'cleanup must stay in the test workspace');
+  fs.rmSync(resolved, { recursive: true, force: true });
+});
 
 function harness(getRepoPath) {
   const routes = {};
@@ -38,7 +56,9 @@ test('git status returns {branch, files, clean}', async () => {
   assert.ok(res._data, 'responded');
   assert.ok('branch' in res._data && 'files' in res._data && 'clean' in res._data, 'shape');
   assert.equal(typeof res._data.branch, 'string');
+  assert.equal(res._data.branch, 'main');
   assert.ok(Array.isArray(res._data.files));
+  assert.equal(res._data.clean, true);
 });
 
 test('git branches returns current + branches[]', async () => {
@@ -47,6 +67,9 @@ test('git branches returns current + branches[]', async () => {
   await r['GET /api/git/branches']({}, res, new URL('http://x/?repo=test'));
   assert.ok(Array.isArray(res._data.branches), 'branches array');
   assert.equal(typeof res._data.current, 'string');
+  assert.equal(res._data.current, 'main');
+  assert.ok(res._data.branches.includes('main'));
+  assert.ok(res._data.branches.includes('feature/route-fixture'));
 });
 
 test('git log returns commits[]', async () => {
@@ -54,6 +77,8 @@ test('git log returns commits[]', async () => {
   const res = {};
   await r['GET /api/git/log']({}, res, new URL('http://x/?repo=test&count=3'));
   assert.ok(Array.isArray(res._data.commits));
+  assert.equal(res._data.commits.length, 1);
+  assert.ok(JSON.stringify(res._data.commits).includes('Initialize route fixture'));
 });
 
 test('missing repo -> 400', async () => {

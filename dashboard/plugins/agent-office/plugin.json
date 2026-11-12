@@ -1,0 +1,16 @@
+{
+  "id": "agent-office",
+  "name": "Bureau des agents",
+  "version": "0.1.0",
+  "sdkVersion": 2,
+  "description": "A pixel-art office that shows every AI agent at work in Symphonee: the CLIs running in the terminals and the orchestrator workers, with their state (working, thinking, waiting for an answer, done, failed).",
+  "icon": "building-2",
+  "tint": "232, 150, 90",
+  "aiKeywords": [],
+  "activationConditions": { "always": true },
+  "contributions": {
+    "centerTabs": [
+      { "id": "office", "label": "Bureau", "icon": "building-2", "html": "office.html" }
+    ]
+  }
+}

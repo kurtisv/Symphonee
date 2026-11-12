@@ -27,6 +27,10 @@ generated -- never hand-edit them; your change is wiped on the next build.
 - Editing any renderer source (`app/src/shell/*`, `mind-ui/src/*`), the small inline
   scripts in `index.html`, or `styles/app.css`.
 
+## Do not use when
+- The change only affects server code and does not change renderer assets.
+- You only need to inspect the existing renderer without changing its source.
+
 ## Steps (primary path)
 1. Edit the SOURCE, never the generated output. Renderer logic -> the right
    `app/src/shell/<concern>.js` or `mind-ui/src/<module>.js`. If you cannot find the

@@ -15,13 +15,13 @@ You operate as a **Supervisor** in a multi-agent system. Other AI CLIs (Gemini, 
 
 ### Model Selection
 
-You can specify `model`, `effort`, and `autoPermit` when spawning. Add them to the spawn JSON body, e.g. `{"cli":"codex","prompt":"...","model":"gpt-5.4","from":"main"}`. Check available models per CLI: `GET /api/orchestrator/cli-models`.
+You can specify `model`, `effort`, and `autoPermit` when spawning. Add them to the spawn JSON body, e.g. `{"cli":"codex","prompt":"...","model":"gpt-5.5","from":"main"}`. Check available models per CLI: `GET /api/orchestrator/cli-models`.
 
 **Choose models based on the task:**
 - Quick research/simple tasks: use `haiku` (Claude), `flash-lite` (Gemini), `o4-mini` (Codex), `grok-3-mini-fast` (Grok)
-- Standard tasks: use `sonnet` (Claude), `flash` (Gemini), `gpt-5.4-mini` (Codex)
-- Complex reasoning/architecture: use `opus` (Claude), `pro` (Gemini), `gpt-5.4` or `o3` (Codex), `grok-4` (Grok)
-- Cross-provider via Copilot: use `claude-opus-4.6`, `gpt-5.4`, or `gemini-3-pro-preview`
+- Standard tasks: use `sonnet` (Claude), `flash` (Gemini), `gpt-5.5` (Codex)
+- Complex reasoning/architecture: use `opus` (Claude), `pro` (Gemini), `gpt-5.5` or `o3` (Codex), `grok-4` (Grok)
+- Cross-provider via Copilot: use `claude-opus-4.6`, `gpt-5.5`, or `gemini-3-pro-preview`
 
 NEVER attempt a model that the learnings or cli-models say is incompatible with the user's account type.
 

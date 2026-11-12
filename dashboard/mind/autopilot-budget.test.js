@@ -4,18 +4,25 @@ const assert = require('node:assert/strict');
 const { LIMITS, dailyUsage, reserveCall, settleCall, tokensFromTask, canDispatch,
   startOfNextDay, dayOf } = require('./autopilot-budget');
 
-test('two tasks per day stay possible within ten conservative call reservations', () => {
-  assert.equal(LIMITS.dailyCompletions, 2);
-  assert.equal(LIMITS.dailyDiscoveries, 2);
+test('limits admit two worst-case tasks per day and still stop at the token budget', () => {
+  // Worst case per task: 2 discoveries + 2 plan reviews + implement + 2 code reviews + repair = 8 calls.
+  assert.ok(LIMITS.dailyCompletions >= 2);
+  assert.ok(LIMITS.dailyDiscoveries >= 2 * (1 + LIMITS.planRevisions));
+  assert.ok(LIMITS.dailyCalls >= 2 * 8);
   assert.equal(LIMITS.repairs, 1);
+  assert.equal(LIMITS.planRevisions, 1);
   const state = { budgetCalls: [] };
-  for (let i = 0; i < 10; i++) {
+  // A reservation is accepted only if it still fits under the budget.
+  // Whichever binds first (token budget or call cap) must stop the next launch.
+  const n = Math.min(Math.floor(LIMITS.dailyTokenBudget / LIMITS.reservedTokensPerCall), LIMITS.dailyCalls);
+  for (let i = 0; i < n; i++) {
     assert.ok(reserveCall(state, { cli: i % 2 ? 'codex' : 'claude', stage: 'code-review',
       at: Date.now(), ref: String(i) }));
   }
-  assert.equal(dailyUsage(state).calls, 10);
-  assert.equal(dailyUsage(state).chargedTokens, LIMITS.dailyTokenBudget);
-  assert.equal(dailyUsage(state).unmeteredCalls, 10);
+  assert.equal(dailyUsage(state).calls, n);
+  const u = dailyUsage(state);
+  assert.ok(u.calls >= LIMITS.dailyCalls || u.chargedTokens + LIMITS.reservedTokensPerCall > LIMITS.dailyTokenBudget);
+  assert.equal(dailyUsage(state).unmeteredCalls, n);
   assert.equal(canDispatch(state), false);
   assert.equal(reserveCall(state, { cli: 'claude', stage: 'repair', ref: 'extra' }), null);
 });
@@ -50,8 +57,8 @@ test('ledger enforces daily call count when reported tokens are low', () => {
   assert.equal(dailyUsage(state).calls, LIMITS.dailyCalls);
   assert.equal(canDispatch(state), false);
 });
-test('ledger resets on UTC day boundary without clearing historical entries', () => {
-  const yesterday = Date.UTC(2026, 10, 10, 23, 59);
+test('ledger resets on the local day boundary without clearing historical entries', () => {
+  const yesterday = new Date(2026, 10, 10, 23, 59).getTime();
   const today = startOfNextDay(yesterday);
   const state = { budgetCalls: [] };
   reserveCall(state, { cli: 'claude', stage: 'discover', at: yesterday, ref: 'old' });

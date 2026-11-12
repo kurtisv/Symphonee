@@ -8,7 +8,7 @@ function register(addRoute, json, deps) {
 
   addRoute('GET', '/api/mind/graph', (req, res) => {
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { space, empty: true, nodes: [], edges: [] });
     return json(res, g);
   });
@@ -35,7 +35,7 @@ function register(addRoute, json, deps) {
   // to render. Returns { totalImportEdges, resolvedPct, unresolvedExamples }.
   addRoute('GET', '/api/mind/quality', (req, res) => {
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g) return json(res, { space, totalImportEdges: 0, resolvedPct: null, unresolvedExamples: [] });
     let total = 0, resolved = 0;
     const unresolved = [];
@@ -60,7 +60,7 @@ function register(addRoute, json, deps) {
 
   addRoute('GET', '/api/mind/anchors', (req, res) => {
     const space = getSpace();
-    const g = store.loadGraph(repoRoot, space);
+    const g = store.loadGraphShared(repoRoot, space);
     if (!g || !Array.isArray(g.nodes)) return json(res, { subjects: [], anchors: [], space });
 
     const byId = new Map();

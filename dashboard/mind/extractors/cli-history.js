@@ -139,12 +139,20 @@ function collectCodex(opts) {
 }
 
 function collectGemini(opts) {
-  const root = path.join(os.homedir(), '.gemini', 'history');
-  if (!fs.existsSync(root)) return [];
   const sessions = [];
+  const root = path.join(os.homedir(), '.gemini', 'history');
   walkDirs(root, (file) => {
     if (file.endsWith('.json') || file.endsWith('.jsonl')) sessions.push({ cli: 'gemini', file });
   }, 3);
+  const tmp = path.join(os.homedir(), '.gemini', 'tmp');
+  for (const project of safeReaddir(tmp)) {
+    const projectDir = path.join(tmp, project);
+    let cwd = null;
+    try { cwd = fs.readFileSync(path.join(projectDir, '.project_root'), 'utf8').trim(); } catch (_) {}
+    for (const file of safeReaddir(path.join(projectDir, 'chats'))) {
+      if (/^session.*\.json$/.test(file)) sessions.push({ cli: 'gemini', file: path.join(projectDir, 'chats', file), cwd });
+    }
+  }
   return sessions;
 }
 
@@ -357,4 +365,118 @@ function extractCliHistory({ activeRepoPath, allRepos = false, maxPerCli = DEFAU
   return { nodes, edges, scanned, skippedOtherRepo, skippedUnchanged, perCli: Object.fromEntries(perCliCount) };
 }
 
-module.exports = { extractCliHistory };
+// Reflection consumes bounded procedural records, never a whole transcript.
+function parseProceduralRecords(records, { cli, sessionId, createdAt, state = {}, finalize = true }) {
+  const evidences = [], calls = state.calls ||= new Map(), successes = state.successes ||= [], failures = state.failures ||= new Set();
+  state.counter ||= 0;
+  const add = (sourceType, text, extra = {}) => {
+    if (!text || /AGENTS\.md instructions|<environment_context>|# Workflow Rules|api\/bootstrap|<INSTRUCTIONS>/i.test(text)) return;
+    evidences.push({ id: `history:${cli}:${sessionId}:${state.counter++}`, sessionId, sourceType, cli, createdAt, text: text.slice(0, 3000), ...extra });
+  };
+  const command = (name, args) => {
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch (_) { return ''; } }
+    if (!/bash|shell|exec_command|run_shell_command|powershell/i.test(name || '')) return '';
+    const cmd = args?.cmd || args?.command || '';
+    return typeof cmd === 'string' && cmd.length <= 8000 ? cmd : '';
+  };
+  const setCall = (id, cmd) => { if (typeof id === 'string' && id.length > 0 && id.length <= 256) calls.set(id, cmd); };
+  const result = (id, output, error = false, successHint = false) => {
+    const cmd = calls.get(id);
+    if (!cmd) return;
+    if (Array.isArray(output)) {
+      const texts = output.filter(x => x.type === 'text' || x.type === 'input_text').map(x => x.text);
+      const structured = texts.flatMap(text => { try { return [JSON.parse(text)]; } catch (_) { return []; } });
+      output = structured.find(x => typeof x?.exit_code === 'number' || typeof x?.exitCode === 'number') || texts.join('\n');
+    }
+    const str = typeof output === 'string' ? output : JSON.stringify(output);
+    let decoded = output;
+    if (typeof output === 'string') { try { decoded = JSON.parse(output); } catch (_) {} }
+    const exit = decoded?.exit_code ?? decoded?.exitCode ?? decoded?.output?.exit_code;
+    const zero = typeof exit === 'number' ? exit === 0 : /(?:Process exited with code|exit_code["']?\s*:)\s*0\b/i.test(str);
+    const failed = error || (typeof exit === 'number' && exit !== 0) || /Process exited with code [1-9]/i.test(str);
+    if (failed) { failures.add(cmd); if (failures.size > 200) failures.delete(failures.values().next().value); if (state.captureErrors) add('error', cmd + '\n' + str.slice(0, 700), { verified: false, toolCallId: id }); return; }
+    if (!zero && !successHint) return;
+    if (/api\/bootstrap|AGENTS\.md instructions|<INSTRUCTIONS>/i.test(cmd)) return;
+    // A final zero exit from a shell batch does not prove every preceding
+    // command/test passed. Keep the observation without granting confirmation.
+    if (/[;\r\n|&]/.test(cmd)) { add('command', cmd, { verified: false, toolCallId: id }); return; }
+    successes.push(cmd); if (successes.length > 200) successes.shift();
+    if (state.captureErrors) { (state.successRecords ||= []).push({ cmd, toolCallId: id, createdAt }); if (state.successRecords.length > 200) state.successRecords.shift(); }
+    add(/\btest\b|node --test|npm (?:test|run (?:build|check))|--check|verify/i.test(cmd) ? 'verification' : 'command', cmd, { verified: true, toolCallId: id });
+    if (failures.has(cmd)) add('retry', cmd, { verified: true, toolCallId: id });
+  };
+  for (const record of records) {
+    const p = record.payload || record;
+    const role = p.role || record.type;
+    if (role === 'system' || role === 'developer') continue;
+    if (role === 'user' || p.type === 'user_message') {
+      const content = record.message?.content || p.content || p.message || p.text;
+      const text = typeof content === 'string' ? content : Array.isArray(content) ? content.filter(x => x.type === 'text' || x.type === 'input_text').map(x => x.text).join('\n') : '';
+      if (/\b(?:instead|don't|do not|always|never|correction|retry|prefer)\b|ne .+ pas|plutot|toujours/i.test(text)) add('correction', text);
+    }
+    if (calls.size > 500) calls.delete(calls.keys().next().value);
+    if (p.type === 'function_call') setCall(p.call_id, command(p.name, p.arguments));
+    if (p.type === 'function_call_output') result(p.call_id, p.output);
+    // Codex code-mode logs literal JS orchestration. Never execute history.
+    // Only a single literal command can safely be paired with one output.
+    if (p.type === 'custom_tool_call' && p.name === 'exec') {
+      const source = p.input || '';
+      const matches = [...source.matchAll(/(?:tools\.)?exec_command\(\s*\{\s*["']?cmd["']?\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g)];
+      if (matches.length === 1 && matches[0][1].startsWith('"')) {
+        try { const cmd = JSON.parse(matches[0][1]); if (cmd.length <= 8000) setCall(p.call_id, cmd); } catch (_) {}
+      }
+    }
+    if (p.type === 'custom_tool_call_output') result(p.call_id, p.output);
+    for (const block of Array.isArray(record.message?.content) ? record.message.content : []) {
+      if (block.type === 'tool_use') setCall(block.id, command(block.name, block.input));
+      if (block.type === 'tool_result') result(block.tool_use_id, block.content, block.is_error, block.is_error === false);
+    }
+    for (const call of record.toolCalls || []) {
+      const cmd = command(call.name, call.args || call.arguments);
+      setCall(call.id, cmd);
+      if (call.result !== undefined) result(call.id, call.result, call.error === true);
+    }
+    // Copilot session events keep tool execution metadata separate.
+    if (/tool\.execution_start/.test(record.type || '')) setCall(record.data?.toolCallId, command(record.data?.toolName, record.data?.arguments));
+    if (/tool\.execution_complete/.test(record.type || '')) result(record.data?.toolCallId, record.data?.result, record.data?.success === false);
+  }
+  if (finalize && successes.length >= 2) add('cli-session', successes.slice(0, 20).join('\n'), { steps: successes.slice(0, 20), verified: true });
+  return evidences;
+}
+
+function collectProceduralHistory({ activeRepoPath, maxPerCli = DEFAULT_MAX_PER_CLI, maxBytesPerFile = 4 * 1024 * 1024 } = {}) {
+  const collectors = [collectClaude, collectCodex, collectGemini, collectGrok, collectQwen, collectCopilot];
+  const sessions = collectors.flatMap(c => c({})).map(s => ({ ...s, mtime: fs.statSync(s.file).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+  const evidences = [], perCli = {}, coverage = {}, truncatedFiles = [];
+  let sessionsScanned = 0, skippedOtherRepo = 0;
+  for (const cli of ['claude', 'codex', 'gemini', 'grok', 'qwen', 'copilot']) coverage[cli] = { available: sessions.filter(s => s.cli === cli).length, scanned: 0, truncated: 0, skippedUnscoped: 0 };
+  for (const s of sessions) {
+    if ((perCli[s.cli] || 0) >= maxPerCli) continue;
+    const size = fs.statSync(s.file).size;
+    let text = readHead(s.file, maxBytesPerFile), records;
+    if (size > maxBytesPerFile) {
+      truncatedFiles.push({ cli: s.cli, sessionId: path.basename(s.file), bytes: size, bytesRead: maxBytesPerFile });
+      coverage[s.cli].truncated++;
+      if (s.file.endsWith('.jsonl')) text = text.slice(0, text.lastIndexOf('\n') + 1);
+    }
+    if (s.file.endsWith('.jsonl')) records = parseJsonl(text);
+    else { try { const parsed = JSON.parse(text); records = Array.isArray(parsed) ? parsed : [{ cwd: parsed.cwd, startTime: parsed.startTime }, ...(parsed.messages || [])]; } catch (_) { continue; } }
+    const cwd = extractCwd(records) || s.cwd;
+    if (!cwd || !activeRepoPath || !cwdMatchesRepo(cwd, activeRepoPath)) {
+      skippedOtherRepo++;
+      if (!cwd) coverage[s.cli].skippedUnscoped++;
+      continue;
+    }
+    perCli[s.cli] = (perCli[s.cli] || 0) + 1;
+    coverage[s.cli].scanned++;
+    sessionsScanned++;
+    const sessionId = path.basename(s.file).replace(/\.jsonl?$/, '');
+    evidences.push(...parseProceduralRecords(records, { cli: s.cli, sessionId, createdAt: extractStartTime(records, s.mtime) }));
+  }
+  return { evidences, sessionsScanned, perCli, coverage, truncatedFiles, skippedOtherRepo };
+}
+
+async function backfillProceduralHistory(opts) {
+  return require('./cli-history-backfill').backfillProceduralHistory(opts);
+}
+module.exports = { extractCliHistory, collectProceduralHistory, parseProceduralRecords, cwdMatchesRepo, backfillProceduralHistory };

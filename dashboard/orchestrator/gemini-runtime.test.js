@@ -24,3 +24,15 @@ test('synchronous Gemini preflight is bounded and reports runtime incompatibilit
   const result = probeGeminiSync({ command: 'gemini.cmd', execFileSyncFn: () => { const e = new Error('requires Node.js >=20'); e.status = 1; throw e; } });
   assert.equal(result.reason, 'RUNTIME_INCOMPATIBLE');
 });
+
+test('shellSafeCommand quotes Windows paths containing spaces (shell: true splits them otherwise)', () => {
+  const { shellSafeCommand } = require('./gemini-runtime');
+  const withSpace = String.raw`C:\Users\kurtis verres\npm\gemini.cmd`;
+  assert.equal(shellSafeCommand(withSpace, 'win32'), `"${withSpace}"`);
+  assert.equal(shellSafeCommand('codex', 'win32'), 'codex');
+  const noSpace = String.raw`C:\tools\gemini.cmd`;
+  assert.equal(shellSafeCommand(noSpace, 'win32'), noSpace);
+  const alreadyQuoted = String.raw`"C:\a b\x.cmd"`;
+  assert.equal(shellSafeCommand(alreadyQuoted, 'win32'), alreadyQuoted);
+  assert.equal(shellSafeCommand('/usr/a b/gemini', 'linux'), '/usr/a b/gemini');
+});

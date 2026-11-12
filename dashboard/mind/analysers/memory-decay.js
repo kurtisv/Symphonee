@@ -36,7 +36,7 @@ function _lastTouched(card) {
 }
 
 function detect({ repoRoot, space, staleDays = STALE_DAYS } = {}) {
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g) return [];
   const cutoff = Date.now() - staleDays * 24 * 60 * 60 * 1000;
   // Eligible: memory cards that aren't already archived AND haven't been

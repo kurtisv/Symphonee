@@ -248,7 +248,7 @@ async function reflectOnce({
   if (!repoRoot || !space) {
     return { ok: false, error: 'repoRoot and space required', clustersChecked: 0, cardsCreated: 0 };
   }
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g || !g.nodes || g.nodes.length === 0) {
     return { ok: true, clustersChecked: 0, cardsCreated: 0, reason: 'empty-graph' };
   }

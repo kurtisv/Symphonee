@@ -69,7 +69,7 @@ async function _llmName(label, repos) {
 }
 
 async function detect({ repoRoot, space } = {}) {
-  const g = store.loadGraph(repoRoot, space);
+  const g = store.loadGraphShared(repoRoot, space);
   if (!g) return [];
   // Build: nodeId -> set of repo slugs it belongs to.
   const inRepo = new Map();

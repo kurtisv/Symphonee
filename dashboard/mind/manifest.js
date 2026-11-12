@@ -53,7 +53,10 @@ class Manifest {
   flushSync() {
     if (!this._dirty) return;
     const out = { entries: Object.fromEntries(this.entries) };
-    fs.writeFileSync(manifestPath(this.repoRoot, this.space), JSON.stringify(out, null, 2), 'utf8');
+    // Indentation only below 2000 entries: the manifest had reached 73 MB and
+    // is rewritten in full by every build.
+    const text = this.entries.size > 2000 ? JSON.stringify(out) : JSON.stringify(out, null, 2);
+    fs.writeFileSync(manifestPath(this.repoRoot, this.space), text, 'utf8');
     this._dirty = false;
   }
 
