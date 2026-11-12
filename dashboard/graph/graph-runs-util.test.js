@@ -44,3 +44,21 @@ test('re-exported helpers are stable from graph-runs.js too', () => {
   assert.equal(gr.deepMerge, u.deepMerge);
   assert.equal(gr.renderTemplate, u.renderTemplate);
 });
+
+test('apiRequest sends the per-boot token so gated POSTs (worker spawn) are not refused', async () => {
+  const http = require('http');
+  const seen = [];
+  const srv = http.createServer((req, res) => { seen.push(req.headers['x-symphonee-token']); res.end('{"ok":true}'); });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const prev = process.env.SYMPHONEE_TOKEN;
+  try {
+    process.env.SYMPHONEE_TOKEN = 'tok-123';
+    assert.deepEqual(await u.apiRequest('127.0.0.1', srv.address().port, 'POST', '/x', { a: 1 }), { ok: true });
+    delete process.env.SYMPHONEE_TOKEN;
+    await u.apiRequest('127.0.0.1', srv.address().port, 'GET', '/y');
+    assert.deepEqual(seen, ['tok-123', undefined]);
+  } finally {
+    if (prev === undefined) delete process.env.SYMPHONEE_TOKEN; else process.env.SYMPHONEE_TOKEN = prev;
+    srv.close();
+  }
+});

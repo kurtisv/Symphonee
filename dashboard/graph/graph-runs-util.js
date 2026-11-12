@@ -66,8 +66,11 @@ function apiRequest(host, port, method, pathname, body) {
     const data = body !== undefined ? JSON.stringify(body) : null;
     const req = http.request({
       host, port, path: pathname, method,
+      // The server gates every mutating request behind the per-boot token and
+      // exports it as SYMPHONEE_TOKEN; without it a worker spawn is a 403.
       headers: Object.assign({ Accept: 'application/json' },
-        data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}),
+        data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
+        process.env.SYMPHONEE_TOKEN ? { 'x-symphonee-token': process.env.SYMPHONEE_TOKEN } : {}),
     }, res => {
       let chunks = '';
       res.on('data', c => { chunks += c; });
