@@ -207,7 +207,7 @@ test('an implementer that writes into the main checkout is caught and halts', as
 
 // ── Deep profile (second loop) ──────────────────────────────────────────────
 const DEEP = { profile: 'deep', label: 'Deep demo', verify: [{ name: 'check', cmd: ['node', 'check.js'], timeoutMs: 20000 }],
-  linkDirs: ['deps'], protectedPaths: ['^secrets/', 'pleinsens'] };
+  linkDirs: ['deps'], protectedPaths: ['^secrets/', 'pleinsens'], governance: 'Classify risk R1/R2/R3; never propose R3. Record the lot file before coding.' };
 
 test('deep loop: failed local verification repairs without a Codex call, two repairs allowed, junction removed', async () => {
   const f = setup({ planVerdicts: ['PASS'], codeVerdicts: ['FAIL', 'PASS'], def: DEEP, id: 'deep-demo' });
@@ -232,6 +232,11 @@ test('deep loop: failed local verification repairs without a Codex call, two rep
     assert.match(f.spawns[0].prompt, /Consider at least three distinct candidates/);
     assert.match(f.spawns[0].prompt, /PROTECTED PATHS/);
     assert.match(f.spawns[4].prompt, /Deep review\./);
+    // Repository governance reaches every stage; the plan verdict reaches the implementer.
+    for (const i of [0, 1, 2, 4]) assert.match(f.spawns[i].prompt, /REPOSITORY GOVERNANCE[\s\S]*never propose R3/, f.spawns[i].stage);
+    assert.match(f.spawns[2].prompt, /INDEPENDENT CODEX PLAN REVIEW of this exact plan \(verdict PASS/);
+    assert.match(f.spawns[2].prompt, /VERDICT: PASS\nfindings/, 'the reviewer text itself is passed on');
+    assert.match(f.spawns[3].prompt, /INDEPENDENT CODEX PLAN REVIEW/, 'repair keeps the approved design context');
     assert.match(f.spawns[4].prompt, /They PASSED on the current worktree/);
     // Shared folder: linked right after the worktree is created (the fake CLI runs
     // synchronously inside the spawn, so it is observed at the repair stage),

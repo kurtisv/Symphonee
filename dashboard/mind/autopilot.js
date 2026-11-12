@@ -230,7 +230,10 @@ class MindAutopilot {
     this.def = { label: String(def.label || (this.id === 'default' ? 'Principale' : this.id)).slice(0, 60), profile,
       verify: guard.validCommands(def.verify || []),
       linkDirs: (def.linkDirs || []).map(String).slice(0, 8),
-      protectedPaths: (def.protectedPaths || []).map(String).slice(0, 60) };
+      protectedPaths: (def.protectedPaths || []).map(String).slice(0, 60),
+      // Repository-specific process rules (risk levels, design sheets, lot
+      // files...), injected into every stage so the loop follows them.
+      governance: String(def.governance || '').slice(0, 4000) };
     this.profile = PROFILES[profile];
     this.limits = this.profile.limits;
   }
@@ -489,7 +492,14 @@ class MindAutopilot {
   }
   contextPolicy() { return this.profile.deep ? DEEP_CONTEXT_POLICY : CONTEXT_POLICY; }
   guardText() {
-    return this.def.protectedPaths.length ? 'PROTECTED PATHS (never create, modify or delete a file whose path matches one of these case-insensitive patterns; a task that needs one must be rejected): ' + JSON.stringify(this.def.protectedPaths) : '';
+    return [this.def.protectedPaths.length ? 'PROTECTED PATHS (never create, modify or delete a file whose path matches one of these case-insensitive patterns; a task that needs one must be rejected): ' + JSON.stringify(this.def.protectedPaths) : '',
+      this.def.governance ? 'REPOSITORY GOVERNANCE (follow it; it takes precedence over generic advice above):\n' + this.def.governance : ''].filter(Boolean).join('\n\n');
+  }
+  // The Codex plan-review text travels with the plan: repositories whose
+  // process demands "a Codex verdict on the design before any code" get it.
+  planVerdictText() {
+    const a = this.state.active;
+    return a && a.planVerdict ? 'INDEPENDENT CODEX PLAN REVIEW of this exact plan (verdict PASS, ' + (a.planVerdictAt || '') + '). This is the Codex verdict on the design required before implementation:\n' + String(a.planVerdict).slice(0, 6000) : '';
   }
   verifyText() {
     const v = this.state.active && this.state.active.verify;
@@ -537,6 +547,8 @@ class MindAutopilot {
         expectsRepoChanges: true, autoPermit: false, confineWrites: true, prompt: [
           repoPin('your current working directory', this.state.repoPath) + ' Never edit ' + this.state.repoPath + ' itself.',
           'Claude implementer in ISOLATED git worktree. Approved plan: ' + JSON.stringify(a.plan),
+          this.planVerdictText(),
+          'Implement now: the plan is already approved. If you nevertheless decide not to change anything, start your report with "NO_CHANGE:" and the exact reason.',
           RULES, this.guardText(), CODE_QUALITY_POLICY, this.contextPolicy(), this.verifyText(),
           this.profile.deep ? 'Write the regression test first and confirm it fails on the unchanged code, then make the change. Never skip, weaken or delete an existing test.' : '',
           'Make the minimal correct code changes. Run relevant tests before and after when feasible.',
@@ -561,7 +573,7 @@ class MindAutopilot {
         autoPermit: false, confineWrites: true, expectsRepoChanges: true, prompt: [
           repoPin(a.worktree.path, this.state.repoPath),
           'Claude corrective implementer. Only work in this isolated worktree.',
-          'Approved plan: ' + JSON.stringify(a.plan), RULES, this.guardText(), this.contextPolicy(), this.verifyText(),
+          'Approved plan: ' + JSON.stringify(a.plan), this.planVerdictText(), RULES, this.guardText(), this.contextPolicy(), this.verifyText(),
           'Findings to fix (from the reviewer or from the local verification): ' + String(a.review).slice(0, 8000),
           CODE_QUALITY_POLICY,
           'Fix findings, rerun relevant tests and repeat performance measurements where applicable.',
@@ -606,7 +618,10 @@ class MindAutopilot {
     if (a.stage === 'plan-review') {
       const v = verdict(raw);
       this.log('decision', 'Codex plan review: ' + (v || 'NO VERDICT'));
-      if (v === 'PASS') return this.dispatch('implement');
+      if (v === 'PASS') {
+        a.planVerdict = String(raw || '').slice(0, 6000); a.planVerdictAt = new Date().toISOString();
+        return this.dispatch('implement');
+      }
       a.planRevisions++;
       if (a.planRevisions > this.limits.planRevisions) {
         this.state.history.push({ category: a.plan?.category || null, title: a.plan?.title || '(plan)',
@@ -624,7 +639,9 @@ class MindAutopilot {
       if (a.mainFingerprint && worktreeFingerprint(this.state.repoPath, { head: false }) !== a.mainFingerprint) {
         throw new Error('The main checkout changed during ' + a.stage + '; stopped for inspection: ' + this.state.repoPath);
       }
-      if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('No Git changes despite Claude completion');
+      if (!changedFiles(a.worktree.path, a.baseSha)) {
+        throw new Error('No Git changes despite Claude completion. Claude said: ' + String(raw || '').replace(/\s+/g, ' ').slice(0, 600));
+      }
       const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
       if (hits.length) throw new Error('Protected path modified during ' + a.stage + ': ' + hits.slice(0, 6).join(', ') + '. Inspect ' + a.worktree.path);
       // The deep profile always passes through the gate: the diff lint runs
@@ -795,7 +812,7 @@ function mountMindAutopilot(addRoute, json, deps) {
       const body = await readBody(req);
       const id = String(body.id || '');
       if (!PILOT_ID.test(id)) throw new Error('id must match ' + PILOT_ID);
-      const def = { label: body.label, profile: body.profile, verify: body.verify || [],
+      const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [] };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
