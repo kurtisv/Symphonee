@@ -11,7 +11,11 @@ const store = require('./store');
 const budget = require('./autopilot-budget');
 const guard = require('./autopilot-verify');
 
-const RULES = 'Stay in the selected repository. Never touch secrets, credentials, billing, production data, deployments, CI policies or authentication. Never push, merge or delete branches. If the task needs these, reject it.';
+// Measured 2026-11-12: Codex read a valid UTF-8 lot file through Windows
+// PowerShell 5.1's default (ANSI) decoding, saw garbled accents and failed a
+// correct change on that alone.
+const ENCODING_NOTE = 'Text files here are UTF-8 without BOM. On Windows read them with an explicit UTF-8 decoding (PowerShell: Get-Content -Raw -Encoding UTF8; Python: open(..., encoding="utf-8"); or git show / node). Garbled accents after a default read are YOUR reading artifact, not a defect: re-read with UTF-8 before reporting any encoding or "not verbatim" problem.';
+const RULES = 'Stay in the selected repository. Never touch secrets, credentials, billing, production data, deployments, CI policies or authentication. Never push, merge or delete branches. If the task needs these, reject it.\n' + ENCODING_NOTE;
 // A profile sets the depth of a loop; a pilot definition binds it to one
 // repository's own checks. "standard" is the original loop, unchanged.
 const PROFILES = Object.freeze({
@@ -84,6 +88,22 @@ function mergeLimits(base, over) {
 // task: the loop parks and retries later instead of halting.
 const CREDIT_LIMIT = /usage limit|rate.?limit|too many requests|\b429\b|quota|credit|limit (?:reached|exceeded)|reached your|insufficient_quota|overloaded|\b529\b/i;
 const isCreditLimit = (text) => CREDIT_LIMIT.test(String(text || ''));
+// Reset time announced by the provider, as a local timestamp, or null.
+function creditResetAt(text, now = Date.now()) {
+  const s = String(text || '');
+  const rel = /try again in\s+(\d+)\s*(second|minute|hour)s?/i.exec(s);
+  if (rel) return now + Number(rel[1]) * ({ second: 1000, minute: 60_000, hour: 3_600_000 })[rel[2].toLowerCase()];
+  const abs = /resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(s);
+  if (!abs) return null;
+  let h = Number(abs[1]); const m = Number(abs[2] || 0); const ap = (abs[3] || '').toLowerCase();
+  if (h > 23 || m > 59) return null;
+  if (ap === 'pm' && h < 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  const d = new Date(now);
+  let t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime();
+  if (t <= now) t += 86400000;
+  return t - now <= 26 * 3_600_000 ? t : null;
+}
 // Production errors from the Sentry plugin (read-only, local route, no token
 // needed for GET). Untrusted data: passed to discovery as hints only.
 function fetchSentrySummary(timeoutMs = 20000) {
@@ -690,6 +710,7 @@ class MindAutopilot {
       key: a.plan ? taskKey(a.plan) : null, outcome,
       reviewerEvidence: reviewerEvidence ? String(reviewerEvidence).slice(0, 3000) : null,
       worktree: a.worktree || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
+      reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
       at: new Date().toISOString() });
     this.state.history = this.state.history.slice(-100);
@@ -761,6 +782,8 @@ class MindAutopilot {
         return this.complete('completed', raw);
       }
       a.review = raw; a.repairs++;
+      // Keep every rejection: the reason of each repair stays visible after restarts.
+      a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 3000) }].slice(-6);
       if (a.repairs > this.limits.repairs) throw new Error('Code review rejected after max repairs: ' + String(raw).slice(0, 500));
       return this.dispatch('repair');
     }
@@ -806,7 +829,11 @@ class MindAutopilot {
     }
     a.waitingStage = resume; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'credit';
     const sched = this.def.schedule;
-    let retry = now + 60 * 60_000;
+    // Use the provider's own reset time when it gives one ("resets 4:10am",
+    // "try again in 25 minutes"); otherwise one hour. Measured 2026-11-12:
+    // three hourly retries were spent before a reset announced for 4:10am.
+    const announced = creditResetAt(why, now);
+    let retry = announced ? announced + 2 * 60_000 : now + 60 * 60_000;
     if (a.creditHits > 8) retry = sched ? nextWindowStart(sched, now + 60_000) : budget.startOfNextDay(now);
     else if (sched && !inSchedule(sched, retry)) retry = nextWindowStart(sched, retry);
     this.state.nextAt = retry;
@@ -975,4 +1002,4 @@ function mountMindAutopilot(addRoute, json, deps) {
   return pilots.get('default');
 }
 module.exports = { MindAutopilot, mountMindAutopilot, parsePlan, verdict, taskKey, changedFiles,
-  localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES };
+  localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };

@@ -460,7 +460,7 @@ test('a provider credit limit parks the task instead of halting, and continues i
     f.pilot.state = { ...f.pilot.state, enabled: true, goal: 'Night', repoName: 'demo', repoPath: f.pilot.getRepoPath(), consent: { worktreeWrites: true } };
     await f.pilot.tick(at(23, 0));
     const t = [...f.tasks.values()][0];
-    t.state = 'failed'; t.error = 'Claude api_error: You have reached your usage limit. Resets at 2am.';
+    t.state = 'failed'; t.error = 'Claude api_error: You have reached your usage limit.';
     await f.pilot.tick(at(23, 1));
     let s = f.pilot.snapshot(at(23, 1));
     assert.equal(s.enabled, true, 'not halted');
@@ -495,4 +495,26 @@ test('an unusable Sentry summary is skipped, never passed as data', async () => 
       assert.ok(f.pilot.state.events.some(e => e.kind === 'sentry'));
     } finally { f.cleanup(); }
   }
+});
+test('credit pause waits for the reset time the provider announces', () => {
+  const { creditResetAt } = require('./autopilot');
+  const msg = "Claude api_error: You've hit your 5-hour limit · resets 4:10am (America/Toronto): HTTP 429";
+  assert.equal(creditResetAt(msg, at(0, 40)), at(4, 10));
+  assert.equal(creditResetAt('resets 4pm', at(17, 0)), at(16, 0) + 86400000, 'past time today means tomorrow');
+  assert.equal(creditResetAt('Rate limited, try again in 25 minutes', at(1, 0)), at(1, 25));
+  assert.equal(creditResetAt('HTTP 429 Too Many Requests', at(1, 0)), null);
+  const f = nightFixture();
+  try {
+    f.pilot.state.active = { stage: 'discover', plan: null, repairs: 0 };
+    f.pilot.parkForCredit(f.pilot.state.active, msg, at(0, 40));
+    assert.equal(f.pilot.state.nextAt, at(4, 12), 'one retry, right after the announced reset');
+  } finally { f.cleanup(); }
+});
+test('every prompt tells the agents to read files as UTF-8', () => {
+  const f = nightFixture();
+  try {
+    f.pilot.state.active = { plan: { title: 'x', objective: 'y' }, baseSha: 'abc', worktree: { path: '.' } };
+    assert.match(f.pilot.reviewPrompt('code-review'), /Get-Content -Raw -Encoding UTF8/);
+    assert.match(f.pilot.reviewPrompt('plan-review'), /YOUR reading artifact/);
+  } finally { f.cleanup(); }
 });
