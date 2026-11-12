@@ -405,7 +405,8 @@ function actionsToSteps(actions) {
       const dy = Number.isFinite(args.dy) ? args.dy : 0;
       const dx = Number.isFinite(args.dx) ? args.dx : 0;
       out.push({ verb: 'SCROLL', target: `${dx},${dy}` });
-    } else if (name === 'drag') {
+    } else if (name === 'drag' && Number.isFinite(args.fromX) && Number.isFinite(args.fromY)
+               && Number.isFinite(args.toX) && Number.isFinite(args.toY)) {
       out.push({ verb: 'DRAG', target: `${args.fromX},${args.fromY}`, text: `${args.toX},${args.toY}` });
     } else if (name === 'click_element') {
       const t = _encodeSelector(args.selector);
