@@ -237,6 +237,9 @@ test('deep loop: failed local verification repairs without a Codex call, two rep
     assert.match(f.spawns[2].prompt, /INDEPENDENT CODEX PLAN REVIEW of this exact plan \(verdict PASS/);
     assert.match(f.spawns[2].prompt, /VERDICT: PASS\nfindings/, 'the reviewer text itself is passed on');
     assert.match(f.spawns[3].prompt, /INDEPENDENT CODEX PLAN REVIEW/, 'repair keeps the approved design context');
+    assert.match(f.spawns[1].prompt, /CONDITIONS:/, 'plan review may pass with binding conditions');
+    assert.match(f.spawns[4].prompt, /FAIL the change if any condition is not met/, 'code review checks the plan conditions');
+    assert.match(f.spawns[4].prompt, /INDEPENDENT CODEX PLAN REVIEW/);
     assert.match(f.spawns[4].prompt, /They PASSED on the current worktree/);
     // Shared folder: linked right after the worktree is created (the fake CLI runs
     // synchronously inside the spawn, so it is observed at the repair stage),

@@ -485,9 +485,14 @@ class MindAutopilot {
       'For cleanup and quality, verify tests can demonstrate unchanged external behavior.',
       'Inspect evidence, scope, duplication, tests and safety. FAIL if not verifiable.',
       this.profile.deep ? 'Deep plan review: re-derive the claimed defect or gap yourself from the code; FAIL if the plan would need a protected path, has no regression test, or bundles more than one concern.' : '',
+      // Measured 2026-11-12: a review concluded "design tenable with
+      // reservations" yet answered FAIL, partly for a proof (the red test run)
+      // that only the implementation can produce; the task was lost.
+      'Calibrate the verdict: FAIL only for a BLOCKING problem (defect not real, wrong risk level, protected path, unsafe or out-of-scope design). A plan cannot be failed for evidence that only the implementation can produce (running the new regression test red, then green, is the implementer\'s job and is checked at code review). If the design is tenable with reservations, answer VERDICT: PASS and list each reservation under a line "CONDITIONS:"; the implementer must satisfy them and the code reviewer will FAIL the change if any is not met.',
       'FIRST line MUST be exactly VERDICT: PASS or VERDICT: FAIL. Then specific findings.'].filter(Boolean).join('\n\n');
     return ['Codex independent adversarial CODE review. READ-ONLY. Do not edit, create or delete files; any change to the worktree voids the review.',
       this.contextPolicy(), RULES, this.guardText(), this.profile.deep ? DEEP_REVIEW : '', this.verifyText(), 'Plan: ' + JSON.stringify(a.plan), 'Base commit: ' + a.baseSha,
+      a.planVerdict ? 'The approved plan review below may list CONDITIONS. FAIL the change if any condition is not met, and say which.\n' + this.planVerdictText() : '',
       'Review git diff, run relevant tests, inspect regressions and unintended changes.',
       CODE_QUALITY_POLICY,
       'For performance, independently compare baseline vs changed code on the same representative workload; FAIL if there is no demonstrated improvement or there is a meaningful regression.',
