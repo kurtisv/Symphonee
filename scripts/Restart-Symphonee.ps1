@@ -53,7 +53,14 @@ function Log([string]$m) {
 function Token { (Get-Content (Join-Path $root 'config\runtime.json') -Raw | ConvertFrom-Json).token }
 function Post([string]$path, $body) {
   Invoke-RestMethod "$base$path" -Method Post -ContentType 'application/json' -Headers @{ 'x-symphonee-token' = (Token) } `
-    -Body ($body | ConvertTo-Json -Compress) -TimeoutSec 30
+    -Body ($body | ConvertTo-Json -Compress) -TimeoutSec 120
+}
+# Typing in a terminal is never retried: a timed-out request may still have
+# typed the text (measured 2026-11-11), and typing it twice would send it as a
+# second message to the resumed session. Each injection fails on its own.
+function TypeIn([string]$term, [string]$text, [string]$what) {
+  try { $r = Post '/api/orchestrator/inject' @{ termId = $term; text = $text }; Log "$what typed in ${term}: ok=$($r.ok)" }
+  catch { Log "$what in ${term}: request failed ($_); not retried, check that terminal" }
 }
 function MainPid {
   $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -154,15 +161,11 @@ try {
   if (-not $NoResume) {
     Start-Sleep -Seconds 3
     foreach ($p in $resumePairs) {
-      $r = Post '/api/orchestrator/inject' @{ termId = $p.Term; text = "claude --dangerously-skip-permissions --resume $($p.Value)" }
-      Log "resume typed in $($p.Term): ok=$($r.ok)"
+      TypeIn $p.Term "claude --dangerously-skip-permissions --resume $($p.Value)" 'resume'
     }
     if ($continuePairs.Count -gt 0) {
       Start-Sleep -Seconds 40
-      foreach ($c in $continuePairs) {
-        $r = Post '/api/orchestrator/inject' @{ termId = $c.Term; text = $c.Value }
-        Log "follow-up typed in $($c.Term): ok=$($r.ok)"
-      }
+      foreach ($c in $continuePairs) { TypeIn $c.Term $c.Value 'follow-up' }
     }
   }
   Log '--- restart done'
