@@ -39,6 +39,16 @@ const CONFINED_DENIED_TOOLS = Object.freeze(['WebFetch', 'WebSearch', ...shellRu
   'git push', 'git merge', 'git rebase', 'git reset', 'git branch', 'git worktree', 'git checkout',
   'git commit', 'npm publish', 'npm install', 'npx'])]);
 
+// Time limit of a headless run. Local: the bounded value computed by the caller.
+// Cloud: 0, which the task store turns into its default (15 min), unless the
+// caller asked for an explicit cloudTimeoutMs (graph-run worker nodes with
+// timeoutMs: a design or measurement step can legitimately take hours).
+function resolveHeadlessTimeout({ local, timeout, cloudTimeoutMs }) {
+  if (local) return timeout;
+  const t = Number(cloudTimeoutMs);
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
+
 // Real token usage when the CLI reports it; null otherwise (callers must then
 // show an estimate, never a fabricated exact value).
 function parseCliUsage(cli, stdout, stderr, { usageJson = false } = {}) {
@@ -127,7 +137,7 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, _retryAttempt = 0 }) {
     cli = canonicalProviderId(cli);
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
@@ -232,7 +242,7 @@ module.exports = {
       prompt,
       from: from || null,
       space: space || null,
-      timeout: localSpec ? timeout : 0,  // Cloud: never timeout. Local: bounded (fails over).
+      timeout: resolveHeadlessTimeout({ local: !!localSpec, timeout, cloudTimeoutMs }),
     });
     task._originalPrompt = originalPrompt;
     // Local runs from ANY caller (followup, graph runs, dependencies, brain picks)
@@ -621,7 +631,9 @@ module.exports = {
     // Local agents run through a shell on Windows: killing the shell leaves
     // codex.exe running (and possibly still editing files while the cloud
     // fallback works on the same tree). Kill the whole process tree instead.
-    if (localSpec) {
+    // Same for a cloud run with an explicit time limit: on timeout the whole
+    // tree must stop, or the agent keeps editing a tree its caller gave up on.
+    if (localSpec || Number(cloudTimeoutMs) > 0) {
       task._kill = () => killProcessTree(proc, (this._killTreeImpl || null));
     }
 
@@ -730,5 +742,6 @@ module.exports = {
 };
 
 // Exposed for tests without becoming an Orchestrator mixin method.
+Object.defineProperty(module.exports, 'resolveHeadlessTimeout', { value: resolveHeadlessTimeout, enumerable: false });
 Object.defineProperty(module.exports, 'parseCliUsage', { value: parseCliUsage, enumerable: false });
 Object.defineProperty(module.exports, 'winQuoteArg', { value: winQuoteArg, enumerable: false });

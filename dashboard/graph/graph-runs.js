@@ -395,7 +395,10 @@ class GraphRunsEngine extends EventEmitter {
 
       const prompt = renderTemplate(node.prompt || '', { state: run.state });
       const body = { cli, model, prompt, cwd: node.cwd, from: `graph-run:${run.id}`,
-        effort: node.effort, autoPermit: !!node.autoPermit };
+        effort: node.effort, autoPermit: !!node.autoPermit,
+        // Optional per-node time limit (ms). Without it a cloud worker is cut
+        // at the task store default (15 min), too short for long steps.
+        ...(Number(node.timeoutMs) > 0 ? { workerTimeoutMs: Number(node.timeoutMs) } : {}) };
       const spawnRes = await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
       if (spawnRes && spawnRes.__error) {
         lastError = `spawn ${cli} failed: ${spawnRes.__error.message || spawnRes.__error}`;

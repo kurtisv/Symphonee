@@ -152,7 +152,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
 
   // ── POST /api/orchestrator/spawn ──────────────────────────────────────
   addRoute('POST', '/api/orchestrator/spawn', async (req, res) => {
-    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, task: taskHints } = await readBody(req);
+    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, task: taskHints, workerTimeoutMs } = await readBody(req);
     if (!prompt) return json(res, { error: 'prompt required' }, 400);
     cli = canonicalProviderId(cli);
     const requestedCli = cli;
@@ -298,7 +298,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
       } else {
         // Routed: the router's write verdict. Unrouted: spawnHeadless infers it.
         const expectsRepoChanges = routing && isLocalProvider(cli) ? !!(routing.characteristics && routing.characteristics.repoWriteRequired) : undefined;
-        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace, expectsRepoChanges, noFallback: !!(taskHints && taskHints.noFallback) });
+        task = orch.spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space: resolvedSpace, expectsRepoChanges, noFallback: !!(taskHints && taskHints.noFallback), cloudTimeoutMs: workerTimeoutMs });
       }
       return task;
       };
