@@ -5,8 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { collectGitEvidence, configuredSource, fetchGitHubEvidence, githubRepository } = require('./git-evidence');
-const workspace = path.resolve(__dirname, '../../../.ai-workspace');
-fs.mkdirSync(workspace, { recursive: true });
+// Fixtures live in the OS temp directory, outside any Git repository: inside
+// the project (.ai-workspace) a real clone made `git` find the parent Symphonee
+// repository, so 'no Git' cases saw local history and 7 tests failed.
+const workspace = fs.mkdtempSync(path.join(require('os').tmpdir(), 'sym-git-evidence-'));
+process.on('exit', () => { try { fs.rmSync(workspace, { recursive: true, force: true }); } catch (_) {} });
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(workspace, 'git-evidence-'));
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'symphonee' }));
