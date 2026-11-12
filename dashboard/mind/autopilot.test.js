@@ -366,11 +366,46 @@ test('local triage: real markers only, and source files without a sibling test',
     assert.equal(s.untested.of, 3);
   } finally { f.cleanup(); }
 });
-test('detailed plans with long evidence are accepted; oversized items are still refused', () => {
+test('long plans are clipped, never thrown away; structure stays strict', () => {
   const long = { ...goodPlan, evidence: ['dashboard/lib/x.js: ' + 'branch detail '.repeat(60)],
     acceptance: ['node --test passes and asserts ' + 'case '.repeat(130)] };
   assert.ok(long.evidence[0].length > 800 && long.acceptance[0].length > 600);
   assert.equal(parsePlan(JSON.stringify(long)).evidence.length, 1);
-  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, evidence: ['x'.repeat(1501)] })), null);
-  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, acceptance: ['x'.repeat(1001)] })), null);
+  // The real plan lost on 2026-11-12 had a 190-char title.
+  const p = parsePlan(JSON.stringify({ ...goodPlan, title: 'T'.repeat(190), objective: 'o'.repeat(2500),
+    evidence: ['e'.repeat(1600), ...Array.from({ length: 9 }, (_, i) => 'file.js:' + i + ' detail here')], acceptance: ['a'.repeat(1200)] }));
+  assert.equal(p.title.length, 180);
+  assert.ok(p.title.endsWith('...'));
+  assert.equal(p.objective.length, 2000);
+  assert.equal(p.evidence.length, 8);
+  assert.equal(p.evidence[0].length, 1500);
+  assert.equal(p.acceptance[0].length, 1000);
+  // Structure is still enforced.
+  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, evidence: ['short'] })), null, 'evidence item too short to be evidence');
+  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, acceptance: [] })), null);
+  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, category: 'refactor' })), null);
+  assert.equal(parsePlan(JSON.stringify({ ...goodPlan, title: 'short' })), null);
+});
+test('an unparsable discovery answer is kept and Reprendre re-reads it without a new call', async () => {
+  const f = fixture();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
+    const t = f.tasks.get(f.pilot.state.active.taskId);
+    t.state = 'completed'; t.result = 'Here is my plan: ' + JSON.stringify({ ...goodPlan, decision: 'TASK', category: 'unknown-category' });
+    await f.pilot.tick();
+    let s = f.pilot.snapshot();
+    assert.equal(s.status, 'interrupted');
+    assert.match(s.error, /answer kept/);
+    assert.equal(s.active.resumable, true);
+    assert.throws(() => f.pilot.resume(), /still not a valid plan/, 'a still-invalid answer is not forced through');
+    // Same answer shape that a later parser accepts: simulate by fixing the kept text.
+    f.pilot.state.active.lastRaw = 'Here is my plan: ' + JSON.stringify(goodPlan);
+    const calls = f.tasks.size;
+    f.pilot.resume();
+    s = f.pilot.snapshot();
+    assert.equal(s.active.stage, 'plan-review', 'goes straight to the plan review');
+    assert.equal(f.tasks.size, calls + 1, 'only the plan review was launched');
+    assert.equal(f.tasks.get(s.active.taskId).opts.cli, 'codex');
+    assert.equal(s.today.discoveries, 1, 'no discovery was paid again');
+  } finally { f.cleanup(); }
 });

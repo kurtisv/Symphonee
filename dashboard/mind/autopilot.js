@@ -74,20 +74,23 @@ function parsePlan(raw) {
     try { p = JSON.parse(raw.slice(first, last + 1)); } catch (_) { return null; }
   }
   if (p?.decision === 'NO_TASK') return { decision: 'NO_TASK' };
+  // Structure is strict; LENGTH is not. Measured 2026-11-11/12: two good,
+  // well-grounded plans were thrown away (a full discovery each, 0.4-0.5M
+  // tokens) for a 190-char title or an item a little over the cap. Over-long
+  // fields are clipped (marked "..."), and only the first 8 items are kept.
+  const clip = (s, n) => (s.length > n ? s.slice(0, n - 3).trimEnd() + '...' : s);
   if (p?.decision !== 'TASK' || !WORK_CATEGORIES.includes(p.category)
     || typeof p.title !== 'string' || p.title.trim().length < 8
-    || p.title.length > 180 || typeof p.objective !== 'string' || p.objective.trim().length < 15
-    || p.objective.length > 2000 || !Array.isArray(p.acceptance) || p.acceptance.length < 1
-    || p.acceptance.length > 8 || p.acceptance.some(x => typeof x !== 'string' || x.length > MAX_ACCEPTANCE_CHARS)
-    || !Array.isArray(p.evidence) || p.evidence.length < 1 || p.evidence.length > 8
-    || p.evidence.some(x => typeof x !== 'string' || x.trim().length < 12 || x.length > MAX_EVIDENCE_CHARS)) return null;
+    || typeof p.objective !== 'string' || p.objective.trim().length < 15
+    || !Array.isArray(p.acceptance) || !Array.isArray(p.evidence)) return null;
+  const acceptance = p.acceptance.filter(x => typeof x === 'string' && x.trim()).slice(0, 8).map(x => clip(x.trim(), MAX_ACCEPTANCE_CHARS));
+  const evidence = p.evidence.filter(x => typeof x === 'string' && x.trim().length >= 12).slice(0, 8).map(x => clip(x.trim(), MAX_EVIDENCE_CHARS));
+  if (!acceptance.length || !evidence.length) return null;
   // Performance tasks require a reproducible baseline, not vague speed claims.
-  if (p.category === 'performance' && (typeof p.baseline !== 'string'
-    || p.baseline.trim().length < 20 || p.baseline.length > 1000)) return null;
-  return { decision: 'TASK', category: p.category, title: p.title.trim(),
-    objective: p.objective.trim(), evidence: p.evidence.map(x => x.trim()),
-    acceptance: p.acceptance.map(x => x.trim()),
-    baseline: p.category === 'performance' ? p.baseline.trim() : null };
+  if (p.category === 'performance' && (typeof p.baseline !== 'string' || p.baseline.trim().length < 20)) return null;
+  return { decision: 'TASK', category: p.category, title: clip(p.title.trim(), 180),
+    objective: clip(p.objective.trim(), 2000), evidence, acceptance,
+    baseline: p.category === 'performance' ? clip(p.baseline.trim(), 1000) : null };
 }
 function verdict(raw) {
   const first = String(raw || '').trim().split(/\r?\n/)[0].trim();
@@ -322,7 +325,8 @@ class MindAutopilot {
         worktree: a.worktree, startedAt: a.startedAt || null, interruptedAt: a.interruptedAt || null,
         verify: a.verify ? { running: !!a.verify.running, startedAt: a.verify.startedAt, current: a.verify.current || null,
           results: (a.verify.results || []).map(r => ({ name: r.name, ok: r.ok, ms: r.ms, timedOut: r.timedOut })) } : null,
-        review: a.review ? String(a.review).slice(0, 2000) : null } : null,
+        review: a.review ? String(a.review).slice(0, 2000) : null,
+        resumable: Boolean((a.plan && a.worktree && a.baseSha) || (a.stage === 'discover' && a.lastRaw)) } : null,
       history: s.history.slice(-20).reverse(), events: s.events.slice(-30).reverse(),
       today: { completed: this.todayCompleted(now), discoveries: this.todayDiscoveries(now) },
       nextAt: s.nextAt, error: s.error, budget: budget.dailyUsage(s, now, this.limits),
@@ -398,6 +402,17 @@ class MindAutopilot {
   resume() {
     const a = this.state.active;
     if (this.state.enabled) throw new Error('This pilot is already running');
+    if (a && !a.waitingStage && a.stage === 'discover' && a.lastRaw && !a.plan) {
+      // A discovery answer that failed to parse: re-read it with the current
+      // parser (no new Claude call). Still invalid -> stays interrupted.
+      if (this.blockedByPeer()) throw new Error('Another loop is running a task; resume when it is idle');
+      if (!parsePlan(a.lastRaw)) throw new Error('The kept discovery answer is still not a valid plan; archive it');
+      this.state.enabled = true; this.state.error = null; a.interruptedAt = null; a.taskId = null; a.budgetRef = null;
+      this.log('resumed', 'Re-reading the kept discovery answer (no new discovery call)');
+      try { this.advance(a.lastRaw); } catch (e) { this.halt(e); }
+      this.save();
+      return this.snapshot();
+    }
     if (!a || a.waitingStage || !a.plan || !a.worktree || !a.baseSha) throw new Error('No interrupted implementation to resume');
     const t = a.taskId && this.orch.getTask(a.taskId);
     if (t && ['running', 'pending', 'queued'].includes(t.state)) throw new Error('Its last task is still running');
@@ -608,7 +623,12 @@ class MindAutopilot {
     const a = this.state.active;
     if (a.stage === 'discover') {
       const plan = parsePlan(raw);
-      if (!plan) throw new Error('Claude did not return a valid discovery JSON');
+      if (!plan) {
+        // Keep the paid answer: "Reprendre" re-parses it instead of paying a new discovery.
+        a.lastRaw = String(raw || '').slice(0, 30000);
+        throw new Error('Claude did not return a valid discovery JSON (answer kept; Reprendre re-reads it). Start: ' + String(raw || '').replace(/\s+/g, ' ').slice(0, 200));
+      }
+      a.lastRaw = null;
       if (plan.decision === 'NO_TASK') return this.complete('no-task');
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
       a.plan = plan;
