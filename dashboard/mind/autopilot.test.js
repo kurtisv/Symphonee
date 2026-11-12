@@ -483,3 +483,16 @@ test('a provider credit limit parks the task instead of halting, and continues i
     assert.equal(f.pilot.state.nextAt, at(22, 0), '07:30 is outside the window: retry at the next 22:00');
   } finally { f.cleanup(); }
 });
+test('an unusable Sentry summary is skipped, never passed as data', async () => {
+  for (const text of ['Sentry Error Tracker -- gassaver\nNo projects found.', 'Sentry Error Tracker plugin is not configured.', null]) {
+    const f = nightFixture();
+    try {
+      f.pilot.fetchSentry = async () => text;
+      f.pilot.state = { ...f.pilot.state, enabled: true, goal: 'Night', repoName: 'demo', repoPath: f.pilot.getRepoPath(), consent: { worktreeWrites: true } };
+      await f.pilot.tick(at(23, 0));
+      const t = [...f.tasks.values()][0];
+      assert.doesNotMatch(t.opts.prompt, /PRODUCTION ERRORS from Sentry/, String(text));
+      assert.ok(f.pilot.state.events.some(e => e.kind === 'sentry'));
+    } finally { f.cleanup(); }
+  }
+});

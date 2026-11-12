@@ -860,8 +860,13 @@ class MindAutopilot {
           localSignals: signals, budgetRef: null, waitingStage: null };
         if (this.def.sources.sentry) {
           const text = await (this.fetchSentry || fetchSentrySummary)();
-          if (text && !/not configured/i.test(text)) this.state.active.sentry = String(text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').slice(0, 6000);
-          else this.log('sentry', text ? 'Sentry plugin not configured (Settings > Plugins): discovery uses the backlog only' : 'Sentry unreachable: discovery uses the backlog only');
+          // Only real data goes to discovery: an unconfigured plugin, a token
+          // without read scopes ("No projects found", 403) or an error page is
+          // logged and skipped, never presented as "no production errors".
+          const unusable = !text || /not configured|no projects found|auth failed|failed to fetch|permission/i.test(text);
+          if (!unusable) this.state.active.sentry = String(text).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').slice(0, 6000);
+          else this.log('sentry', !text ? 'Sentry unreachable: discovery uses the backlog only'
+            : 'Sentry not usable (' + String(text).replace(/\s+/g, ' ').slice(0, 80) + '): discovery uses the backlog only');
         }
         this.dispatch('discover', now);
       } else {
