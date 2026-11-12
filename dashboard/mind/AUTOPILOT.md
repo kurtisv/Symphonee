@@ -135,3 +135,23 @@ Daily limits of the deep profile: 2 tasks, 6 discoveries, 24 launches,
 
 Gas Saver (2026-11-11) uses it with `tsc --noEmit` for the app and the API and
 the full Jest suite (2,087 tests): 131 s measured, working tree left clean.
+
+## Night mode (big real problems, until the provider's credit runs out)
+
+A loop definition can add:
+
+- `schedule: {start, end}`: no NEW task outside the local window (it may cross
+  midnight, e.g. 22:00-07:00); a task already running may finish.
+- `ambition: "big"`: discovery picks the most impactful real problem that can
+  be fixed in one night (backlog P0/P1 and production errors first, first
+  shippable slice when too large), may read as much code as needed.
+- `sources: {files, sentry}`: backlog files to start from and, when the
+  Sentry plugin is configured, its read-only summary (untrusted hints).
+- `stepMinutes`: longer stages (up to 240).
+- `limits`: per-loop overrides; set high so the provider's credit is the stop.
+
+When Claude or Codex reports a usage/credit/rate limit, the task is parked,
+not failed: retry in one hour inside the window, else at the next window; an
+interrupted implementation continues in the same worktree without consuming a
+repair. Measured 2026-11-12: one big discovery on Gas Saver = 5.4M tokens
+(5.2M cache reads), 6 minutes.
