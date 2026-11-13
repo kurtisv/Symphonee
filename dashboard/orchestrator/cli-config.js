@@ -71,11 +71,11 @@ const CLI_MODELS = {
     // 2026-09-28). gpt-5.4 / gpt-5.4-mini / gpt-5.1-codex ont ete retires :
     // OpenAI repond HTTP 400 « not supported when using Codex with a ChatGPT
     // account ». Verifier ce catalogue avant d'ajouter un modele ici.
-    models: ['gpt-5.5', 'gpt-5.6-terra', 'gpt-6-sol'],
-    modelIds: ['gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'],
+    models: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6.1-terra'],
+    modelIds: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
     apiKeyOnlyModels: ['o3', 'o4-mini', 'gpt-4.1'],
     notSupported: ['gpt-4o', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.3-codex-spark'],
-    defaultModel: 'gpt-5.5',
+    defaultModel: 'gpt-6.1-sol',
     modelFlag: '-m',
     effortFlag: null,
     permissionFlag: '--dangerously-bypass-approvals-and-sandbox',

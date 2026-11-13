@@ -132,7 +132,7 @@ module.exports = {
    * @param {number} [opts.timeout] - ms before killing (default 5 min)
    * @param {string} [opts.from]    - termId of the requesting agent
    * @param {string} [opts.taskId]  - tie to existing task
-   * @param {string} [opts.model]   - model override (e.g. 'opus', 'gpt-5.5', 'flash')
+   * @param {string} [opts.model]   - model override (e.g. 'opus', 'gpt-6.1-sol', 'flash')
    * @param {string} [opts.effort]  - effort level (e.g. 'low', 'high', 'max')
    * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}

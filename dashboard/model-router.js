@@ -64,11 +64,12 @@ const CATALOG = {
   codex: {
     provider: 'OpenAI',
     models: {
-      // Catalogue reel d'un compte ChatGPT (codex debug models, 2026-09-28) :
-      // gpt-5.4, gpt-5.4-mini, gpt-5.3-codex* ont ete retires (HTTP 400 avec un
-      // compte ChatGPT). gpt-5.5 est le seul modele verifie en appel reel.
-      'gpt-5.5': { id: 'gpt-5.5', tier: 'balanced', cost: 3, webSearch: 'native', agentic: 'excellent',
-        note: 'Modele Codex par defaut du compte ChatGPT, verifie le 2026-09-28.' },
+      // Catalogue reel d'un compte ChatGPT (~/.codex/models_cache.json) :
+      // le 2026-11-13 a 08:05, gpt-5.5 a ete retire ("not supported when using
+      // Codex with a ChatGPT account"). gpt-6.1-sol, premier de la liste
+      // ("latest workhorse model for coding"), verifie en appel reel le meme jour.
+      'gpt-6.1-sol': { id: 'gpt-6.1-sol', tier: 'balanced', cost: 3, webSearch: 'native', agentic: 'excellent',
+        note: 'Modele Codex de travail du compte ChatGPT, verifie le 2026-11-13.' },
     },
   },
   gemini: {
@@ -121,7 +122,7 @@ const INTENTS = {
     prefer: [
       { cli: 'lmstudio-qwen-small', model: 'qwen2.5-coder-1.5b', weight: 11, reason: 'local-first: free on-machine model' },
       { cli: 'claude', model: 'haiku-4-5', weight: 10 },
-      { cli: 'codex', model: 'gpt-5.5', weight: 9 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 9 },
       { cli: 'gemini', model: 'gemini-3-flash', weight: 8 },
       { cli: 'qwen', model: 'qwen3-coder-flash', weight: 6 },
     ],
@@ -139,7 +140,7 @@ const INTENTS = {
     prefer: [
       { cli: 'lmstudio-qwen-review', model: 'qwen2.5-coder-7b', weight: 11, reason: 'local-first: free on-machine 7B, read-only' },
       { cli: 'claude', model: 'sonnet-4-6', weight: 9 },
-      { cli: 'codex', model: 'gpt-5.5', weight: 8 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 8 },
     ],
   },
   'small-edit': {
@@ -147,9 +148,9 @@ const INTENTS = {
     prefer: [
       // OPT-IN ONLY: skipped in recommend() unless LocalFirst.enableCodexOssSmallEdit
       // is true (default off since the real 1.5B run: 273s, "DONE", no edit).
-      // With the default config the first cloud choice here is codex gpt-5.5.
+      // With the default config the first cloud choice here is codex gpt-6.1-sol.
       { cli: 'codex-oss-local', model: 'qwen2.5-coder-1.5b', weight: 11, reason: 'local-first: Codex OSS on LM Studio (opt-in)' },
-      { cli: 'codex', model: 'gpt-5.5', weight: 9 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 9 },
       { cli: 'claude', model: 'sonnet-4-6', weight: 8 },
     ],
   },
@@ -157,7 +158,7 @@ const INTENTS = {
     description: 'Complex refactor, debugging, architecture. Needs best reasoning.',
     prefer: [
       { cli: 'claude', model: 'opus-4-6', weight: 10 },
-      { cli: 'codex', model: 'gpt-5.5', weight: 9 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 9 },
       { cli: 'claude', model: 'sonnet-4-6', weight: 7 },
       { cli: 'qwen', model: 'qwen3-coder-plus', weight: 6 },
     ],
@@ -166,21 +167,21 @@ const INTENTS = {
     description: 'Multi-step task: reason about approach, then write the code.',
     prefer: [
       { cli: 'claude', model: 'opusplan', weight: 10 },
-      { cli: 'codex', model: 'gpt-5.5', weight: 8 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 8 },
       { cli: 'claude', model: 'opus-4-6', weight: 7 },
     ],
   },
   'long-autonomy': {
     description: 'Multi-hour agentic work. Needs persistence + strong self-correction.',
     prefer: [
-      { cli: 'codex', model: 'gpt-5.5', weight: 10 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 10 },
       { cli: 'claude', model: 'opus-4-6', weight: 8 },
     ],
   },
   'web-research': {
     description: 'Needs current info from the open web.',
     prefer: [
-      { cli: 'codex', model: 'gpt-5.5', weight: 10, reason: 'native web search' },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 10, reason: 'native web search' },
       { cli: 'gemini', model: 'gemini-3-pro', weight: 8, reason: 'Google search tool' },
       { cli: 'gemini', model: 'gemini-3-flash', weight: 6 },
     ],
@@ -188,7 +189,7 @@ const INTENTS = {
   'web-research-cheap': {
     description: 'Light web lookup: current price, docs, changelog.',
     prefer: [
-      { cli: 'codex', model: 'gpt-5.5', weight: 10 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 10 },
       { cli: 'gemini', model: 'gemini-3-flash', weight: 8 },
     ],
   },
@@ -203,13 +204,13 @@ const INTENTS = {
     description: 'Live X/Twitter or social-media context.',
     prefer: [
       { cli: 'grok', model: 'grok-4-fast', weight: 10 },
-      { cli: 'codex', model: 'gpt-5.5', weight: 5, reason: 'fallback via web search' },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 5, reason: 'fallback via web search' },
     ],
   },
   'parallel-fanout': {
     description: 'One of N parallel workers in a fan-out. Optimize for cost + speed.',
     prefer: [
-      { cli: 'codex', model: 'gpt-5.5', weight: 10 },
+      { cli: 'codex', model: 'gpt-6.1-sol', weight: 10 },
       { cli: 'gemini', model: 'gemini-3-flash', weight: 9 },
       { cli: 'claude', model: 'haiku-4-5', weight: 8 },
       { cli: 'qwen', model: 'qwen3-coder-flash', weight: 7 },
