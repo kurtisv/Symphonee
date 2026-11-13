@@ -5,19 +5,18 @@
 # this file authenticates without touching its individual calls.
 #
 # Token source order:
-#   1. $env:SYMPHONEE_TOKEN  -- set when Symphonee spawns the shell (the usual case)
-#   2. config/runtime.json   -- for scripts run manually outside a spawned shell
+#   1. config/runtime.json   -- rewritten at every boot (always current)
+#   2. $env:SYMPHONEE_TOKEN  -- fallback; goes stale after a restart
 #
 # If no token is found we attach nothing (so reads still work, and the server's
 # kill switch / disabled-enforcement modes are unaffected).
 
-$SymphoneeToken = $env:SYMPHONEE_TOKEN
-if (-not $SymphoneeToken) {
-    $runtimePath = Join-Path $PSScriptRoot '..\config\runtime.json'
-    if (Test-Path $runtimePath) {
-        try { $SymphoneeToken = (Get-Content $runtimePath -Raw | ConvertFrom-Json).token } catch { }
-    }
+$SymphoneeToken = $null
+$runtimePath = Join-Path $PSScriptRoot '..\config\runtime.json'
+if (Test-Path $runtimePath) {
+    try { $SymphoneeToken = (Get-Content $runtimePath -Raw | ConvertFrom-Json).token } catch { }
 }
+if (-not $SymphoneeToken) { $SymphoneeToken = $env:SYMPHONEE_TOKEN }
 
 if ($SymphoneeToken) {
     if (-not $global:PSDefaultParameterValues) { $global:PSDefaultParameterValues = @{} }
