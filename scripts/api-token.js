@@ -1,25 +1,35 @@
 'use strict';
 // Shared API-token resolver for the Node helper scripts. The Symphonee server
 // gates mutating requests (POST/PUT/DELETE/PATCH) behind a per-boot token, so
-// these scripts must present it. Resolves the token the same way scripts/
-// _ApiInit.ps1 does for the PowerShell helpers:
-//   1. $env:SYMPHONEE_TOKEN  -- set when Symphonee spawns the shell (usual case)
-//   2. config/runtime.json   -- for scripts run manually outside a spawned shell
-// Reads (GET) are unaffected; an empty token just attaches nothing, so the
-// server's kill switch / disabled-enforcement modes keep working.
+// these scripts must present it. Same rule as scripts/_ApiInit.ps1:
+//   1. config/runtime.json, but ONLY when the Symphonee process that wrote it is
+//      still running (its pid is alive): the file is rewritten at every boot,
+//      so it beats an environment token inherited before a restart;
+//   2. otherwise $env:SYMPHONEE_TOKEN.
+// A runtime.json left by a Symphonee that is no longer running (for example an
+// old one in another checkout, where workers often run) is ignored: trusting it
+// sent a stale token and every call was refused with 403.
+// Reads (GET) are unaffected; an empty token just attaches nothing.
 const fs = require('fs');
 const path = require('path');
 
-// config/runtime.json is rewritten at every boot, so it wins: an inherited
-// SYMPHONEE_TOKEN goes stale after a restart (403 TOKEN_REQUIRED) in shells
-// that outlive it. The environment is the fallback when the file is absent.
-function apiToken() {
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+// Pure resolver, injectable for tests.
+function resolveToken({ runtimePath, env = process.env, isAlive = pidAlive } = {}) {
   try {
-    const runtimePath = path.join(__dirname, '..', 'config', 'runtime.json');
-    const t = JSON.parse(fs.readFileSync(runtimePath, 'utf8')).token;
-    if (t) return t;
+    const rt = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+    const pid = Number(rt && rt.pid);
+    if (rt && rt.token && Number.isInteger(pid) && pid > 0 && isAlive(pid)) return rt.token;
   } catch (_) {}
-  return process.env.SYMPHONEE_TOKEN || '';
+  return env.SYMPHONEE_TOKEN || '';
+}
+
+function apiToken() {
+  return resolveToken({ runtimePath: path.join(__dirname, '..', 'config', 'runtime.json') });
 }
 
 // Header object to merge into a request's headers ({} when no token is found).
@@ -28,4 +38,4 @@ function authHeaders() {
   return t ? { 'X-Symphonee-Token': t } : {};
 }
 
-module.exports = { apiToken, authHeaders };
+module.exports = { apiToken, authHeaders, resolveToken };
