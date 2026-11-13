@@ -25,7 +25,9 @@ import { makeLatest } from './latest.js';
 
   const ap = { snap: null, busy: false, message: '', poll: null, draftGoal: null, draftRepo: null, draftConsent: false, pilot: 'default',
     // A non-autopilot loop shown in detail (pleinsens | porte-fusion | veille), else null.
-    loopView: null, loopDetail: null };
+    loopView: null, loopDetail: null,
+    // Plain-language summary ("En clair") of the loop on screen: { loop, items }.
+    clair: null };
   try { ap.pilot = localStorage.getItem('mind-autopilot-pilot') || 'default'; } catch (_) {}
   const esc = (v) => escapeHtml(v == null ? '' : String(v));
   const fmt = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('fr-CA') : '0');
@@ -48,6 +50,7 @@ import { makeLatest } from './latest.js';
     fetch('/api/automation/loops', { cache: 'no-store' }).then(r => r.ok ? r.json() : null)
       .then(d => { if (d && d.loops) { ap.loops = d; paint(); } }).catch(() => {});
     if (ap.loopView) loadLoopDetail();
+    loadClair();
     try { ap.snap = await call('/api/mind/autopilot'); ap.pilots = ap.snap.pilots || ap.pilots; ap.message = ap.message || ''; }
     catch (e) {
       // A remembered pilot that no longer exists falls back to the main loop.
@@ -58,6 +61,17 @@ import { makeLatest } from './latest.js';
   }
 
   const detailRequests = makeLatest();
+  const clairRequests = makeLatest();
+  // The loop whose plain summary belongs on screen: the shown loop, else the pilot.
+  const clairLoop = () => ap.loopView ? (ap.loopView === 'pleinsens' ? 'pleinsens' : null) : ap.pilot;
+  function loadClair() {
+    const loop = clairLoop();
+    const current = clairRequests.start();
+    if (!loop) { ap.clair = null; return Promise.resolve(); }
+    return fetch('/api/automation/loops/summary?loop=' + encodeURIComponent(loop), { cache: 'no-store' })
+      .then(r => r.json()).then(d => { if (current()) { ap.clair = d && d.items ? { loop, items: d.items } : null; paint(); } })
+      .catch(() => {});
+  }
   function loadLoopDetail() {
     const id = ap.loopView;
     const current = detailRequests.start(); // an older answer never paints over a newer request
@@ -90,8 +104,8 @@ import { makeLatest } from './latest.js';
     refresh() { return load(); },
     showLoop(id) {
       if (ap.busy) return;
-      ap.loopView = id; ap.loopDetail = null; ap.message = '';
-      paint(); return loadLoopDetail();
+      ap.loopView = id; ap.loopDetail = null; ap.message = ''; ap.clair = null;
+      paint(); loadClair(); return loadLoopDetail();
     },
     async retryNode(runId, nodeId, taskId) {
       if (ap.busy) return;
@@ -108,9 +122,9 @@ import { makeLatest } from './latest.js';
     },
     select(id) {
       if (ap.busy) return;
-      if (ap.loopView) { detailRequests.invalidate(); ap.loopView = null; ap.loopDetail = null; if (id === ap.pilot) { paint(); return; } }
+      if (ap.loopView) { detailRequests.invalidate(); ap.loopView = null; ap.loopDetail = null; ap.clair = null; if (id === ap.pilot) { paint(); loadClair(); return; } }
       if (id === ap.pilot) return;
-      ap.pilot = id; ap.snap = null; ap.message = ''; ap.draftGoal = null; ap.draftRepo = null; ap.draftConsent = false;
+      ap.pilot = id; ap.snap = null; ap.message = ''; ap.clair = null; ap.draftGoal = null; ap.draftRepo = null; ap.draftConsent = false;
       try { localStorage.setItem('mind-autopilot-pilot', id); } catch (_) {}
       paint(); return load();
     },
@@ -170,6 +184,34 @@ import { makeLatest } from './latest.js';
   const dur = (a, b) => { if (!a) return ''; const m = Math.round(((b || Date.now()) - a) / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
   const logBlock = (lines) => '<pre style="white-space:pre-wrap;font-size:11px;max-height:260px;overflow:auto;margin:0;">' + esc((lines || []).join('\n') || '(vide)') + '</pre>';
 
+  // Plain-language card: the state is computed by the server from facts; only
+  // the two sentences are written by a model, and the card says so.
+  const CLAIR_STATE = {
+    termine: { label: 'Termine', color: 'var(--green)' },
+    'a-integrer': { label: 'Fait, pas encore dans l application', color: 'var(--yellow)' },
+    'en-cours': { label: 'En cours', color: 'var(--accent)' },
+    abandonne: { label: 'Abandonne', color: 'var(--subtext0)' },
+    arrete: { label: 'Arrete', color: 'var(--red)' },
+  };
+  function clairHtml() {
+    const c = ap.clair;
+    if (!c || c.loop !== clairLoop()) return '';
+    const items = (c.items || []).map(it => {
+      const st = CLAIR_STATE[it.state] || CLAIR_STATE.arrete;
+      return '<div style="border-top:1px solid var(--surface1);padding:10px 0;">'
+        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span class="ap-tag" style="background:' + st.color + ';color:var(--base);">' + esc(st.label) + '</span>'
+        + '<b>' + esc(it.titre || it.rawTitle) + '</b><span class="ap-muted">' + esc(when(it.at)) + '</span></div>'
+        + (it.fait ? '<div style="margin-top:6px;"><b>Ce qui a ete fait :</b> ' + esc(it.fait) + '</div>'
+          + '<div style="margin-top:4px;"><b>Ce que ca ameliore :</b> ' + esc(it.ameliore) + '</div>'
+          : '<div class="ap-muted" style="margin-top:6px;">' + esc(it.redaction) + '</div>')
+        + '<div style="margin-top:4px;"><b>Est-ce termine ?</b> ' + esc(it.stateText) + '</div>'
+        + (it.fait ? '<div class="ap-muted" style="margin-top:4px;font-size:11px;">' + esc(it.redaction) + '</div>' : '')
+        + '</div>';
+    }).join('');
+    return '<div class="ap-card"><div class="ap-title">En clair : ce qui a ete fait</div>'
+      + (items || '<div class="ap-muted">Rien a resumer pour l instant.</div>') + '</div>';
+  }
+
   function loopDetailHtml() {
     const d = ap.loopDetail; const id = ap.loopView;
     const back = '<button class="tab-bar-btn" data-pilot="' + esc(ap.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)">Retour aux autopilotes</button> '
@@ -201,7 +243,7 @@ import { makeLatest } from './latest.js';
           + (r.waitingUntil ? ' | reprend ' + esc(when(r.waitingUntil)) : '') + '</div>'
           + '<table class="ap-table"><thead><tr><th>Etape</th><th>Etat</th><th>Modele</th><th>Debut (duree)</th><th>Detail</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
       }).join('');
-      return head('Boucle PleinSens : ce qu elle a fait') + (runs || '<div class="ap-card ap-muted">Aucun run de la boucle.</div>')
+      return head('Boucle PleinSens : ce qu elle a fait') + clairHtml() + (runs || '<div class="ap-card ap-muted">Aucun run de la boucle.</div>')
         + '<div class="ap-card"><div class="ap-title">Journal du lanceur (08:00)</div>' + logBlock(d.log) + '</div>';
     }
     if (id === 'porte-fusion') {
@@ -326,6 +368,7 @@ import { makeLatest } from './latest.js';
         ${overview()}
         ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ''}
         ${selector()}
+        ${ap.loopView ? '' : clairHtml()}
         <div class="ap-card">
           <div class="ap-status">
             <span class="ap-dot" style="background:${st.color};"></span>

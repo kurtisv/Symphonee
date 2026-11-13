@@ -3101,7 +3101,9 @@
     pilot: "default",
     // A non-autopilot loop shown in detail (pleinsens | porte-fusion | veille), else null.
     loopView: null,
-    loopDetail: null
+    loopDetail: null,
+    // Plain-language summary ("En clair") of the loop on screen: { loop, items }.
+    clair: null
   };
   try {
     ap.pilot = localStorage.getItem("mind-autopilot-pilot") || "default";
@@ -3133,6 +3135,7 @@
     }).catch(() => {
     });
     if (ap.loopView) loadLoopDetail();
+    loadClair();
     try {
       ap.snap = await call("/api/mind/autopilot");
       ap.pilots = ap.snap.pilots || ap.pilots;
@@ -3147,6 +3150,23 @@
     paint();
   }
   var detailRequests = makeLatest();
+  var clairRequests = makeLatest();
+  var clairLoop = () => ap.loopView ? ap.loopView === "pleinsens" ? "pleinsens" : null : ap.pilot;
+  function loadClair() {
+    const loop = clairLoop();
+    const current = clairRequests.start();
+    if (!loop) {
+      ap.clair = null;
+      return Promise.resolve();
+    }
+    return fetch("/api/automation/loops/summary?loop=" + encodeURIComponent(loop), { cache: "no-store" }).then((r) => r.json()).then((d) => {
+      if (current()) {
+        ap.clair = d && d.items ? { loop, items: d.items } : null;
+        paint();
+      }
+    }).catch(() => {
+    });
+  }
   function loadLoopDetail() {
     const id = ap.loopView;
     const current = detailRequests.start();
@@ -3208,7 +3228,9 @@
       ap.loopView = id;
       ap.loopDetail = null;
       ap.message = "";
+      ap.clair = null;
       paint();
+      loadClair();
       return loadLoopDetail();
     },
     async retryNode(runId, nodeId, taskId) {
@@ -3236,8 +3258,10 @@
         detailRequests.invalidate();
         ap.loopView = null;
         ap.loopDetail = null;
+        ap.clair = null;
         if (id === ap.pilot) {
           paint();
+          loadClair();
           return;
         }
       }
@@ -3245,6 +3269,7 @@
       ap.pilot = id;
       ap.snap = null;
       ap.message = "";
+      ap.clair = null;
       ap.draftGoal = null;
       ap.draftRepo = null;
       ap.draftConsent = false;
@@ -3308,6 +3333,22 @@
     return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + m % 60 + " min";
   };
   var logBlock = (lines) => '<pre style="white-space:pre-wrap;font-size:11px;max-height:260px;overflow:auto;margin:0;">' + esc((lines || []).join("\n") || "(vide)") + "</pre>";
+  var CLAIR_STATE = {
+    termine: { label: "Termine", color: "var(--green)" },
+    "a-integrer": { label: "Fait, pas encore dans l application", color: "var(--yellow)" },
+    "en-cours": { label: "En cours", color: "var(--accent)" },
+    abandonne: { label: "Abandonne", color: "var(--subtext0)" },
+    arrete: { label: "Arrete", color: "var(--red)" }
+  };
+  function clairHtml() {
+    const c = ap.clair;
+    if (!c || c.loop !== clairLoop()) return "";
+    const items = (c.items || []).map((it) => {
+      const st = CLAIR_STATE[it.state] || CLAIR_STATE.arrete;
+      return '<div style="border-top:1px solid var(--surface1);padding:10px 0;"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span class="ap-tag" style="background:' + st.color + ';color:var(--base);">' + esc(st.label) + "</span><b>" + esc(it.titre || it.rawTitle) + '</b><span class="ap-muted">' + esc(when(it.at)) + "</span></div>" + (it.fait ? '<div style="margin-top:6px;"><b>Ce qui a ete fait :</b> ' + esc(it.fait) + '</div><div style="margin-top:4px;"><b>Ce que ca ameliore :</b> ' + esc(it.ameliore) + "</div>" : '<div class="ap-muted" style="margin-top:6px;">' + esc(it.redaction) + "</div>") + '<div style="margin-top:4px;"><b>Est-ce termine ?</b> ' + esc(it.stateText) + "</div>" + (it.fait ? '<div class="ap-muted" style="margin-top:4px;font-size:11px;">' + esc(it.redaction) + "</div>" : "") + "</div>";
+    }).join("");
+    return '<div class="ap-card"><div class="ap-title">En clair : ce qui a ete fait</div>' + (items || '<div class="ap-muted">Rien a resumer pour l instant.</div>') + "</div>";
+  }
   function loopDetailHtml() {
     const d = ap.loopDetail;
     const id = ap.loopView;
@@ -3325,7 +3366,7 @@
         const done = r.nodes.filter((n) => n.status === "completed").length;
         return '<div class="ap-card"' + (i ? ' style="opacity:.75;"' : "") + '><div class="ap-title">' + (i ? "Run precedent" : "Dernier run") + " : " + esc(r.id) + " | " + esc(RUN_LABEL[r.status] || r.status) + " | " + done + "/" + r.nodes.length + " etapes | lance " + esc(when(r.createdAt)) + (r.waitingUntil ? " | reprend " + esc(when(r.waitingUntil)) : "") + '</div><table class="ap-table"><thead><tr><th>Etape</th><th>Etat</th><th>Modele</th><th>Debut (duree)</th><th>Detail</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
       }).join("");
-      return head("Boucle PleinSens : ce qu elle a fait") + (runs || '<div class="ap-card ap-muted">Aucun run de la boucle.</div>') + '<div class="ap-card"><div class="ap-title">Journal du lanceur (08:00)</div>' + logBlock(d.log) + "</div>";
+      return head("Boucle PleinSens : ce qu elle a fait") + clairHtml() + (runs || '<div class="ap-card ap-muted">Aucun run de la boucle.</div>') + '<div class="ap-card"><div class="ap-title">Journal du lanceur (08:00)</div>' + logBlock(d.log) + "</div>";
     }
     if (id === "porte-fusion") {
       const rows = (d.candidates || []).map((c) => "<tr><td><b>" + esc(c.branch) + '</b><div class="ap-muted">' + esc(c.sha) + " | " + esc(c.source || "") + "</div></td><td>" + esc(c.status) + (c.attempts ? " (" + esc(c.attempts) + " essai(s))" : "") + "</td><td>" + esc(c.title || "") + "</td><td>" + esc(c.note || "") + (c.pr ? ' <span class="ap-tag">PR #' + esc(c.pr) + "</span>" : "") + "</td></tr>").join("");
@@ -3423,6 +3464,7 @@
         ${overview()}
         ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ""}
         ${selector()}
+        ${ap.loopView ? "" : clairHtml()}
         <div class="ap-card">
           <div class="ap-status">
             <span class="ap-dot" style="background:${st.color};"></span>

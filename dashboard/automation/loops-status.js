@@ -159,7 +159,44 @@ async function buildLoopDetail(id, { port = 3800, repoRoot }) {
   return null;
 }
 
+// Plain-language summaries ("En clair") of the latest items of one loop.
+async function buildPlainSummary(loop, { port = 3800, repoRoot }) {
+  const plain = require('./plain-summary');
+  let gate = {};
+  try { gate = JSON.parse(fs.readFileSync(path.join(repoRoot, '.ai-workspace', 'merge-gate', 'state.json'), 'utf8')); } catch (_) {}
+  // Latest gate candidate per branch; a merge record wins.
+  const byBranch = {};
+  for (const c of Object.values(gate.candidates || {})) {
+    const prev = byBranch[c.branch];
+    const last = (c.history || []).slice(-1)[0];
+    if (!prev || (c.createdAt || 0) >= (prev.createdAt || 0)) byBranch[c.branch] = { status: c.status, note: last ? last.note : null, createdAt: c.createdAt };
+  }
+  for (const m of gate.merges || []) if (m.branch) byBranch[m.branch] = { ...(byBranch[m.branch] || {}), status: m.status === 'confirmed' ? 'confirmed' : 'merged' };
+  if (loop === 'pleinsens') {
+    const d = await buildLoopDetail('pleinsens', { port, repoRoot });
+    return ((d && d.runs) || []).slice(0, 5).map((r) => ({ facts: plain.pleinsensFacts(r), item: r }));
+  }
+  if (!/^[a-z0-9-]{1,40}$/.test(String(loop))) return null;
+  const snap = await getJson(port, '/api/mind/autopilot?pilot=' + encodeURIComponent(loop));
+  if (!snap || !Array.isArray(snap.history)) return null;
+  // Discoveries that found nothing are not listed one by one.
+  const hist = snap.history.filter((h) => h.outcome !== 'no-task').slice(-8).reverse();
+  return hist.map((h) => ({ facts: plain.autopilotFacts(h, h.worktree && byBranch[h.worktree.branch]), item: h }));
+}
+
 function mountLoopsStatus(addRoute, json, { repoRoot, port = 3800 }) {
+  const plain = require('./plain-summary');
+  const summaries = plain.makeSummaries({ cacheFile: path.join(repoRoot, '.ai-workspace', 'resumes-simples.json'),
+    write: plain.codexWriter({ port, cwd: path.join(repoRoot, '.ai-workspace') }),
+    log: (m) => console.log('[en-clair] ' + m) });
+  addRoute('GET', '/api/automation/loops/summary', async (req, res) => {
+    try {
+      const loop = new URL(req.url, 'http://x').searchParams.get('loop');
+      const items = await buildPlainSummary(loop, { port, repoRoot });
+      if (!items) return json(res, { error: 'unknown loop ' + loop }, 404);
+      json(res, { loop, items: summaries.present(items) });
+    } catch (e) { json(res, { error: e.message }, 500); }
+  });
   addRoute('GET', '/api/automation/loops/detail', async (req, res) => {
     try {
       const id = new URL(req.url, 'http://x').searchParams.get('id');
@@ -174,4 +211,4 @@ function mountLoopsStatus(addRoute, json, { repoRoot, port = 3800 }) {
   });
 }
 
-module.exports = { mountLoopsStatus, buildLoops, buildLoopDetail, runView, gateView, autopilotLoop, pleinsensLoop, gateService, watchdogService };
+module.exports = { mountLoopsStatus, buildLoops, buildLoopDetail, buildPlainSummary, runView, gateView, autopilotLoop, pleinsensLoop, gateService, watchdogService };
