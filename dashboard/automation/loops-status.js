@@ -179,9 +179,16 @@ async function buildPlainSummary(loop, { port = 3800, repoRoot }) {
   if (!/^[a-z0-9-]{1,40}$/.test(String(loop))) return null;
   const snap = await getJson(port, '/api/mind/autopilot?pilot=' + encodeURIComponent(loop));
   if (!snap || !Array.isArray(snap.history)) return null;
-  // Discoveries that found nothing are not listed one by one.
-  const hist = snap.history.filter((h) => h.outcome !== 'no-task').slice(-8).reverse();
-  return hist.map((h) => ({ facts: plain.autopilotFacts(h, h.worktree && byBranch[h.worktree.branch]), item: h }));
+  // Does the merge gate take this pilot's branches? (config/merge-gate.json)
+  let gated = false;
+  try {
+    const policy = JSON.parse(fs.readFileSync(path.join(repoRoot, 'config', 'merge-gate.json'), 'utf8'));
+    gated = !!policy.enabled && (policy.repos || []).some((r) => (r.sources || []).some((s) => s.type === 'autopilot' && s.pilot === loop));
+  } catch (_) {}
+  // Discoveries that found nothing are not listed one by one. Newest first.
+  const hist = snap.history.filter((h) => h.outcome !== 'no-task')
+    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, 8);
+  return hist.map((h) => ({ facts: plain.autopilotFacts(h, h.worktree && byBranch[h.worktree.branch], { gated }), item: h }));
 }
 
 function mountLoopsStatus(addRoute, json, { repoRoot, port = 3800 }) {

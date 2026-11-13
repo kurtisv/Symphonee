@@ -20,12 +20,15 @@ const tailOf = (v, n) => { const t = String(v == null ? '' : v).trim(); return t
 // ── Facts (pure) ─────────────────────────────────────────────────────────
 // state: 'termine' (nothing left to do), 'a-integrer' (work done and approved,
 // not yet in the app), 'en-cours', 'abandonne', 'arrete'.
-function autopilotFacts(h, gateCandidate) {
+// gated: whether the merge gate handles this pilot's branches (config/merge-gate.json).
+function autopilotFacts(h, gateCandidate, { gated = true } = {}) {
   const key = 'ap:' + (h.commit || h.key || h.at);
   const base = { key, kind: 'autopilot', at: h.at, rawTitle: clip(h.title, 200), branch: h.worktree && h.worktree.branch || null };
   const g = gateCandidate && gateCandidate.status;
   if (h.outcome === 'completed') {
     if (g === 'merged' || g === 'confirmed') return { ...base, state: 'termine', stateText: 'Termine : la correction est integree a l application (fusionnee).' };
+    if (!gated) return { ...base, state: 'a-integrer', stateText: 'Correction faite, testee et approuvee par Codex. Pas encore dans l application : '
+      + 'ce depot n a pas de fusion automatique, une personne doit la relire et la fusionner.' };
     if (g === 'refused') return { ...base, state: 'arrete', stateText: 'Correction faite et approuvee, mais refusee par la porte de fusion' + (gateCandidate.note ? ' : ' + clip(gateCandidate.note, 160) : '') + '. Un humain doit decider.' };
     return { ...base, state: 'a-integrer', stateText: 'Correction faite, testee et approuvee par Codex. Pas encore dans l application : elle attend la porte de fusion'
       + (g ? ' (etat : ' + g + ')' : '') + '.' };

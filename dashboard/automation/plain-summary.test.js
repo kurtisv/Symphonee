@@ -51,3 +51,9 @@ test('summaries: one batched call for the missing items, cached, retried later o
   assert.equal(reload.present([h('a')])[0].titre, 'Titre ap:a', 'cache survives a restart');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('facts: a pilot the merge gate does not handle needs a person to merge', () => {
+  const f = p.autopilotFacts({ outcome: 'completed', title: 'T', commit: 'c', at: 'x' }, null, { gated: false });
+  assert.equal(f.state, 'a-integrer');
+  assert.match(f.stateText, /pas de fusion automatique/);
+});
