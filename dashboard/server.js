@@ -881,6 +881,8 @@ addRoute('POST', '/api/cli/pretrust', async (req, res) => {
 const orchestrator = mountOrchestrator(addRoute, json, { terminals, broadcast, repoRoot, createTerminal, getConfig, getLearnings: () => _learningsInstance, getUiContext: getUiContextWithPath });
 const { mountJobs } = require('./jobs-scheduler');
 mountJobs(addRoute, json, { repoRoot, orchestrator, broadcast });
+// One picture of every unattended loop (autopilots, PleinSens loop, merge gate, watchdog).
+require('./automation/loops-status').mountLoopsStatus(addRoute, json, { repoRoot, port: PORT });
 const { mountGit } = require('./routes/git');
 mountGit(addRoute, json, { getRepoPath, broadcast, swrGit, guard });
 const { mountFiles } = require('./routes/files');
