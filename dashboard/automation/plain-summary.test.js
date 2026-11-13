@@ -84,3 +84,21 @@ test('review 3: any cycle number, gate state for PleinSens, no completion claims
   const w = p.codexWriter({ request: async (h, port, method) => { if (method === 'POST') return { id: 'x' }; throw new Error('down'); }, pollMs: 1, maxMs: 50, now: () => (t += 10) });
   await assert.rejects(w([{ key: 'k', text: 't' }]), /too slow or unreadable/);
 });
+
+test('review 4: completion words refused; cached texts re-checked', () => {
+  const ok = { titre: 'Limites contre la triche', fait: 'Chaque personne a sa propre limite.', ameliore: 'Les prix sont plus fiables.' };
+  for (const bad of ['Tout est fini et integre.', 'Le travail est acheve.', 'La correction est complete.', 'Tout est pret.'])
+    assert.equal(p.parseWording(JSON.stringify({ ...ok, ameliore: bad })), null, bad);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clair-old-'));
+  const h = { facts: p.autopilotFacts({ outcome: 'completed', title: 'a', commit: 'a', at: 'x' }, null), item: { title: 'a', objective: 'o' } };
+  const m0 = p.makeSummaries({ cacheFile: path.join(dir, 'c.json'), write: async () => ({ text: '[]', by: 'x' }) });
+  const hash = Object.keys(m0._cache()).length; void hash;
+  // An old cache entry written before the stricter check:
+  const crypto = require('crypto');
+  const text = p.sourceText(h.facts, h.item);
+  const old = { [h.facts.key]: { titre: 'T', fait: 'La correction est terminee et fusionnee.', ameliore: 'Mieux.', by: 'x', hash: crypto.createHash('sha256').update(text).digest('hex').slice(0, 16) } };
+  fs.writeFileSync(path.join(dir, 'c.json'), JSON.stringify(old));
+  const m = p.makeSummaries({ cacheFile: path.join(dir, 'c.json'), write: async () => ({ text: '[]', by: 'x' }) });
+  assert.equal(m.present([h])[0].fait, null, 'old text hidden by the current check');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

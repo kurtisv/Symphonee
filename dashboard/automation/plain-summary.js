@@ -106,7 +106,7 @@ function parseWording(raw) {
     if (texts.some((t) => /[\w-]+\.(ts|tsx|js|json|md|py|sql|env|ya?ml)\b|(^|\s)\.env\b|`|\(\)|=>|[A-Za-z]:\\|\\[\w.-]+\\|\b[\w.-]{3,}\/[\w.-]{3,}|\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b|\b[a-z0-9]+_[a-z0-9_]+\b/.test(t))) return null;
     // The finished / merged state is computed by code and shown apart: a
     // sentence claiming it (e.g. injected through a report) is refused.
-    if (texts.some((t) => /fusionn|termin[eé]|int[eé]gr[eé]e? (a|à|dans) l.?application|d[eé]ploy|en production|mis(e)? en ligne|publi[eé]/i.test(t))) return null;
+    if (texts.some((t) => /fusionn|termin[eé]|\bfini(e|s|es)?\b|achev|int[eé]gr|d[eé]ploy|en production|mis(e)? en ligne|publi[eé]|\bcomplet(e|s|es)?\b|\btout est (fait|regle|réglé|pr[eê]t)/i.test(t))) return null;
     return { titre: j.titre.trim(), fait: j.fait.trim(), ameliore: j.ameliore.trim() };
   } catch (_) { return null; }
 }
@@ -189,8 +189,14 @@ function makeSummaries({ cacheFile, write, log = () => {}, now = Date.now }) {
       if (facts.noReport) { out.push({ ...facts, titre: null, fait: null, ameliore: null, redaction: 'Aucune etape terminee : rien a resumer.' }); continue; }
       const text = sourceText(facts, item); const hash = hashOf(text);
       const c = cache[facts.key];
-      const fresh = c && c.hash === hash && !c.failed ? c : null;
-      if (!c || c.hash !== hash) { if (!queue.some((q) => q.key === facts.key)) queue.push({ key: facts.key, hash, text }); }
+      // Cached texts go through the CURRENT check again: a rule added later also
+      // hides texts written before it.
+      const valid = c && c.hash === hash && !c.failed && parseWording(JSON.stringify({ titre: c.titre, fait: c.fait, ameliore: c.ameliore }));
+      const fresh = valid ? c : null;
+      // An old text refused by the current check is written again (once: a new
+      // refusal is cached as failed).
+      if (c && c.hash === hash && !c.failed && !valid) { delete cache[facts.key]; save(); }
+      if (!cache[facts.key] || cache[facts.key].hash !== hash) { if (!queue.some((q) => q.key === facts.key)) queue.push({ key: facts.key, hash, text }); }
       out.push({ ...facts, titre: fresh ? fresh.titre : null, fait: fresh ? fresh.fait : null, ameliore: fresh ? fresh.ameliore : null,
         redaction: fresh ? 'Texte redige automatiquement par ' + fresh.by + ' a partir du rapport de la tache ; l etat ci-dessus est calcule, pas redige.'
           : (c && c.failed && c.hash === hash ? 'Resume indisponible pour cette tache (texte refuse par le controle).' : 'Resume en preparation.') });

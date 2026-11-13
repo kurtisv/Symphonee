@@ -174,12 +174,16 @@ async function buildPlainSummary(loop, { port = 3800, repoRoot }) {
   for (const m of gate.merges || []) if (m.branch) byBranch[m.branch] = { ...(byBranch[m.branch] || {}), status: m.status === 'confirmed' ? 'confirmed' : 'merged' };
   if (loop === 'pleinsens') {
     const d = await buildLoopDetail('pleinsens', { port, repoRoot });
-    // The loop's branch in the merge gate (source pleinsens-loop), latest record.
-    const loopCand = Object.values(gate.candidates || {}).filter((c) => c.source === 'pleinsens-loop')
-      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
-    const loopGate = loopCand ? byBranch[loopCand.branch] : null;
-    // Only the most recent run can be the one the gate holds; older runs keep their own outcome.
-    return ((d && d.runs) || []).slice(0, 5).map((r, i) => ({ facts: plain.pleinsensFacts(r, i === 0 ? loopGate : null), item: r }));
+    // Each cycle's OWN gate record: the gate stores the run it came from (origin.run).
+    // All cycles share one branch, so a branch-level status would mix cycles.
+    const gateOfRun = (runId) => {
+      const c = Object.values(gate.candidates || {}).filter((x) => x.source === 'pleinsens-loop' && x.origin && x.origin.run === runId)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+      if (!c) return null;
+      const last = (c.history || []).slice(-1)[0];
+      return { status: c.status, note: last ? last.note : null };
+    };
+    return ((d && d.runs) || []).slice(0, 5).map((r) => ({ facts: plain.pleinsensFacts(r, gateOfRun(r.id)), item: r }));
   }
   if (!/^[a-z0-9-]{1,40}$/.test(String(loop))) return null;
   const snap = await getJson(port, '/api/mind/autopilot?pilot=' + encodeURIComponent(loop));
