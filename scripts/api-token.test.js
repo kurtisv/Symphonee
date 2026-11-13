@@ -2,23 +2,34 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs'); const os = require('os'); const path = require('path');
-const { resolveToken } = require('./api-token');
+const { resolveToken, writerRunning } = require('./api-token');
 
-test('runtime.json wins only while the Symphonee that wrote it is running', () => {
+const W = '2026-11-13T15:53:03.605Z';
+const ms = (iso) => Date.parse(iso);
+
+test('writerRunning: live pid that started just before the file, not a reused or dead pid', () => {
+  const at = (iso) => () => ms(iso);
+  assert.equal(writerRunning(4144, W, at('2026-11-13T15:53:03.275Z')), true, 'started 0.3 s before writing');
+  assert.equal(writerRunning(4144, W, at('2026-11-13T16:20:00.000Z')), false, 'pid reused by a later process');
+  assert.equal(writerRunning(4144, W, at('2026-11-12T09:00:00.000Z')), false, 'started long before: not the writer');
+  assert.equal(writerRunning(4144, W, () => null), false, 'dead pid');
+  assert.equal(writerRunning(NaN, W, at(W)), false, 'no pid');
+  assert.equal(writerRunning(4144, undefined, at(W)), false, 'no startedAt');
+});
+
+test('resolveToken: the file only while its writer runs, else the environment', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tok-'));
   const rt = path.join(dir, 'runtime.json');
   const env = { SYMPHONEE_TOKEN: 'from-env' };
-  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file', pid: 4242 }));
-  assert.equal(resolveToken({ runtimePath: rt, env, isAlive: () => true }), 'from-file', 'live server: its file is current');
-  assert.equal(resolveToken({ runtimePath: rt, env, isAlive: () => false }), 'from-env', 'dead writer: stale file ignored (the 403 case)');
-  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file' }));
-  assert.equal(resolveToken({ runtimePath: rt, env, isAlive: () => true }), 'from-env', 'no pid: not trusted');
+  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file', pid: 4242, startedAt: W }));
+  assert.equal(resolveToken({ runtimePath: rt, env, isWriterRunning: () => true }), 'from-file');
+  assert.equal(resolveToken({ runtimePath: rt, env, isWriterRunning: () => false }), 'from-env', 'stale file ignored (the 403 case)');
   assert.equal(resolveToken({ runtimePath: path.join(dir, 'absent.json'), env }), 'from-env');
   assert.equal(resolveToken({ runtimePath: path.join(dir, 'absent.json'), env: {} }), '');
-  // Real pid check: this process is alive, a huge pid is not.
-  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file', pid: process.pid }));
-  assert.equal(resolveToken({ runtimePath: rt, env }), 'from-file');
-  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file', pid: 999999 }));
-  assert.equal(resolveToken({ runtimePath: rt, env }), 'from-env');
+  // Real check against this very process: it is alive and started before "now".
+  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file', pid: process.pid, startedAt: new Date().toISOString() }));
+  assert.equal(resolveToken({ runtimePath: rt, env }), 'from-file', 'real live writer');
+  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file', pid: process.pid, startedAt: '2020-01-01T00:00:00Z' }));
+  assert.equal(resolveToken({ runtimePath: rt, env }), 'from-env', 'real process, but it did not write that old file');
   fs.rmSync(dir, { recursive: true, force: true });
 });
