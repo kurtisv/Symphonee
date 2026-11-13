@@ -274,3 +274,33 @@ test('retryNode re-checks the run after its ownership lookup (cancel during the 
     assert.equal(run.status, 'cancelled');
   } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
 });
+
+test('an adopted task that fails, then a fallback worker: the adoption is dropped', async () => {
+  const spawns = [];
+  const server = http.createServer((req, res) => {
+    let s = ''; req.on('data', (c) => { s += c; });
+    req.on('end', () => {
+      if (req.url === '/api/orchestrator/spawn') { spawns.push(JSON.parse(s)); return res.end(JSON.stringify({ id: 'fresh' + spawns.length })); }
+      if (req.url === '/api/models/recommend') return res.end(JSON.stringify({ cli: 'claude', model: 'opus' }));
+      const id = req.url.split('id=')[1];
+      if (id === 'old') return res.end(JSON.stringify({ state: 'failed', error: 'rate limit reached' }));
+      return res.end(JSON.stringify({ state: 'completed', result: 'ok ' + id }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: server.address().port });
+    engine.windowStateFn = () => CLOSED;
+    const run = await engine.createRun({ name: 'f', schedule: SCHED, nodes: [{ id: 'a', type: 'worker', cli: 'codex', prompt: 'a' }] });
+    await waitFor(() => run.waitingWindow);
+    run.nodes[0].adoptTaskId = 'old';
+    engine.windowStateFn = () => OPEN;
+    await engine._executeNextBatch(run.id);
+    assert.equal(run.nodes[0].status, 'completed');
+    assert.equal(spawns.length, 1, 'one fallback worker');
+    assert.equal(run.nodes[0].adoptTaskId, undefined);
+    assert.equal(run.nodes[0].taskId, 'fresh1');
+    for (const t of engine.windowTimers.values()) clearTimeout(t);
+  } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});

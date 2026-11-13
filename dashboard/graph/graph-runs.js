@@ -518,6 +518,9 @@ class GraphRunsEngine extends EventEmitter {
       // Kept on the node (persisted) until it settles, so a restart during the
       // adoption adopts again instead of spawning a new worker.
       const adopted = attempt === 0 && node.adoptTaskId ? node.adoptTaskId : null;
+      // A real spawn replaces any adoption (the adopted task failed and the
+      // router moved on): never re-adopt it after a restart.
+      if (!adopted) delete node.adoptTaskId;
       const spawnRes = adopted ? { id: adopted }
         : await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
       if (spawnRes && spawnRes.__error) {
