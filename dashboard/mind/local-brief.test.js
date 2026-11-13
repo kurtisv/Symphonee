@@ -29,3 +29,14 @@ test('brief: local model hints parsed; skipped on low RAM, failure or no model',
   assert.equal(none.hints, null); assert.ok(none.extract);
   assert.equal(parseHints('no json'), null);
 });
+
+test('postJson: absolute deadline even when the server keeps streaming', async () => {
+  const http = require('http');
+  const { postJson } = require('./local-brief');
+  const srv = http.createServer((req, res) => { res.writeHead(200); const t = setInterval(() => res.write(' '), 50); res.on('close', () => clearInterval(t)); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const t0 = Date.now();
+  await assert.rejects(postJson('http://127.0.0.1:' + srv.address().port + '/v1/chat/completions', {}, 400), /timeout after 400 ms/);
+  assert.ok(Date.now() - t0 < 2000);
+  srv.close();
+});

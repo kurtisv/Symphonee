@@ -48,11 +48,17 @@ function postJson(url, body, timeoutMs) {
       let buf = ''; res.on('data', (c) => { buf += c; });
       res.on('end', () => {
         if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error('HTTP ' + res.statusCode + ' ' + buf.slice(0, 120)));
+        clearTimeout(deadline);
         try { resolve(JSON.parse(buf)); } catch (_) { reject(new Error('invalid JSON')); }
       });
     });
-    req.on('timeout', () => req.destroy(new Error('timeout after ' + timeoutMs + ' ms')));
-    req.on('error', reject);
+    // Absolute deadline: the socket idle timeout alone lets a slowly streaming
+    // answer run past it, which would hold the autopilot tick.
+    const deadline = setTimeout(() => req.destroy(new Error('timeout after ' + timeoutMs + ' ms')), timeoutMs);
+    deadline.unref?.();
+    req.on('timeout', () => req.destroy(new Error('idle timeout after ' + timeoutMs + ' ms')));
+    req.on('error', (e) => { clearTimeout(deadline); reject(e); });
+    req.on('close', () => clearTimeout(deadline));
     req.end(data);
   });
 }
@@ -106,4 +112,4 @@ function briefText(b) {
     'Extract (' + b.lines + '/' + b.total + ' lines):\n' + b.extract].filter(Boolean).join('\n');
 }
 
-module.exports = { extractPriorities, buildBrief, briefText, parseHints };
+module.exports = { extractPriorities, buildBrief, briefText, parseHints, postJson };

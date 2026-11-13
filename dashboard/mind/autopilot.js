@@ -189,7 +189,8 @@ function validLocalBrief(d) {
   const baseUrl = String(d.baseUrl || 'http://127.0.0.1:1234');
   if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(baseUrl)) return null;
   return { model: String(d.model).slice(0, 100), baseUrl,
-    timeoutMs: Math.min(Math.max(Number(d.timeoutMs) || 240000, 10000), 600000),
+    // The brief is awaited inside the tick: at most 5 minutes, then skipped.
+    timeoutMs: Math.min(Math.max(Number(d.timeoutMs) || 240000, 10000), 300000),
     loadRamMB: Math.min(Math.max(Number(d.loadRamMB) || 7000, 500), 32000) };
 }
 function validBaseRef(ref) {
