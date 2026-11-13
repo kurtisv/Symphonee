@@ -99,8 +99,16 @@ function event({ message, level = 'info', tags = {}, extra = {}, fingerprint, lo
 // A cron check-in. With `monitor` the monitor is created or updated on the
 // fly (upsert): schedule (crontab string), margin and maxRuntime in minutes,
 // timezone (IANA). status: in_progress | ok | error.
+// Allow-list of monitors (config "monitors": [...]): a Sentry plan has a limited
+// number of cron seats; check-ins for other slugs are skipped instead of
+// creating disabled monitors. No list = every slug is allowed.
+function allowedMonitors() {
+  try { const m = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).monitors; return Array.isArray(m) ? m : null; } catch (_) { return null; }
+}
 function checkIn({ slug, status, checkInId, durationSec, monitor } = {}, opts = {}) {
   if (!SLUG.test(String(slug || ''))) return Promise.resolve({ ok: false, error: 'invalid monitor slug' });
+  const allow = opts.monitors !== undefined ? opts.monitors : (opts.dsn ? null : allowedMonitors());
+  if (allow && !allow.includes(slug)) return Promise.resolve({ ok: false, skipped: 'monitor not enabled: ' + slug });
   if (!['in_progress', 'ok', 'error'].includes(status)) return Promise.resolve({ ok: false, error: 'invalid status' });
   const id = checkInId || crypto.randomBytes(16).toString('hex');
   const payload = { check_in_id: id, monitor_slug: slug, status, environment: 'symphonee',

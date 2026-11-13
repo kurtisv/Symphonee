@@ -71,3 +71,11 @@ test('invalid slug, status or DSN are refused without throwing; transport errors
   assert.equal(sentry.dailyCrontab('22:00'), '0 22 * * *');
   assert.equal(sentry.dailyCrontab('7h'), null);
 });
+
+test('check-ins outside the monitor allow-list are skipped (limited cron seats)', async () => {
+  const c = capture();
+  const r = await sentry.checkIn({ slug: 'autopilote-x', status: 'ok' }, { dsn: DSN, transport: c.transport, monitors: ['porte-fusion'] });
+  assert.equal(r.ok, false); assert.match(r.skipped, /not enabled/);
+  assert.equal(c.sent.length, 0);
+  assert.equal((await sentry.checkIn({ slug: 'porte-fusion', status: 'ok' }, { dsn: DSN, transport: c.transport, monitors: ['porte-fusion'] })).ok, true);
+});
