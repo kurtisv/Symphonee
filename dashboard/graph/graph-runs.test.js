@@ -227,3 +227,26 @@ test('a pending node keeps its adopted task across a restart', async () => {
     for (const t of e2.windowTimers.values()) clearTimeout(t);
   } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
 });
+
+test('a run definition cannot pre-set an adopted task; a hardEnd stop drops the adoption', async () => {
+  const api = fakeApi(); await api.listen();
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: api.port() });
+    const run = await engine.createRun({ name: 'x', nodes: [{ id: 'a', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a', adoptTaskId: 'foreign', taskId: 'foreign' }] });
+    await waitFor(() => run.status === 'completed');
+    assert.equal(api.calls.spawns.length, 1, 'a real worker was spawned, the foreign task ignored');
+    assert.equal(run.nodes[0].taskId, 'task-1');
+
+    api.setTaskState('running');
+    let w = OPEN;
+    engine.windowStateFn = () => w;
+    const r2 = await engine.createRun({ name: 'y', schedule: SCHED, nodes: [{ id: 'b', type: 'worker', cli: 'codex', noFallback: true, prompt: 'b' }] });
+    await waitFor(() => r2.nodes[0].status === 'running');
+    r2.nodes[0].adoptTaskId = r2.nodes[0].taskId || 'task-2';
+    w = { ...CLOSED, inHard: false };
+    await waitFor(() => r2.nodes[0].status === 'pending' && r2.nodes[0].windowStops === 1);
+    assert.equal(r2.nodes[0].adoptTaskId, undefined, 'the cancelled task is not adopted next window');
+    for (const t of engine.windowTimers.values()) clearTimeout(t);
+  } finally { api.server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});

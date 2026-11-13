@@ -129,6 +129,10 @@ class GraphRunsEngine extends EventEmitter {
         endedAt: null,
         output: null,
         error: null,
+        // Engine-owned fields: a run definition can never pre-set them (an
+        // adopted task is only accepted through retryNode's ownership checks).
+        taskId: null,
+        adoptTaskId: undefined,
       })),
       events: [],
     };
@@ -461,6 +465,7 @@ class GraphRunsEngine extends EventEmitter {
         // Stopped at the window's hardEnd: not a failure. Back to pending; it
         // starts again from the beginning in the next window.
         node.status = 'pending'; node.error = null; node.startedAt = null;
+        delete node.adoptTaskId; // its task was cancelled at hardEnd: start fresh next window
         node.windowStops = (node.windowStops || 0) + 1; node.lastWindowStopAt = Date.now();
         this._wal({ kind: 'node_window_stopped', runId: run.id, nodeId: node.id, stops: node.windowStops });
         this._notify(run, 'warning', 'Etape ' + node.id + ' arretee en fin de fenetre (' + run.schedule.hardEnd + '), reprise a la prochaine fenetre',
