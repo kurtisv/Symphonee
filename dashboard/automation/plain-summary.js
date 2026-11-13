@@ -21,12 +21,23 @@ const tailOf = (v, n) => { const t = String(v == null ? '' : v).trim(); return t
 // state: 'termine' (nothing left to do), 'a-integrer' (work done and approved,
 // not yet in the app), 'en-cours', 'abandonne', 'arrete'.
 // gated: whether the merge gate handles this pilot's branches (config/merge-gate.json).
+// After the merge gate merged a change: confirmed (tests green after the merge),
+// still being checked, or failed after the merge (a person must step in).
+function afterMerge(g, note, what) {
+  if (g === 'confirmed') return { state: 'termine', stateText: 'Termine : ' + what + ' est integree a l application, et les tests sont restes verts apres la fusion.' };
+  if (g === 'merged') return { state: 'en-cours', stateText: what.charAt(0).toUpperCase() + what.slice(1) + ' est fusionnee ; la verification des tests apres la fusion est en cours.' };
+  if (g === 'failed-after-merge') return { state: 'arrete', stateText: what.charAt(0).toUpperCase() + what.slice(1) + ' a ete fusionnee, mais les tests ont echoue juste apres'
+    + (note ? ' (' + clip(note, 160) + ')' : '') + '. La porte de fusion s est arretee et a propose de l annuler : une personne doit intervenir.' };
+  return null;
+}
+
 function autopilotFacts(h, gateCandidate, { gated = true } = {}) {
   const key = 'ap:' + (h.commit || h.key || h.at);
   const base = { key, kind: 'autopilot', at: h.at, rawTitle: clip(h.title, 200), branch: h.worktree && h.worktree.branch || null };
   const g = gateCandidate && gateCandidate.status;
   if (h.outcome === 'completed') {
-    if (g === 'merged' || g === 'confirmed') return { ...base, state: 'termine', stateText: 'Termine : la correction est integree a l application (fusionnee).' };
+    const merged = afterMerge(g, gateCandidate && gateCandidate.note, 'la correction');
+    if (merged) return { ...base, ...merged };
     if (!gated) return { ...base, state: 'a-integrer', stateText: 'Correction faite, testee et approuvee par Codex. Pas encore dans l application : '
       + 'ce depot n a pas de fusion automatique, une personne doit la relire et la fusionner.' };
     if (g === 'refused') return { ...base, state: 'arrete', stateText: 'Correction faite et approuvee, mais refusee par la porte de fusion' + (gateCandidate.note ? ' : ' + clip(gateCandidate.note, 160) : '') + '. Un humain doit decider.' };
@@ -60,7 +71,8 @@ function pleinsensFacts(run, gateCandidate) {
   if (run.status === 'failed') return { ...base, state: 'arrete', stateText: 'Arrete sur une erreur (' + done + '/' + total + ' etapes).' };
   if (statusOf(run, 'consigner-garde') === 'completed') {
     const g = gateCandidate && gateCandidate.status;
-    if (g === 'merged' || g === 'confirmed') return { ...base, state: 'termine', stateText: 'Termine : l amelioration mesuree et gardee est integree a l application (fusionnee).' };
+    const merged = afterMerge(g, gateCandidate && gateCandidate.note, 'l amelioration mesuree et gardee');
+    if (merged) return { ...base, ...merged };
     if (g === 'refused') return { ...base, state: 'arrete', stateText: 'Amelioration gardee, mais refusee par la porte de fusion' + (gateCandidate.note ? ' : ' + clip(gateCandidate.note, 160) : '') + '. Un humain doit decider.' };
     return { ...base, state: 'a-integrer', stateText: 'Amelioration mesuree et gardee. Pas encore dans l application : elle attend la porte de fusion' + (g ? ' (etat : ' + g + ')' : '') + '.' };
   }

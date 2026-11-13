@@ -164,25 +164,24 @@ async function buildPlainSummary(loop, { port = 3800, repoRoot }) {
   const plain = require('./plain-summary');
   let gate = {};
   try { gate = JSON.parse(fs.readFileSync(path.join(repoRoot, '.ai-workspace', 'merge-gate', 'state.json'), 'utf8')); } catch (_) {}
-  // Latest gate candidate per branch; a merge record wins.
-  const byBranch = {};
-  for (const c of Object.values(gate.candidates || {})) {
-    const prev = byBranch[c.branch];
+  // A candidate's state as the facts need it: its merge record (keyed by the
+  // candidate key) wins, so a red CI after a merge is never shown as finished.
+  const gateFacts = (c) => {
+    if (!c) return null;
     const last = (c.history || []).slice(-1)[0];
-    if (!prev || (c.createdAt || 0) >= (prev.createdAt || 0)) byBranch[c.branch] = { status: c.status, note: last ? last.note : null, createdAt: c.createdAt };
-  }
-  for (const m of gate.merges || []) if (m.branch) byBranch[m.branch] = { ...(byBranch[m.branch] || {}), status: m.status === 'confirmed' ? 'confirmed' : 'merged' };
+    const m = (gate.merges || []).filter((x) => x.key === c.key).slice(-1)[0];
+    if (m && m.status === 'failed-after-merge') return { status: 'failed-after-merge', note: (gate.stopped && gate.stopped.reason) || 'tests rouges apres la fusion' };
+    if (m && m.status === 'confirmed') return { status: 'confirmed', note: null };
+    if (m) return { status: 'merged', note: null };
+    return { status: c.status, note: last ? last.note : null };
+  };
+  const latest = (list) => list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  const cands = Object.values(gate.candidates || {});
   if (loop === 'pleinsens') {
     const d = await buildLoopDetail('pleinsens', { port, repoRoot });
     // Each cycle's OWN gate record: the gate stores the run it came from (origin.run).
     // All cycles share one branch, so a branch-level status would mix cycles.
-    const gateOfRun = (runId) => {
-      const c = Object.values(gate.candidates || {}).filter((x) => x.source === 'pleinsens-loop' && x.origin && x.origin.run === runId)
-        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
-      if (!c) return null;
-      const last = (c.history || []).slice(-1)[0];
-      return { status: c.status, note: last ? last.note : null };
-    };
+    const gateOfRun = (runId) => gateFacts(latest(cands.filter((x) => x.source === 'pleinsens-loop' && x.origin && x.origin.run === runId)));
     return ((d && d.runs) || []).slice(0, 5).map((r) => ({ facts: plain.pleinsensFacts(r, gateOfRun(r.id)), item: r }));
   }
   if (!/^[a-z0-9-]{1,40}$/.test(String(loop))) return null;
@@ -197,7 +196,8 @@ async function buildPlainSummary(loop, { port = 3800, repoRoot }) {
   // Discoveries that found nothing are not listed one by one. Newest first.
   const hist = snap.history.filter((h) => h.outcome !== 'no-task')
     .sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, 8);
-  return hist.map((h) => ({ facts: plain.autopilotFacts(h, h.worktree && byBranch[h.worktree.branch], { gated }), item: h }));
+  const gateOfBranch = (branch) => branch ? gateFacts(latest(cands.filter((x) => x.branch === branch))) : null;
+  return hist.map((h) => ({ facts: plain.autopilotFacts(h, gateOfBranch(h.worktree && h.worktree.branch), { gated }), item: h }));
 }
 
 function mountLoopsStatus(addRoute, json, { repoRoot, port = 3800 }) {

@@ -8,7 +8,9 @@ test('facts: finished or not is computed by code from outcome and merge gate', (
   const h = { outcome: 'completed', title: 'T', commit: 'c1', at: 'x', worktree: { branch: 'b' } };
   assert.equal(p.autopilotFacts(h, { status: 'new' }).state, 'a-integrer');
   assert.match(p.autopilotFacts(h, null).stateText, /Pas encore dans l application/);
-  assert.equal(p.autopilotFacts(h, { status: 'merged' }).state, 'termine');
+  assert.equal(p.autopilotFacts(h, { status: 'merged' }).state, 'en-cours');
+  assert.equal(p.autopilotFacts(h, { status: 'confirmed' }).state, 'termine');
+  assert.equal(p.autopilotFacts(h, { status: 'failed-after-merge', note: 'CI rouge' }).state, 'arrete');
   assert.equal(p.autopilotFacts(h, { status: 'refused', note: 'CI rouge' }).state, 'arrete');
   assert.equal(p.autopilotFacts({ ...h, outcome: 'plan-rejected' }).state, 'abandonne');
   assert.equal(p.autopilotFacts({ ...h, outcome: 'interrupted' }).state, 'arrete');
@@ -72,7 +74,8 @@ test('a run with no finished step is not sent to the writer', async () => {
 test('review 3: any cycle number, gate state for PleinSens, no completion claims, paths refused, bounded polling', async () => {
   const run = (done) => ({ id: 'gr', status: 'completed', cycle: 2, nodes: [{ id: done, status: 'completed' }] });
   assert.equal(p.pleinsensFacts(run('c2-consigner-garde')).state, 'a-integrer');
-  assert.equal(p.pleinsensFacts(run('c2-consigner-garde'), { status: 'merged' }).state, 'termine');
+  assert.equal(p.pleinsensFacts(run('c2-consigner-garde'), { status: 'confirmed' }).state, 'termine');
+  assert.match(p.pleinsensFacts(run('c2-consigner-garde'), { status: 'failed-after-merge' }).stateText, /une personne doit intervenir/);
   assert.equal(p.pleinsensFacts(run('c2-consigner-garde'), { status: 'refused', note: 'CI' }).state, 'arrete');
   assert.match(p.pleinsensFacts(run('c3-consigner-rejet')).stateText, /essaye et mesure/);
   const ok = { titre: 'Limites contre la triche', fait: 'Chaque personne a sa propre limite.', ameliore: 'Les prix sont plus fiables.' };
