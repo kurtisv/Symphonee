@@ -5,6 +5,7 @@
 // Build: node scripts/build-renderer.js
 import { $, state } from './core.js';
 import { escapeHtml } from './helpers.js';
+import { makeLatest } from './latest.js';
 
   const STATUS = {
     disabled:    { label: 'Desactive',  color: 'var(--subtext0)', hint: 'Le pilote ne lance rien.' },
@@ -56,11 +57,13 @@ import { escapeHtml } from './helpers.js';
     paint();
   }
 
+  const detailRequests = makeLatest();
   function loadLoopDetail() {
     const id = ap.loopView;
+    const current = detailRequests.start(); // an older answer never paints over a newer request
     return fetch('/api/automation/loops/detail?id=' + encodeURIComponent(id), { cache: 'no-store' })
-      .then(r => r.json()).then(d => { if (ap.loopView === id) { ap.loopDetail = d; paint(); } })
-      .catch(e => { if (ap.loopView === id) { ap.loopDetail = { error: e.message }; paint(); } });
+      .then(r => r.json()).then(d => { if (current()) { ap.loopDetail = d; paint(); } })
+      .catch(e => { if (current()) { ap.loopDetail = { error: e.message }; paint(); } });
   }
 
   async function act(label, fn) {
@@ -105,7 +108,7 @@ import { escapeHtml } from './helpers.js';
     },
     select(id) {
       if (ap.busy) return;
-      if (ap.loopView) { ap.loopView = null; ap.loopDetail = null; if (id === ap.pilot) { paint(); return; } }
+      if (ap.loopView) { detailRequests.invalidate(); ap.loopView = null; ap.loopDetail = null; if (id === ap.pilot) { paint(); return; } }
       if (id === ap.pilot) return;
       ap.pilot = id; ap.snap = null; ap.message = ''; ap.draftGoal = null; ap.draftRepo = null; ap.draftConsent = false;
       try { localStorage.setItem('mind-autopilot-pilot', id); } catch (_) {}

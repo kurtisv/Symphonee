@@ -3042,6 +3042,20 @@
     alert(lines.join("\n"));
   }
 
+  // dashboard/public/mind-ui/src/latest.js
+  function makeLatest() {
+    let seq = 0;
+    return {
+      start() {
+        const ticket = ++seq;
+        return () => ticket === seq;
+      },
+      invalidate() {
+        seq++;
+      }
+    };
+  }
+
   // dashboard/public/mind-ui/src/autopilot.js
   var STATUS = {
     disabled: { label: "Desactive", color: "var(--subtext0)", hint: "Le pilote ne lance rien." },
@@ -3132,15 +3146,17 @@
     }
     paint();
   }
+  var detailRequests = makeLatest();
   function loadLoopDetail() {
     const id = ap.loopView;
+    const current = detailRequests.start();
     return fetch("/api/automation/loops/detail?id=" + encodeURIComponent(id), { cache: "no-store" }).then((r) => r.json()).then((d) => {
-      if (ap.loopView === id) {
+      if (current()) {
         ap.loopDetail = d;
         paint();
       }
     }).catch((e) => {
-      if (ap.loopView === id) {
+      if (current()) {
         ap.loopDetail = { error: e.message };
         paint();
       }
@@ -3217,6 +3233,7 @@
     select(id) {
       if (ap.busy) return;
       if (ap.loopView) {
+        detailRequests.invalidate();
         ap.loopView = null;
         ap.loopDetail = null;
         if (id === ap.pilot) {
