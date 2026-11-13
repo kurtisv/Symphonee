@@ -789,7 +789,7 @@ class MindAutopilot {
     this.state.nextAt = Date.now() + (outcome === 'completed' ? 10 : 30) * 60_000;
     this.save();
   }
-  advance(raw) {
+  advance(raw, now = Date.now()) {
     const a = this.state.active;
     if (a.stage === 'discover') {
       const plan = parsePlan(raw);
@@ -803,14 +803,14 @@ class MindAutopilot {
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
       a.plan = plan;
       this.log('plan', '[' + plan.category + '] ' + plan.title);
-      return this.dispatch('plan-review');
+      return this.dispatch('plan-review', now);
     }
     if (a.stage === 'plan-review') {
       const v = verdict(raw);
       this.log('decision', 'Codex plan review: ' + (v || 'NO VERDICT'));
       if (v === 'PASS') {
         a.planVerdict = String(raw || '').slice(0, 6000); a.planVerdictAt = new Date().toISOString();
-        return this.dispatch('implement');
+        return this.dispatch('implement', now);
       }
       a.planRevisions++;
       if (a.planRevisions > this.limits.planRevisions) {
@@ -821,7 +821,7 @@ class MindAutopilot {
         throw new Error('Plan rejected after the allowed revision: ' + String(raw).slice(0, 500));
       }
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
-      return this.dispatch('discover');
+      return this.dispatch('discover', now);
     }
     if (a.stage === 'implement' || a.stage === 'repair') {
       // Claude's tools are confined to the worktree, but this is not an OS
@@ -837,7 +837,7 @@ class MindAutopilot {
       // The deep profile always passes through the gate: the diff lint runs
       // even when the repository has no check command configured.
       if (this.def.verify.length || this.profile.deep) return this.startVerify();
-      return this.dispatch('code-review');
+      return this.dispatch('code-review', now);
     }
     if (a.stage === 'code-review') {
       if (worktreeFingerprint(a.worktree.path) !== a.reviewFingerprint) {
@@ -853,7 +853,7 @@ class MindAutopilot {
       // Keep every rejection: the reason of each repair stays visible after restarts.
       a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 3000) }].slice(-6);
       if (a.repairs > this.limits.repairs) throw new Error('Code review rejected after max repairs: ' + String(raw).slice(0, 500));
-      return this.dispatch('repair');
+      return this.dispatch('repair', now);
     }
   }
   // Token-free gate between an implementation and its Codex review: the diff
@@ -990,7 +990,7 @@ class MindAutopilot {
         if (t.state === 'completed') {
           budget.settleCall(this.state, a.budgetRef, t);
           a.budgetRef = null; this.save();
-          this.advance(t.result);
+          this.advance(t.result, now);
         } else if (!['running', 'pending', 'queued'].includes(t.state)) {
           budget.settleCall(this.state, a.budgetRef, t);
           if (isCreditLimit(t.error || t.result)) return this.parkForCredit(a, String(t.error || t.result || t.state), now);
