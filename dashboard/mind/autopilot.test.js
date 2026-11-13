@@ -7,6 +7,11 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { MindAutopilot, parsePlan, verdict, localTriage, WORK_CATEGORIES } = require('./autopilot');
 const { LIMITS } = require('./autopilot-budget');
+// Hermetic: the adaptive capacity never reads this machine's real usage in
+// tests. Default reading: both subscriptions fresh and almost unused.
+const FRESH_USAGE = () => { const at = Date.now(); const w = [{ name: '5 h', usedPct: 0, resetsAt: at + 3600000 }];
+  return { claude: { windows: w, readAt: at, source: 'test' }, codex: { windows: w, readAt: at, source: 'test' } }; };
+MindAutopilot.prototype.readUsage = FRESH_USAGE;
 const completedToday = (at) => Array.from({ length: LIMITS.dailyCompletions }, () => ({ at, outcome: 'completed' }));
 
 const goodPlan = { decision: 'TASK', category: 'correctness',
@@ -169,6 +174,7 @@ test('completed quality work preserves category and independent review evidence 
 test('two completed tasks block additional discoveries until the next local day', async () => {
   const f = fixture();
   try {
+    f.pilot.def.capacity = false; // the fixed daily limit, when the adaptive capacity is off
     const today = new Date().toISOString();
     f.pilot.state.history.push(...completedToday(today));
     f.pilot.configure({ enabled: true, goal: 'Improve code, no more than two daily tasks', allowWorktreeWrites: true });
@@ -230,6 +236,7 @@ test('a folder without its own Git directory is refused', () => {
 test('third task of the day is blocked and reported as quota', async () => {
   const f = fixture();
   try {
+    f.pilot.def.capacity = false; // the fixed daily limit, when the adaptive capacity is off
     const today = new Date().toISOString();
     f.pilot.state.history.push(...completedToday(today));
     f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
@@ -585,4 +592,147 @@ test('reviewed change is committed on the task branch; base refs are validated',
   assert.match(msg, /^Fix the thing\n\nAutopilote Mind : revue Codex VERDICT: PASS\./);
   assert.match(msg, /Verifications locales : jest/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('adaptive capacity: 0 admissible parks the pilot until the window resets; no launch', async () => {
+  const f = fixture();
+  try {
+    const reset = Date.now() + 2 * 3600000;
+    f.pilot.readUsage = () => ({ claude: { windows: [{ name: '5 h', usedPct: 95, resetsAt: reset }], readAt: Date.now(), source: 't' },
+      codex: { windows: [{ name: '7 jours', usedPct: 10, resetsAt: reset + 86400000 }], readAt: Date.now(), source: 't' } });
+    f.pilot.configure({ enabled: true, goal: 'Adaptive capacity', allowWorktreeWrites: true });
+    assert.equal(f.pilot.state.active, null, 'nothing started');
+    assert.equal(f.pilot.state.capacity.admissible, 0);
+    assert.equal(f.pilot.state.nextAt, reset, 'next check at the Claude window reset');
+    assert.match(f.pilot.state.capacity.reason, /claude/);
+  } finally { f.cleanup(); }
+});
+
+test('adaptive capacity: unknown usage uses the visible fallback; block mode starts nothing', async () => {
+  const f = fixture();
+  try {
+    f.pilot.readUsage = () => ({ claude: { error: 'aucune lecture' }, codex: { windows: [{ name: '7 jours', usedPct: 10, resetsAt: Date.now() + 86400000 }], readAt: Date.now(), source: 't' } });
+    f.pilot.def.capacity = { ...f.pilot.def.capacity, unknown: { mode: 'block', tasks: null } };
+    f.pilot.configure({ enabled: true, goal: 'Adaptive capacity', allowWorktreeWrites: true });
+    assert.equal(f.pilot.state.active, null);
+    assert.equal(f.pilot.state.capacity.mode, 'fallback');
+    assert.match(f.pilot.state.capacity.reason, /Repli bloquant/);
+  } finally { f.cleanup(); }
+});
+
+test('adaptive capacity: a task starts, its launch is counted and its cost measured per provider', async () => {
+  const f = fixture();
+  try {
+    let used = 10;
+    const r5 = Date.now() + 3600000, r7 = Date.now() + 86400000; // fixed reset times, as the providers report them
+    f.pilot.readUsage = () => ({ claude: { windows: [{ name: '5 h', usedPct: used, resetsAt: r5 }], readAt: Date.now(), source: 't' },
+      codex: { windows: [{ name: '7 jours', usedPct: 5, resetsAt: r7 }], readAt: Date.now(), source: 't' } });
+    f.pilot.configure({ enabled: true, goal: 'Adaptive capacity', allowWorktreeWrites: true });
+    assert.equal(f.pilot.state.active.stage, 'discover');
+    assert.equal(f.pilot.windowLaunches(), 1);
+    used = 22;
+    f.pilot.complete('no-task');
+    assert.equal((f.pilot.state.capacityLog || []).length, 0, 'a discovery without a task is not a full task: no cost sample');
+    f.pilot.configure({ enabled: true, goal: 'Adaptive capacity', allowWorktreeWrites: true });
+    f.pilot.state.nextAt = 0; await f.pilot.tick();
+    used = 40;
+    f.pilot.complete('completed');
+    assert.equal((f.pilot.state.capacityLog || []).length, 0, 'not measured at the end: deferred');
+    const ended = f.pilot.state.pendingCosts[0].endedAt;
+    f.pilot.readUsage = () => ({ claude: { windows: [{ name: '5 h', usedPct: used, resetsAt: r5 }], readAt: ended + 30000, source: 't' },
+      codex: { windows: [{ name: '7 jours', usedPct: 5, resetsAt: r7 }], readAt: ended + 30000, source: 't' } });
+    f.pilot.capacityDecision(ended + 30000);
+    assert.equal((f.pilot.state.capacityLog || []).length, 0, 'a reading 30 s after the end is too early');
+    f.pilot.readUsage = () => ({ claude: { windows: [{ name: '5 h', usedPct: used, resetsAt: r5 }], readAt: ended + 61000, source: 't' },
+      codex: { windows: [{ name: '7 jours', usedPct: 5, resetsAt: r7 }], readAt: ended + 61000, source: 't' } });
+    f.pilot.capacityDecision(ended + 61000);
+    const c = f.pilot.state.capacityLog.find((x) => x.provider === 'claude');
+    assert.equal(c.pct, 18, 'Claude cost = 40 - 22 percent, measured on a reading after the end');
+    assert.equal(f.pilot.state.pendingCosts.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('manual run: a task started outside its window runs its next stages outside the window too', async () => {
+  const f = fixture();
+  try {
+    const h = new Date().getHours();
+    f.pilot.def.schedule = { start: String((h + 2) % 24).padStart(2, '0') + ':00', end: String((h + 3) % 24).padStart(2, '0') + ':00' };
+    f.pilot.configure({ enabled: true, goal: 'Manual run', allowWorktreeWrites: true });
+    assert.equal(f.pilot.state.active, null, 'outside the window: nothing starts by itself');
+    await f.pilot.runNow();
+    assert.equal(f.pilot.state.active.stage, 'discover');
+    assert.equal(f.pilot.state.active.manual, true);
+    f.pilot.dispatch('plan-review');
+    assert.equal(f.pilot.state.active.stage, 'plan-review', 'not parked for the window');
+  } finally { f.cleanup(); }
+});
+
+test('review 5: a reading taken before the end of the last stage does not calibrate', async () => {
+  const f = fixture();
+  try {
+    let used = 10, readAt = () => Date.now();
+    const r5 = Date.now() + 3600000, r7 = Date.now() + 86400000;
+    f.pilot.readUsage = () => ({ claude: { windows: [{ name: '5 h', usedPct: used, resetsAt: r5 }], readAt: readAt(), source: 't' },
+      codex: { windows: [{ name: '7 jours', usedPct: 5, resetsAt: r7 }], readAt: readAt(), source: 't' } });
+    f.pilot.configure({ enabled: true, goal: 'Adaptive capacity', allowWorktreeWrites: true });
+    const t = f.tasks.get(f.pilot.state.active.taskId);
+    t.completedAt = Date.now() + 10 * 60000; // the last stage ends 10 min after the reading below
+    used = 11; readAt = () => Date.now();
+    f.pilot.complete('completed');
+    assert.equal((f.pilot.state.capacityLog || []).length, 0, 'early reading: the prudent cost stays');
+  } finally { f.cleanup(); }
+});
+
+test('review 7: the launch is stamped after the reading that decided it', async () => {
+  const f = fixture();
+  try {
+    const r5 = Date.now() + 3600000, r7 = Date.now() + 86400000;
+    f.pilot.readUsage = () => { const at = Date.now() + 5; return { claude: { windows: [{ name: '5 h', usedPct: 10, resetsAt: r5 }], readAt: at, source: 't' },
+      codex: { windows: [{ name: '7 jours', usedPct: 5, resetsAt: r7 }], readAt: at, source: 't' } }; };
+    f.pilot.configure({ enabled: true, goal: 'Adaptive capacity', allowWorktreeWrites: true });
+    const a = f.pilot.state.active;
+    assert.ok(a.launchedAt >= a.usageBefore.claude.readAt && a.launchedAt >= a.usageBefore.codex.readAt);
+  } finally { f.cleanup(); }
+});
+
+test('review 10: an expired pending cost is dropped before any measure', () => {
+  const f = fixture();
+  try {
+    const end = Date.now() - 3 * 86400000;
+    const w = (pct) => ({ windows: [{ name: '7 jours', usedPct: pct, resetsAt: Date.now() + 86400000 }], readAt: Date.now() - 1000, source: 't' });
+    f.pilot.state.pendingCosts = [{ before: { claude: { valid: true, readAt: end - 1000, used: { '7 jours': { usedPct: 10, resetsAt: Date.now() + 86400000 } } },
+      codex: { valid: true, readAt: end - 1000, used: { '7 jours': { usedPct: 10, resetsAt: Date.now() + 86400000 } } } }, launchedAt: end - 3600000, endedAt: end, done: {} }];
+    f.pilot.readUsage = () => ({ claude: w(65), codex: w(65) });
+    f.pilot.capacityDecision();
+    assert.equal((f.pilot.state.capacityLog || []).length, 0, 'no 55 % cost from 3 days of usage');
+    assert.equal(f.pilot.state.pendingCosts.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('review 11: a reading at end + 2 h 30 s does not calibrate', () => {
+  const f = fixture();
+  try {
+    const end = Date.now() - (2 * 3600000 + 30000);
+    const reset = Date.now() + 86400000;
+    f.pilot.state.pendingCosts = [{ before: { claude: { valid: true, readAt: end - 1000, used: { '7 jours': { usedPct: 10, resetsAt: reset } } },
+      codex: { valid: true, readAt: end - 1000, used: { '7 jours': { usedPct: 10, resetsAt: reset } } } }, launchedAt: end - 3600000, endedAt: end, done: {} }];
+    const w = { windows: [{ name: '7 jours', usedPct: 20, resetsAt: reset }], readAt: Date.now() - 100, source: 't' };
+    f.pilot.readUsage = () => ({ claude: w, codex: w });
+    f.pilot.capacityDecision();
+    assert.equal((f.pilot.state.capacityLog || []).length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('review 12: an active task restored without a span is reserved', () => {
+  const f = fixture();
+  try {
+    const reset = Date.now() + 3600000;
+    f.pilot.state.active = { stage: 'budget-wait', waitingStage: 'code-review', startedAt: Date.now() - 3600000 }; // old state: no launchedAt, no span
+    f.pilot.state.taskSpans = undefined;
+    const w = (pct) => ({ windows: [{ name: '5 h', usedPct: pct, resetsAt: reset }], readAt: Date.now() - 1000, source: 't' });
+    f.pilot.readUsage = () => ({ claude: w(70), codex: w(0) }); // 20 % / 15 = 1 task before reservation
+    const { decision } = f.pilot.capacityDecision();
+    assert.equal(decision.providers.claude.reserved, 1);
+    assert.equal(decision.admissible, 0);
+  } finally { f.pilot.state.active = null; f.cleanup(); }
 });
