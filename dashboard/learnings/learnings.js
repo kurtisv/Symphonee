@@ -51,12 +51,10 @@ class Learnings {
 
     // Sanitize: reject if it contains company-specific content
     const fullText = (summary + ' ' + (detail || '')).toLowerCase();
-    for (const pattern of COMPANY_INDICATORS) {
-      if (pattern.test(fullText)) {
-        pattern.lastIndex = 0;
-        return null; // Reject — contains company-specific content
-      }
-    }
+    // COMPANY_INDICATORS moved to learnings-sanitize.js; isSuspicious applies
+    // them (and the private term list). The bare reference here threw a
+    // ReferenceError in the main process whenever a worker failure was recorded.
+    if (isSuspicious(fullText)) return null; // Reject: company-specific content
 
     // Check for duplicates (same category + similar summary)
     const exists = this.learnings.some(l =>
