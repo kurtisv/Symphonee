@@ -520,7 +520,7 @@ class GraphRunsEngine extends EventEmitter {
       const adopted = attempt === 0 && node.adoptTaskId ? node.adoptTaskId : null;
       // A real spawn replaces any adoption (the adopted task failed and the
       // router moved on): never re-adopt it after a restart.
-      if (!adopted) delete node.adoptTaskId;
+      if (!adopted && node.adoptTaskId) { delete node.adoptTaskId; this._persist(run); } // saved BEFORE the spawn
       const spawnRes = adopted ? { id: adopted }
         : await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
       if (spawnRes && spawnRes.__error) {

@@ -277,30 +277,37 @@ test('retryNode re-checks the run after its ownership lookup (cancel during the 
 
 test('an adopted task that fails, then a fallback worker: the adoption is dropped', async () => {
   const spawns = [];
+  let snapshotAtSpawn = null;
   const server = http.createServer((req, res) => {
     let s = ''; req.on('data', (c) => { s += c; });
     req.on('end', () => {
-      if (req.url === '/api/orchestrator/spawn') { spawns.push(JSON.parse(s)); return res.end(JSON.stringify({ id: 'fresh' + spawns.length })); }
+      if (req.url === '/api/orchestrator/spawn') {
+        spawns.push(JSON.parse(s));
+        const f = fs.readdirSync(path.join(repoRoot, '.symphonee', 'graph-runs')).find((x) => x.endsWith('.json'));
+        snapshotAtSpawn = JSON.parse(fs.readFileSync(path.join(repoRoot, '.symphonee', 'graph-runs', f), 'utf8')).nodes[0];
+        return res.end(JSON.stringify({ id: 'fresh' + spawns.length }));
+      }
       if (req.url === '/api/models/recommend') return res.end(JSON.stringify({ cli: 'claude', model: 'opus' }));
       const id = req.url.split('id=')[1];
       if (id === 'old') return res.end(JSON.stringify({ state: 'failed', error: 'rate limit reached' }));
       return res.end(JSON.stringify({ state: 'completed', result: 'ok ' + id }));
     });
   });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try {
     const engine = new GraphRunsEngine({ repoRoot, apiPort: server.address().port });
     engine.windowStateFn = () => CLOSED;
     const run = await engine.createRun({ name: 'f', schedule: SCHED, nodes: [{ id: 'a', type: 'worker', cli: 'codex', prompt: 'a' }] });
     await waitFor(() => run.waitingWindow);
-    run.nodes[0].adoptTaskId = 'old';
+    run.nodes[0].adoptTaskId = 'old'; engine._persist(run);
     engine.windowStateFn = () => OPEN;
     await engine._executeNextBatch(run.id);
     assert.equal(run.nodes[0].status, 'completed');
     assert.equal(spawns.length, 1, 'one fallback worker');
     assert.equal(run.nodes[0].adoptTaskId, undefined);
     assert.equal(run.nodes[0].taskId, 'fresh1');
+    assert.equal(snapshotAtSpawn && snapshotAtSpawn.adoptTaskId, undefined, 'the adoption was already dropped on disk when the fallback spawned');
     for (const t of engine.windowTimers.values()) clearTimeout(t);
   } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
 });
