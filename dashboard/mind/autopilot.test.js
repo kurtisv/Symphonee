@@ -463,6 +463,7 @@ test('night window: no new task outside 22:00-07:00, next start computed', async
     assert.match(t.opts.prompt, /Prefer the highest-impact task that can be completed and verified in one night/);
     assert.doesNotMatch(t.opts.prompt, /Prefer the smallest high-impact task/);
     assert.equal(t.opts.timeout, 120 * 60000, 'two-hour stages');
+    assert.equal(t.opts.cloudTimeoutMs, 120 * 60000, 'the stage limit reaches cloud CLIs too (not the 15 min default)');
     const s = f.pilot.snapshot(at(23, 30));
     assert.equal(s.limits.dailyCalls, 120);
     assert.equal(s.limits.repairs, 2, 'profile values kept where not overridden');

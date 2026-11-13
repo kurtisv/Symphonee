@@ -694,7 +694,9 @@ class MindAutopilot {
     const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
-    const opts = { from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs,
+    // cloudTimeoutMs: without it a cloud CLI stage is cut at the task-store
+    // default (15 min) whatever stepMinutes says (night profile: 120 min).
+    const opts = { from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, cloudTimeoutMs: this.stepMs,
       noFallback: true, noRetry: true, compactContext: true, usageJson: true };
     // Every Claude discovery (including a replan) consumes a discovery slot.
     this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
