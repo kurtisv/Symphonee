@@ -3099,6 +3099,13 @@
     return data;
   }
   async function load() {
+    fetch("/api/automation/loops", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).then((d) => {
+      if (d && d.loops) {
+        ap.loops = d;
+        paint();
+      }
+    }).catch(() => {
+    });
     try {
       ap.snap = await call("/api/mind/autopilot");
       ap.pilots = ap.snap.pilots || ap.pilots;
@@ -3199,6 +3206,16 @@
       return '<span class="' + cls + '">' + esc(STAGE_LABELS[st]) + "</span>";
     }).join('<span class="ap-arrow">></span>') + "</div>";
   }
+  var LOOP_COLOR = { working: "var(--accent)", resting: "var(--yellow)", stopped: "var(--subtext0)", error: "var(--red)" };
+  function overview() {
+    const d = ap.loops;
+    if (!d) return "";
+    const row = (l, svc) => {
+      const click = l.pilot ? ' style="cursor:pointer;" data-pilot="' + esc(l.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" title="Voir le detail"' : "";
+      return "<tr" + click + '><td><span class="ap-dot" style="background:' + (LOOP_COLOR[l.status] || "var(--subtext0)") + ';margin-right:6px;"></span><b>' + esc(l.label) + "</b>" + (l.pilot && l.pilot === ap.pilot ? ' <span class="ap-tag">affichee</span>' : "") + "</td><td>" + esc(l.window) + "</td><td><b>" + esc(l.statusLabel) + "</b></td><td>" + esc(l.detail) + "</td></tr>";
+    };
+    return '<div class="ap-card"><div class="ap-title">Les boucles automatiques</div><table class="ap-table"><thead><tr><th>Boucle</th><th>Plage</th><th>Etat</th><th>Maintenant</th></tr></thead><tbody>' + d.loops.map((l) => row(l)).join("") + '</tbody></table><div class="ap-title" style="margin-top:12px;">Services</div><table class="ap-table"><tbody>' + (d.services || []).map((l) => row(l, true)).join("") + '</tbody></table><div class="ap-note">Mis a jour ' + esc(when(d.now)) + ". Une boucle au repos attend sa plage horaire : c est normal. Cliquez sur un autopilote pour son detail ci-dessous.</div></div>";
+  }
   function selector() {
     const rows = ap.pilots || [];
     if (rows.length < 2) return "";
@@ -3285,6 +3302,7 @@
         .ap-err { color:var(--red); font-size:12px; white-space:pre-wrap; }
       </style>
       <div class="ap-wrap">
+        ${overview()}
         ${selector()}
         <div class="ap-card">
           <div class="ap-status">

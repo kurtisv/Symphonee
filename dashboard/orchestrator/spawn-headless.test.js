@@ -111,3 +111,19 @@ test('parseCliUsage reads coloured Codex totals and Claude JSON usage, and never
   assert.deepEqual([j.usage.inputTokens, j.usage.outputTokens, j.usage.cacheReadTokens], [15, 7, 100]);
   assert.deepEqual(parseCliUsage('claude', 'plain text', '', { usageJson: true }), {});
 });
+
+test('resolveHeadlessTimeout: cloud keeps the store default unless an explicit cloudTimeoutMs is given', () => {
+  const { resolveHeadlessTimeout } = spawnHeadless;
+  // Cloud without an explicit limit: 0 -> the task store applies its default.
+  assert.equal(resolveHeadlessTimeout({ local: false, timeout: 180000 }), 0, 'a plain timeout is still ignored for cloud');
+  assert.equal(resolveHeadlessTimeout({ local: false, timeout: 0, cloudTimeoutMs: 0 }), 0);
+  assert.equal(resolveHeadlessTimeout({ local: false, cloudTimeoutMs: 'x' }), 0);
+  // Explicit cloud limit (graph-run worker node timeoutMs).
+  assert.equal(resolveHeadlessTimeout({ local: false, cloudTimeoutMs: 4 * 3600000 }), 4 * 3600000);
+  // Local: the caller's bounded value is kept as is.
+  assert.equal(resolveHeadlessTimeout({ local: true, timeout: 360000, cloudTimeoutMs: 9 }), 360000);
+  // The task store turns 0 into its 15 min default; an explicit value survives.
+  const o = inst();
+  assert.equal(o._createTask({ type: 'headless', cli: 'codex', prompt: 'x', timeout: 0 }).timeout, 15 * 60 * 1000);
+  assert.equal(o._createTask({ type: 'headless', cli: 'codex', prompt: 'x', timeout: 4 * 3600000 }).timeout, 4 * 3600000);
+});

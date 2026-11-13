@@ -102,7 +102,7 @@ module.exports = {
    * @param {string} opts.repoPath - path to the git repo
    * @param {string} [opts.branch] - branch name (auto-generated if omitted)
    */
-  spawnInWorktree({ repoPath, branch, ...opts }) {
+  spawnInWorktree({ repoPath, branch, startPoint, ...opts }) {
     if (!repoPath) throw new Error('repoPath is required for worktree spawn');
     const taskId = opts.taskId || this._id();
     const branchName = branch || `orch/${taskId}`;
@@ -110,7 +110,9 @@ module.exports = {
 
     try {
       // Create worktree with a new branch
-      const result = spawnSync('git', ['worktree', 'add', worktreePath, '-b', branchName], {
+      // startPoint (a commit sha or ref) instead of the checkout's HEAD.
+      if (startPoint && !/^[A-Za-z0-9][A-Za-z0-9._/^-]*$/.test(String(startPoint))) throw new Error('invalid startPoint');
+      const result = spawnSync('git', ['worktree', 'add', worktreePath, '-b', branchName, ...(startPoint ? [String(startPoint)] : [])], {
         cwd: repoPath,
         timeout: 10000,
         encoding: 'utf8',

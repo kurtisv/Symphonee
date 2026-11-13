@@ -48,3 +48,5 @@ docs/
 # AI-proposed skills awaiting review (runtime state)
 skills/.proposals/
 !dashboard/plugins/agent-office/
+config/sentry-automation.json
+config/merge-gate.json

@@ -10,6 +10,9 @@ const insights = require('./insights');
 const store = require('./store');
 const budget = require('./autopilot-budget');
 const guard = require('./autopilot-verify');
+// Optional Sentry reporting (window check-ins, completions, halts). Never throws.
+let sentry = null;
+try { sentry = require('../automation/sentry-report'); } catch (_) {}
 
 // Measured 2026-11-12: Codex read a valid UTF-8 lot file through Windows
 // PowerShell 5.1's default (ANSI) decoding, saw garbled accents and failed a
@@ -180,6 +183,24 @@ function runGit(cwd, args, input) {
   return spawnSync('git', args, { cwd, timeout: 15000, encoding: 'utf8', windowsHide: true, input,
     maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
 }
+function validBaseRef(ref) {
+  const s = String(ref || '').trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(s) && !s.includes('..') ? s : null;
+}
+// The reviewed change becomes one commit on the task branch, so what the merge
+// gate later tests and merges is exactly what Codex approved. Returns the sha.
+function commitReviewed(cwd, plan, verified) {
+  const add = runGit(cwd, ['add', '-A']);
+  if (add.error || add.status !== 0) throw new Error('git add failed: ' + String(add.stderr || add.error?.message).slice(0, 200));
+  const subject = String(plan?.title || 'autopilot change').replace(/\s+/g, ' ').slice(0, 72);
+  const body = ['Autopilote Mind : revue Codex VERDICT: PASS.',
+    plan?.objective ? 'Objectif : ' + String(plan.objective).slice(0, 1500) : '',
+    verified && verified.length ? 'Verifications locales : ' + verified.join(', ') : ''].filter(Boolean).join('\n\n');
+  const r = spawnSync('git', ['commit', '--quiet', '-F', '-'], { cwd, timeout: 300000, encoding: 'utf8', windowsHide: true,
+    input: subject + '\n\n' + body + '\n', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  if (r.error || r.status !== 0) throw new Error('git commit failed: ' + String(r.stderr || r.stdout || r.error?.message).slice(0, 300));
+  return git(cwd, ['rev-parse', 'HEAD']);
+}
 function git(cwd, args) {
   const r = runGit(cwd, args);
   if (r.error || r.status !== 0) throw new Error('git failed: ' + String(r.stderr || r.error?.message || args[0]).slice(0, 200));
@@ -321,6 +342,9 @@ class MindAutopilot {
       sources: { files: (def.sources && Array.isArray(def.sources.files) ? def.sources.files : []).map(String).slice(0, 10),
         sentry: Boolean(def.sources && def.sources.sentry) },
       stepMinutes: Math.min(Math.max(Number(def.stepMinutes) || 0, 0), 240) || null,
+      // Where implementation worktrees start (e.g. "origin/master"). Without it
+      // they start from the main checkout's HEAD, whatever branch it is on.
+      baseRef: validBaseRef(def.baseRef),
       limits: def.limits && typeof def.limits === 'object' ? def.limits : null };
     this.profile = PROFILES[profile];
     this.limits = mergeLimits(this.profile.limits, this.def.limits);
@@ -347,13 +371,33 @@ class MindAutopilot {
     const a = this.state.active;
     if (this.state.enabled && a.waitingStage) {
       this.log('resumed', 'Restart: still waiting for quota before ' + a.waitingStage);
+    } else if (this.state.enabled && this.restartStage(a) && (a.restartResumes || 0) < 2) {
+      // Automatic resume (decision of 2026-11-12): the interrupted stage is
+      // parked and launched again, inside the work window. Implementation and
+      // repair continue in the SAME worktree as a non-counted repair. At most
+      // two automatic resumes per task; the third restart archives as before.
+      if (a.budgetRef) budget.settleCall(this.state, a.budgetRef, { state: 'interrupted-by-restart' });
+      const was = a.stage, stage = this.restartStage(a);
+      if (stage === 'repair') {
+        a.review = 'INTERRUPTED BY A SYMPHONEE RESTART before the work was finished (this is not a reviewer finding). Continue the approved plan in this worktree from where it stopped and keep what is already correct.'
+          + (was === 'repair' && a.review ? '\n\nFindings that were being fixed:\n' + String(a.review).slice(0, 6000) : '');
+      }
+      a.restartResumes = (a.restartResumes || 0) + 1;
+      a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'restart';
+      if (a.verify) a.verify.running = false;
+      this.state.error = null;
+      const sched = this.def.schedule;
+      this.state.nextAt = sched && !inSchedule(sched, now + 2 * 60_000) ? nextWindowStart(sched, now) : now + 2 * 60_000;
+      this.log('resumed', 'Restart during ' + was + ': automatic resume ' + a.restartResumes + '/2 with ' + stage
+        + ' at ' + new Date(this.state.nextAt).toLocaleString() + (a.worktree ? ' (same worktree ' + a.worktree.path + ')' : ''));
     } else if (this.state.enabled) {
       this.unlinkActive(a);
       if (a.budgetRef) budget.settleCall(this.state, a.budgetRef, { state: 'interrupted-by-restart' });
       this.state.history.push({ category: a.plan?.category || null,
         title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
         key: a.plan ? taskKey(a.plan) : null, outcome: 'interrupted',
-        worktree: a.worktree || null, error: 'Symphonee restarted during stage ' + a.stage,
+        worktree: a.worktree || null, error: 'Symphonee restarted during stage ' + a.stage
+          + ((a.restartResumes || 0) >= 2 ? ' (after two automatic resumes)' : ''),
         at: new Date(now).toISOString() });
       this.state.history = this.state.history.slice(-100);
       this.state.active = null;
@@ -369,6 +413,43 @@ class MindAutopilot {
       this.log('interrupted', 'Restart while stopped during stage ' + a.stage);
     }
     this.save();
+  }
+  // Which stage to launch again after a restart (null: cannot be resumed).
+  restartStage(a) {
+    const kept = a.worktree && a.worktree.path && fs.existsSync(a.worktree.path);
+    if (a.stage === 'verify') return kept ? 'verify' : null;
+    if (a.stage === 'implement' || a.stage === 'repair') return kept && a.baseSha ? 'repair' : (a.plan && !a.worktree ? 'implement' : null);
+    if (a.stage === 'code-review') return kept ? 'code-review' : null;
+    if (a.stage === 'plan-review') return a.plan ? 'plan-review' : null;
+    if (a.stage === 'discover') return 'discover';
+    return null;
+  }
+  // End of the work window: the next stage of the current task is parked
+  // until the next window instead of starting outside it.
+  parkForWindow(stage, now = Date.now()) {
+    const a = this.state.active;
+    a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'window';
+    this.state.nextAt = nextWindowStart(this.def.schedule, now);
+    this.log('schedule', 'Work window ' + this.def.schedule.start + '-' + this.def.schedule.end + ' is over: ' + stage
+      + ' postponed to ' + new Date(this.state.nextAt).toLocaleString());
+    this.save();
+    return this.snapshot(now);
+  }
+  report(level, message, fingerprint, extra = {}) {
+    if (!sentry) return;
+    sentry.event({ message, level, loop: 'autopilote', fingerprint: ['autopilote', this.id, ...fingerprint],
+      tags: { pilote: this.id, depot: this.state.repoName || null }, extra }).catch(() => {});
+  }
+  // One 'ok' check-in per work window: Sentry raises an issue (and the alert
+  // emails) when the pilot was not alive at the start of its window.
+  windowCheckIn(now = Date.now()) {
+    const sched = this.def.schedule;
+    if (!sentry || !sched || !this.inWindow(now)) return;
+    const key = new Date(nextWindowStart(sched, now) - 86400000).toDateString();
+    if (this.state.lastWindowCheckIn === key) return;
+    this.state.lastWindowCheckIn = key;
+    sentry.checkIn({ slug: 'autopilote-' + this.id, status: 'ok',
+      monitor: { schedule: sentry.dailyCrontab(sched.start), margin: 90, maxRuntime: 60 } }).catch(() => {});
   }
   log(kind, msg, extra = {}) {
     this.state.events.push({ at: new Date().toISOString(), kind, msg: String(msg).slice(0, 600),
@@ -538,6 +619,7 @@ class MindAutopilot {
     if (this._verifyProc) { guard.killTree(this._verifyProc); this._verifyProc = null; }
     this.unlinkActive();
     this.log('error', this.state.error);
+    this.report('error', 'Autopilote ' + this.id + ' arrete sur erreur : ' + this.state.error.slice(0, 300), ['halt']);
     this.save();
   }
   discoveryPrompt() {
@@ -627,10 +709,15 @@ class MindAutopilot {
   dispatch(stage, now = Date.now()) {
     const a = this.state.active;
     if (!STAGES.includes(stage)) throw new Error('Invalid stage');
+    // No stage starts outside the work window, not even the next stage of a
+    // task begun inside it: it waits for the next window.
+    if (this.def.schedule && !this.inWindow(now)) return this.parkForWindow(stage, now);
     const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
-    const opts = { from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs,
+    // cloudTimeoutMs: without it a cloud CLI stage is cut at the task-store
+    // default (15 min) whatever stepMinutes says (night profile: 120 min).
+    const opts = { from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, cloudTimeoutMs: this.stepMs,
       noFallback: true, noRetry: true, compactContext: true, usageJson: true };
     // Every Claude discovery (including a replan) consumes a discovery slot.
     this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
@@ -656,10 +743,17 @@ class MindAutopilot {
         prompt: repoPin(this.state.repoPath, this.state.repoPath) + '\n\n'
           + (stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage)) });
     } else if (stage === 'implement') {
-      a.baseSha = git(this.state.repoPath, ['rev-parse', 'HEAD']);
+      let startPoint = null;
+      if (this.def.baseRef) {
+        const [remote, ...rest] = this.def.baseRef.split('/');
+        const f = rest.length ? runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]) : null;
+        if (f && (f.error || f.status !== 0)) this.log('warn', 'fetch ' + this.def.baseRef + ' impossible, base locale utilisee');
+        startPoint = this.def.baseRef;
+      }
+      a.baseSha = git(this.state.repoPath, ['rev-parse', '--verify', (startPoint || 'HEAD') + '^{commit}']);
       a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
       const branch = 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
-      task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch,
+      task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
         expectsRepoChanges: true, autoPermit: false, confineWrites: true, prompt: [
           repoPin('your current working directory', this.state.repoPath) + ' Never edit ' + this.state.repoPath + ' itself.',
           'Claude implementer in ISOLATED git worktree. Approved plan: ' + JSON.stringify(a.plan),
@@ -709,19 +803,21 @@ class MindAutopilot {
       evidence: a.plan?.evidence || [],
       key: a.plan ? taskKey(a.plan) : null, outcome,
       reviewerEvidence: reviewerEvidence ? String(reviewerEvidence).slice(0, 3000) : null,
-      worktree: a.worktree || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
+      worktree: a.worktree || null, commit: a.commit || null, baseSha: a.baseSha || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
       at: new Date().toISOString() });
     this.state.history = this.state.history.slice(-100);
     this.unlinkActive(a);
+    this.report(outcome === 'completed' ? 'info' : 'warning', 'Autopilote ' + this.id + ' : tache ' + outcome + ' : ' + (a.plan?.title || '(decouverte)'),
+      [outcome], { branche: a.worktree?.branch || null, revue: reviewerEvidence ? String(reviewerEvidence).slice(0, 1500) : null });
     this.log('complete', outcome + ': ' + (a.plan?.title || '(discovery)')
       + (a.worktree ? ' - worktree kept for human review: ' + a.worktree.path : ''));
     this.state.active = null;
     this.state.nextAt = Date.now() + (outcome === 'completed' ? 10 : 30) * 60_000;
     this.save();
   }
-  advance(raw) {
+  advance(raw, now = Date.now()) {
     const a = this.state.active;
     if (a.stage === 'discover') {
       const plan = parsePlan(raw);
@@ -735,14 +831,14 @@ class MindAutopilot {
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
       a.plan = plan;
       this.log('plan', '[' + plan.category + '] ' + plan.title);
-      return this.dispatch('plan-review');
+      return this.dispatch('plan-review', now);
     }
     if (a.stage === 'plan-review') {
       const v = verdict(raw);
       this.log('decision', 'Codex plan review: ' + (v || 'NO VERDICT'));
       if (v === 'PASS') {
         a.planVerdict = String(raw || '').slice(0, 6000); a.planVerdictAt = new Date().toISOString();
-        return this.dispatch('implement');
+        return this.dispatch('implement', now);
       }
       a.planRevisions++;
       if (a.planRevisions > this.limits.planRevisions) {
@@ -753,7 +849,7 @@ class MindAutopilot {
         throw new Error('Plan rejected after the allowed revision: ' + String(raw).slice(0, 500));
       }
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
-      return this.dispatch('discover');
+      return this.dispatch('discover', now);
     }
     if (a.stage === 'implement' || a.stage === 'repair') {
       // Claude's tools are confined to the worktree, but this is not an OS
@@ -769,7 +865,7 @@ class MindAutopilot {
       // The deep profile always passes through the gate: the diff lint runs
       // even when the repository has no check command configured.
       if (this.def.verify.length || this.profile.deep) return this.startVerify();
-      return this.dispatch('code-review');
+      return this.dispatch('code-review', now);
     }
     if (a.stage === 'code-review') {
       if (worktreeFingerprint(a.worktree.path) !== a.reviewFingerprint) {
@@ -779,13 +875,16 @@ class MindAutopilot {
       this.log('decision', 'Codex code review: ' + (v || 'NO VERDICT'));
       if (v === 'PASS') {
         if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('Review passed with no diff');
+        this.unlinkActive(a);
+        a.commit = commitReviewed(a.worktree.path, a.plan, a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : []);
+        this.log('commit', 'Changement revu commite sur ' + a.worktree.branch + ' : ' + a.commit.slice(0, 10));
         return this.complete('completed', raw);
       }
       a.review = raw; a.repairs++;
       // Keep every rejection: the reason of each repair stays visible after restarts.
       a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 3000) }].slice(-6);
       if (a.repairs > this.limits.repairs) throw new Error('Code review rejected after max repairs: ' + String(raw).slice(0, 500));
-      return this.dispatch('repair');
+      return this.dispatch('repair', now);
     }
   }
   // Token-free gate between an implementation and its Codex review: the diff
@@ -837,6 +936,7 @@ class MindAutopilot {
     if (a.creditHits > 8) retry = sched ? nextWindowStart(sched, now + 60_000) : budget.startOfNextDay(now);
     else if (sched && !inSchedule(sched, retry)) retry = nextWindowStart(sched, retry);
     this.state.nextAt = retry;
+    this.report('warning', 'Autopilote ' + this.id + ' : limite d usage pendant ' + resume + ', reprise le ' + new Date(retry).toLocaleString(), ['credit']);
     this.log('credit', 'Provider usage/credit limit reached during ' + resume + ' (' + String(why).replace(/\s+/g, ' ').slice(0, 160)
       + '); task parked, retry at ' + new Date(retry).toLocaleString());
     this.save();
@@ -860,6 +960,7 @@ class MindAutopilot {
     if (this.busy || !this.state.enabled) return this.snapshot();
     this.busy = true;
     try {
+      this.windowCheckIn(now);
       if (!this.state.active) {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
         if (now < this.state.nextAt || this.todayCompleted(now) >= this.limits.dailyCompletions
@@ -901,6 +1002,7 @@ class MindAutopilot {
         if (a.waitingStage) {
           if (now < this.state.nextAt || !budget.canDispatch(this.state, now, this.limits)) return this.snapshot();
           a.parkReason = null;
+          if (a.waitingStage === 'verify') { a.waitingStage = null; this.startVerify(); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
           return this.snapshot();
         }
@@ -919,7 +1021,7 @@ class MindAutopilot {
         if (t.state === 'completed') {
           budget.settleCall(this.state, a.budgetRef, t);
           a.budgetRef = null; this.save();
-          this.advance(t.result);
+          this.advance(t.result, now);
         } else if (!['running', 'pending', 'queued'].includes(t.state)) {
           budget.settleCall(this.state, a.budgetRef, t);
           if (isCreditLimit(t.error || t.result)) return this.parkForCredit(a, String(t.error || t.result || t.state), now);
@@ -988,7 +1090,7 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null,
-        stepMinutes: body.stepMinutes, limits: body.limits || null };
+        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, limits: body.limits || null };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
@@ -1001,5 +1103,5 @@ function mountMindAutopilot(addRoute, json, deps) {
   });
   return pilots.get('default');
 }
-module.exports = { MindAutopilot, mountMindAutopilot, parsePlan, verdict, taskKey, changedFiles,
+module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, verdict, taskKey, changedFiles,
   localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };

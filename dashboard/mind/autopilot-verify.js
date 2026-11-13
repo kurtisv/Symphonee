@@ -108,7 +108,9 @@ function validCommands(commands = []) {
   return commands.map((c) => {
     if (!c || typeof c.name !== 'string' || !Array.isArray(c.cmd) || c.cmd.length < 1
       || c.cmd.some(x => typeof x !== 'string' || !x)) throw new Error('Each verify entry needs {name, cmd:[...]}');
-    return { name: c.name.slice(0, 40), cmd: c.cmd.slice(0, 20), timeoutMs: Math.min(Math.max(Number(c.timeoutMs) || 600000, 10000), 30 * 60000) };
+    // Optional cwd: a sub-folder of the work tree (e.g. "api"), never outside it.
+    return { name: c.name.slice(0, 40), cmd: c.cmd.slice(0, 20), timeoutMs: Math.min(Math.max(Number(c.timeoutMs) || 600000, 10000), 30 * 60000),
+      ...(c.cwd ? { cwd: safeRel(c.cwd) } : {}) };
   });
 }
 function killTree(proc) {
@@ -127,7 +129,7 @@ async function runVerify(cwd, commands, { onStart } = {}) {
       let out = '', done = false, timedOut = false;
       let proc;
       try {
-        proc = spawn(c.cmd[0], c.cmd.slice(1), { cwd, windowsHide: true, shell: false,
+        proc = spawn(c.cmd[0], c.cmd.slice(1), { cwd: c.cwd ? path.join(cwd, c.cwd) : cwd, windowsHide: true, shell: false,
           env: { ...process.env, CI: '1', FORCE_COLOR: '0', NO_COLOR: '1' } });
       } catch (e) { return resolve({ code: -1, out: String(e.message), timedOut: false }); }
       if (onStart) { try { onStart(proc, c); } catch (_) {} }

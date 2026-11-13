@@ -21,6 +21,20 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+
+// A job of kind 'script' runs a deterministic Node script instead of an AI
+// CLI: { kind:'script', script:'<absolute .js path>', args?:[], timeoutMs? }.
+// No AI call, no token cost; one run at a time per job (a slow run is never
+// overlapped by the next tick); output tail and exit code kept in lastRun.
+const SCRIPT_TIMEOUT_MAX = 6 * 3600000;
+function validScriptJob(body) {
+  const script = String(body.script || '');
+  if (!path.isAbsolute(script) || !/\.c?js$/i.test(script)) return 'script must be an absolute path to a .js file';
+  if (!fs.existsSync(script)) return 'script not found: ' + script;
+  if (body.args !== undefined && (!Array.isArray(body.args) || body.args.some(a => typeof a !== 'string'))) return 'args must be an array of strings';
+  return null;
+}
 
 function ensureDir(dir) {
   try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
@@ -112,7 +126,34 @@ function mountJobs(addRoute, json, deps) {
     return job;
   }
 
+  const runningScripts = new Set();
+  function runScriptJob(job) {
+    if (runningScripts.has(job.id)) return null; // previous run still going
+    const err = validScriptJob(job);
+    if (err) throw new Error(err);
+    runningScripts.add(job.id);
+    const startedAt = Date.now();
+    job.lastRun = { at: startedAt, kind: 'script', status: 'running' };
+    job.updatedAt = startedAt;
+    if (job.enabled) job.nextRun = computeNextRun(job.schedule) || null;
+    saveJob(job);
+    const timeout = Math.min(Math.max(Number(job.timeoutMs) || 3600000, 10000), SCRIPT_TIMEOUT_MAX);
+    execFile(process.execPath, [job.script, ...(job.args || [])], { cwd: repoRoot, timeout, windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024, env: { ...process.env } }, (e, stdout, stderr) => {
+      runningScripts.delete(job.id);
+      const out = (String(stdout || '') + (stderr ? '\n' + String(stderr) : '')).trim();
+      const code = e ? (typeof e.code === 'number' ? e.code : -1) : 0;
+      // Re-read: the job may have been edited or disabled while it ran.
+      const cur = readJobs(jobsDir).find(j => j.id === job.id) || job;
+      cur.lastRun = { at: startedAt, endedAt: Date.now(), kind: 'script', exitCode: code,
+        status: e && e.killed ? 'timeout' : code === 0 ? 'ok' : 'error', tail: out.slice(-2000) };
+      saveJob(cur);
+    });
+    return 'script:' + job.id + ':' + startedAt;
+  }
+
   async function runJob(job) {
+    if (job.kind === 'script') return runScriptJob(job);
     if (!orchestrator || typeof orchestrator.spawnHeadless !== 'function') {
       throw new Error('orchestrator.spawnHeadless unavailable');
     }
@@ -143,6 +184,8 @@ function mountJobs(addRoute, json, deps) {
       name:     String(body.name || 'Untitled job').slice(0, 120),
       cli:      body.cli || 'claude',
       prompt:   String(body.prompt || '').slice(0, 12000),
+      ...(body.kind === 'script' ? { kind: 'script', script: String(body.script || ''), args: body.args || [],
+        timeoutMs: Number(body.timeoutMs) || 3600000 } : {}),
       schedule: String(body.schedule || 'daily 09:00'),
       enabled:  body.enabled !== false,
       createdAt: existing ? existing.createdAt : now,
@@ -155,7 +198,10 @@ function mountJobs(addRoute, json, deps) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'Invalid schedule. Try "daily 09:00", "every 30m", or "weekly 1 09:00".' }));
     }
-    if (!job.prompt.trim()) {
+    if (job.kind === 'script') {
+      const err = validScriptJob(job);
+      if (err) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: err })); }
+    } else if (!job.prompt.trim()) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'Prompt is required.' }));
     }
@@ -187,7 +233,7 @@ function mountJobs(addRoute, json, deps) {
   });
 
   // Tick loop: check every 60s.
-  setInterval(async () => {
+  const tick = setInterval(async () => {
     const now = Date.now();
     const due = readJobs(jobsDir).filter(j => j.enabled && j.nextRun && j.nextRun <= now);
     for (const j of due) {
@@ -195,8 +241,9 @@ function mountJobs(addRoute, json, deps) {
       catch (e) { console.warn('[jobs] run failed for', j.id, e.message); }
     }
   }, 60 * 1000);
+  if (tick.unref) tick.unref(); // the HTTP server keeps the process alive
 
-  return { runJob, readJobs: () => readJobs(jobsDir) };
+  return { runJob, readJobs: () => readJobs(jobsDir), _runningScripts: runningScripts };
 }
 
 module.exports = { mountJobs, parseSchedule, computeNextRun };

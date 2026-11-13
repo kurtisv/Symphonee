@@ -94,3 +94,19 @@ test('changedPaths also reports files hidden by .gitignore, except the links Sym
     assert.deepEqual(guard.protectedHits(files, ['^secrets/']), ['secrets/']);
   } finally { r.cleanup(); }
 });
+
+test('a verify command may run in a sub-folder of the work tree, never outside it', async () => {
+  const fs = require('fs'); const os = require('os'); const path = require('path');
+  const { runVerify, validCommands } = require('./autopilot-verify');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verify-cwd-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'api'));
+    fs.writeFileSync(path.join(dir, 'api', 'marker.txt'), 'x');
+    const ok = await runVerify(dir, [{ name: 'in-api', cwd: 'api', cmd: [process.execPath, '-e', "require('fs').accessSync('marker.txt')"] }]);
+    assert.equal(ok.ok, true);
+    const ko = await runVerify(dir, [{ name: 'root', cmd: [process.execPath, '-e', "require('fs').accessSync('marker.txt')"] }]);
+    assert.equal(ko.ok, false, 'without cwd the command runs at the root');
+    assert.throws(() => validCommands([{ name: 'x', cwd: '../evil', cmd: ['node'] }]), /Invalid/);
+    assert.throws(() => validCommands([{ name: 'x', cwd: 'C:/Windows', cmd: ['node'] }]), /Invalid/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
