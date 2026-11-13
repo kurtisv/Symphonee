@@ -25,7 +25,7 @@ test('decide: measured costs (largest, not average), visible margin', () => {
   const costLog = [{ provider: 'claude', pct: 5 }, { provider: 'claude', pct: 20 }, { provider: 'claude', pct: 6 }];
   const d = c.decide({ claude: read(30), codex: read(0), costLog, cfg: { marginPct: 20 }, now: NOW });
   // 100-30-20 = 50 / 20 (largest observed) = 2
-  assert.equal(d.providers.claude.costPct, 20); assert.match(d.providers.claude.costBasis, /plus forte hausse observee sur 3/);
+  assert.equal(d.providers.claude.costPct, 20); assert.match(d.providers.claude.costBasis, /plus forte hausse observee par fenetre sur 3/);
   assert.equal(d.admissible, 2); assert.equal(d.marginPct, 20);
 });
 
@@ -168,4 +168,37 @@ test('review 8: a finished task stays reserved until a reading taken after its e
   // Ended long before the reading: the reading includes it, no reservation.
   d = c.decide({ claude: r, codex: read(0), spans: [{ launchedAt: NOW - 7200000, endedAt: NOW - 3600000 }], now: NOW });
   assert.equal(d.providers.claude.reserved, 0); assert.equal(d.admissible, 1);
+});
+
+test('cost per window: a task cheap on 7 days is not charged its 5 h cost there', () => {
+  const r = { windows: [{ name: '5 h', usedPct: 14, resetsAt: NOW + 3 * 3600000 }, { name: '7 jours', usedPct: 48, resetsAt: NOW + 2 * 86400000 }], readAt: NOW - 60000, source: 't' };
+  const log = [{ provider: 'claude', pct: 7, windows: { '5 h': 7, '7 jours': 0 } }];
+  const d = c.decide({ claude: r, codex: read(0), costLog: log, now: NOW });
+  const v = d.providers.claude;
+  // 5 h: 76 usable / 7 = 10 ; 7 days: 42 usable / max(1, 0) = 42 -> 10, capped at 6 overall.
+  assert.equal(v.windows.find((w) => w.name === '7 jours').costPct, 1, 'a measured 0 is floored at 1 %');
+  assert.equal(v.windows.find((w) => w.name === '5 h').costPct, 7);
+  assert.equal(v.tasks, 10); assert.equal(d.admissible, 6);
+  // An old sample without per-window detail keeps its overall cost for every window.
+  const old = c.decide({ claude: r, codex: read(0), costLog: [{ provider: 'claude', pct: 7 }], now: NOW });
+  assert.equal(old.providers.claude.tasks, 6, '42 / 7 on the 7-day window');
+  assert.deepEqual(c.taskCostByWindow({ '5 h': { usedPct: 7, resetsAt: 1 }, '7 jours': { usedPct: 48, resetsAt: 9 } },
+    { '5 h': { usedPct: 14, resetsAt: 1 }, '7 jours': { usedPct: 48, resetsAt: 9 } }), { '5 h': 7, '7 jours': 0 });
+});
+
+test('review: a window absent for a while keeps its own last measured cost', () => {
+  const r = { windows: [{ name: '5 h', usedPct: 0, resetsAt: NOW + 3 * 3600000 }, { name: '7 jours', usedPct: 60, resetsAt: NOW + 2 * 86400000 }], readAt: NOW - 60000, source: 't' };
+  const log = [{ provider: 'claude', pct: 30, windows: { '7 jours': 30 } },
+    ...Array.from({ length: 10 }, () => ({ provider: 'claude', pct: 2, windows: { '5 h': 2 } }))];
+  const d = c.decide({ claude: r, codex: read(0), costLog: log, now: NOW });
+  assert.equal(d.providers.claude.windows.find((w) => w.name === '7 jours').costPct, 30);
+  assert.equal(d.providers.claude.tasks, 1, '30 usable / 30');
+});
+
+test('review: trimming the cost log keeps the last samples of every window', () => {
+  const log = [{ provider: 'claude', pct: 30, windows: { '7 jours': 30 } },
+    ...Array.from({ length: 60 }, () => ({ provider: 'claude', pct: 2, windows: { '5 h': 2 } }))];
+  const t = c.trimCostLog(log, 50, 10);
+  assert.ok(t.some((x) => x.windows['7 jours'] === 30), 'the only 7-day sample survives');
+  assert.equal(t.length, 51);
 });

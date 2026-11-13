@@ -164,7 +164,8 @@ function validReading(reading, now = Date.now()) {
 // reading: reader result; costLog: [{provider, pct}] newest last;
 // spans: [{ launchedAt, endedAt }] of the tasks of ALL pilots (they share the
 // subscriptions); endedAt null while a task runs or is parked.
-const END_SLACK_MS = 60000; // time for a provider to record the last usage of a task
+const END_SLACK_MS = 60000;
+const MIN_WINDOW_COST = 1; // percent: the smallest step a window displays // time for a provider to record the last usage of a task
 function providerView(name, reading, costLog, cfg, now, spans = []) {
   const v = { provider: name, status: 'unknown', source: reading && reading.source || null, readAt: reading && reading.readAt || null,
     windows: [], costPct: null, costBasis: null, tasks: null, reserved: 0, why: null };
@@ -178,20 +179,31 @@ function providerView(name, reading, costLog, cfg, now, spans = []) {
   if (age > cfg.maxAgeMin) { v.why = 'lecture perimee (' + Math.round(age) + ' min, limite ' + cfg.maxAgeMin + ' min)'; return v; }
   // Any window reset since the reading makes the whole reading outdated.
   if (v.windows.some((w) => w.expired)) { v.why = 'une fenetre s est reinitialisee depuis la lecture : nouvelle lecture necessaire'; return v; }
-  const samples = costLog.filter((c) => c.provider === name && c.pct > 0).slice(-cfg.costSamples).map((c) => c.pct);
-  v.costPct = samples.length ? Math.max(...samples) : cfg.priorCostPct[name];
-  v.costBasis = samples.length ? 'plus forte hausse observee sur ' + samples.length + ' tache(s)' : 'estimation initiale (aucune tache mesuree)';
+  // Cost PER WINDOW: a task can take 7 % of the 5 h window and under 1 % of
+  // the 7-day one, so each window is divided by its own measured cost. An old
+  // sample without per-window detail counts its overall cost for every window.
+  // A window shows whole percents: a measured 0 is floored at MIN_WINDOW_COST.
+  const entries = costLog.filter((c) => c.provider === name && (c.windows || c.pct > 0));
+  for (const w of v.windows) {
+    // The last N samples OF THIS WINDOW (a window absent for a while keeps its own history).
+    const vals = entries.map((c) => (c.windows ? c.windows[w.name] : c.pct)).filter((x) => typeof x === 'number' && x >= 0).slice(-cfg.costSamples);
+    w.costPct = vals.length ? Math.max(MIN_WINDOW_COST, ...vals) : cfg.priorCostPct[name];
+    w.tasks = Math.floor(w.usablePct / w.costPct);
+  }
+  const samples = entries.slice(-cfg.costSamples).length;
+  v.costBasis = samples ? 'plus forte hausse observee par fenetre sur ' + samples + ' tache(s)' : 'estimation initiale (aucune tache mesuree)';
   // Reserved: tasks started after this reading (not in it yet), plus every task
   // still running or parked, whenever it started (the rest of its cost, review
   // included, is still to come). Conservative: a full task cost each.
   // A task is reserved (a full task cost) until a reading taken after its END
   // (plus slack): before that, part or all of its usage is not in the reading.
   v.reserved = spans.filter((t) => t.endedAt == null || reading.readAt < t.endedAt + END_SLACK_MS).length;
-  const raw = Math.floor(Math.min(...v.windows.map((w) => w.usablePct)) / v.costPct);
-  v.tasks = Math.max(0, raw - v.reserved);
+  // The limiting window is the one allowing the fewest tasks.
+  const tight = v.windows.reduce((a, b) => (a.tasks <= b.tasks ? a : b));
+  v.costPct = tight.costPct;
+  v.tasks = Math.max(0, tight.tasks - v.reserved);
   v.status = 'known';
-  const tight = v.windows.reduce((a, b) => (a.usablePct <= b.usablePct ? a : b));
-  v.why = 'fenetre ' + tight.name + ' : ' + tight.usablePct.toFixed(0) + ' % utilisables / ' + v.costPct.toFixed(1) + ' % par tache'
+  v.why = 'fenetre ' + tight.name + ' : ' + tight.usablePct.toFixed(0) + ' % utilisables / ' + tight.costPct.toFixed(1) + ' % par tache'
     + (v.reserved ? ', ' + v.reserved + ' tache(s) lancee(s) depuis la lecture deja reservee(s)' : '')
     + (v.tasks > 0 ? '' : ' : plus assez de marge' + (tight.resetsAt ? ', reprise ' + new Date(tight.resetsAt).toLocaleString('fr-CA') : ''));
   return v;
@@ -252,12 +264,32 @@ function allWindows(reading) {
 }
 // Cost of one task in percent: the largest increase over the windows present
 // before and after, skipping a window that was reset in between. null = not measurable.
+// Bounded cost log that never drops the last samples of any provider/window:
+// keeps the newest `max` entries plus the newest `perWindow` of each window.
+function trimCostLog(log, max = 50, perWindow = DEFAULTS.costSamples) {
+  const keep = new Set();
+  for (let i = Math.max(0, log.length - max); i < log.length; i++) keep.add(i);
+  const counts = {};
+  for (let i = log.length - 1; i >= 0; i--) {
+    const c = log[i];
+    for (const w of c.windows ? Object.keys(c.windows) : ['*']) {
+      const k = c.provider + '|' + w;
+      if ((counts[k] = (counts[k] || 0) + 1) <= perWindow) keep.add(i);
+    }
+  }
+  return log.filter((_, i) => keep.has(i));
+}
 function taskCost(before, after) {
+  const by = taskCostByWindow(before, after);
+  return by ? Math.max(...Object.values(by)) : null;
+}
+// The same measure, window by window ({ name: increase }), or null.
+function taskCostByWindow(before, after) {
   if (!before || !after) return null;
   // The same windows on both sides, or no sample.
   const names = Object.keys(before);
   if (!names.length || names.length !== Object.keys(after).length) return null;
-  let best = null;
+  const out = {};
   for (const name of Object.keys(before)) {
     const a = before[name], b = after[name];
     // A window missing or reset during the task: the sample is incomplete and
@@ -265,9 +297,9 @@ function taskCost(before, after) {
     if (!b || a.resetsAt !== b.resetsAt) return null;
     const d = b.usedPct - a.usedPct;
     if (d < 0) return null; // usage dropped without a reset: incoherent sample, discarded
-    if (best === null || d > best) best = d;
+    out[name] = d;
   }
-  return best;
+  return out;
 }
 
-module.exports = { DEFAULTS, settings, decide, validReading, allWindows, readClaude, readCodex, readAll, lastRateLimits, usedNow, taskCost, DEFAULT_PATHS };
+module.exports = { DEFAULTS, settings, decide, validReading, allWindows, readClaude, readCodex, readAll, lastRateLimits, usedNow, taskCost, taskCostByWindow, trimCostLog, DEFAULT_PATHS };

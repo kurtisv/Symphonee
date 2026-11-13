@@ -498,8 +498,8 @@ class MindAutopilot {
         const b = pc.before && pc.before[p], r = readings[p];
         if (!b || !b.used || !b.valid) { pc.done[p] = true; continue; }          // no usable "before": never measurable
         if (!capacity.validReading(r, checkedAt) || !(r.readAt >= pc.endedAt + 60000) || r.readAt > pc.endedAt + MAX_LATE) continue; // wait for a reading in [end+60 s, end+2 h]
-        const pct = capacity.taskCost(b.used, capacity.allWindows(r));
-        if (pct !== null) this.state.capacityLog = [...(this.state.capacityLog || []), { provider: p, pct, at: new Date(checkedAt).toISOString() }].slice(-50);
+        const windows = capacity.taskCostByWindow(b.used, capacity.allWindows(r));
+        if (windows) this.state.capacityLog = capacity.trimCostLog([...(this.state.capacityLog || []), { provider: p, pct: Math.max(...Object.values(windows)), windows, at: new Date(checkedAt).toISOString() }], 50, capacity.settings(this.def.capacity).costSamples);
         pc.done[p] = true;
       }
       // Kept until both providers are settled; expiry is checked first, above.
