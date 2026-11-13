@@ -42,7 +42,7 @@ test('summaries: one batched call for the missing items, cached, retried later o
   await m._drain();
   assert.equal(calls, 1, 'both items in ONE call');
   out = m.present([h('a'), h('b')]);
-  assert.equal(out[1].titre, 'Titre ap:b'); assert.match(out[1].redaction, /Codex test.*calcule, pas redige/);
+  assert.equal(out[1].titre, 'Titre ap:b'); assert.match(out[1].redaction, /Codex test.*calcule a partir des faits/);
   await m._drain(); assert.equal(calls, 1, 'cached: no new call');
   fail = true; m.present([h('c')]); await m._drain(); assert.equal(calls, 2);
   m.present([h('c')]); await m._drain(); assert.equal(calls, 2, 'no retry within 30 minutes');
@@ -101,4 +101,13 @@ test('review 4: completion words refused; cached texts re-checked', () => {
   const m = p.makeSummaries({ cacheFile: path.join(dir, 'c.json'), write: async () => ({ text: '[]', by: 'x' }) });
   assert.equal(m.present([h])[0].fait, null, 'old text hidden by the current check');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('review 5: arrival / completion paraphrases and generic file names refused; accented words kept', () => {
+  const ok = { titre: 'Limites contre la triche', fait: 'Chaque personne a sa propre limite.', ameliore: 'Les prix sont plus fiables.' };
+  for (const bad of ['Le changement est maintenant dans l application.', 'Le travail est fait, il ne reste rien a faire.',
+    'voir index.html', 'le style.css', 'entre a/b', 'dans C:/projet'])
+    assert.equal(p.parseWording(JSON.stringify({ ...ok, fait: bad })), null, bad);
+  for (const good of ['Les deplacements mal définis sont ecartes.', 'Les stations gardees restent disponibles.', 'Neuf essais ont reussi.'])
+    assert.ok(p.parseWording(JSON.stringify({ ...ok, fait: good })), good);
 });

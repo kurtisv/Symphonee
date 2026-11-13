@@ -201,10 +201,12 @@ import { makeLatest } from './latest.js';
       return '<div style="border-top:1px solid var(--surface1);padding:10px 0;">'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span class="ap-tag" style="background:' + st.color + ';color:var(--base);">' + esc(st.label) + '</span>'
         + '<b>' + esc(it.titre || it.rawTitle) + '</b><span class="ap-muted">' + esc(when(it.at)) + '</span></div>'
-        + (it.fait ? '<div style="margin-top:6px;"><b>Ce qui a ete fait :</b> ' + esc(it.fait) + '</div>'
+        // The computed state comes first; the written sentences are labelled as
+        // the report's account and never as the state.
+        + '<div style="margin-top:6px;"><b>Est-ce termine ?</b> ' + esc(it.stateText) + '</div>'
+        + (it.fait ? '<div style="margin-top:6px;"><b>Ce qui a ete fait, selon le rapport :</b> ' + esc(it.fait) + '</div>'
           + '<div style="margin-top:4px;"><b>Ce que ca ameliore :</b> ' + esc(it.ameliore) + '</div>'
           : '<div class="ap-muted" style="margin-top:6px;">' + esc(it.redaction) + '</div>')
-        + '<div style="margin-top:4px;"><b>Est-ce termine ?</b> ' + esc(it.stateText) + '</div>'
         + (it.fait ? '<div class="ap-muted" style="margin-top:4px;font-size:11px;">' + esc(it.redaction) + '</div>' : '')
         + '</div>';
     }).join('');

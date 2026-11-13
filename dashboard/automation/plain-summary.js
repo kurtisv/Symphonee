@@ -90,7 +90,8 @@ const PROMPT_RULES = [
   '- fait : 1 ou 2 phrases simples, ce qui a ete fait concretement.',
   '- ameliore : 1 phrase simple, le probleme que cela regle ou ce qui devient meilleur (fiabilite, equite, securite, exactitude des prix, vitesse...), tel que le rapport le decrit. Seulement si le rapport dit explicitement que rien ne change, ecris "Aucun changement visible."',
   'Interdits : noms de fichiers, de fonctions, code, anglais, sigles techniques, chiffres absents du rapport, et toute information absente du rapport.',
-  'N ecris pas si la tache est terminee : cela est indique ailleurs.'].join('\n');
+  'N ecris pas si la tache est terminee : cela est indique ailleurs. N emploie donc jamais ces mots ou tournures : termine, fini, acheve, complet, integre, fusionne, deploye, publie, livre, disponible, "dans l application", "il ne reste", "tout est", "est fait", "est en place". Dis "pour les utilisateurs" plutot que "dans l application".',
+  'N ecris aucun nom de fichier, aucun chemin, aucune barre oblique.'].join('\n');
 
 function parseWording(raw) {
   const m = /\{[\s\S]*\}/.exec(String(raw || ''));
@@ -101,12 +102,15 @@ function parseWording(raw) {
     if (!ok(j.titre, 140) || !ok(j.fait, 600) || !ok(j.ameliore, 400)) return null;
     const texts = [j.titre, j.fait, j.ameliore];
     // A file name, path or code token means the model did not follow the rules:
-    // file extensions, code punctuation, Windows or slash paths (word/word),
-    // camelCase and snake_case identifiers.
-    if (texts.some((t) => /[\w-]+\.(ts|tsx|js|json|md|py|sql|env|ya?ml)\b|(^|\s)\.env\b|`|\(\)|=>|[A-Za-z]:\\|\\[\w.-]+\\|\b[\w.-]{3,}\/[\w.-]{3,}|\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b|\b[a-z0-9]+_[a-z0-9_]+\b/.test(t))) return null;
-    // The finished / merged state is computed by code and shown apart: a
-    // sentence claiming it (e.g. injected through a report) is refused.
-    if (texts.some((t) => /fusionn|termin[eé]|\bfini(e|s|es)?\b|achev|int[eé]gr|d[eé]ploy|en production|mis(e)? en ligne|publi[eé]|\bcomplet(e|s|es)?\b|\btout est (fait|regle|réglé|pr[eê]t)/i.test(t))) return null;
+    // any word.ext, any slash or backslash between characters, a drive letter,
+    // code punctuation, camelCase and snake_case identifiers.
+    if (texts.some((t) => /\b[\w-]+\.[a-z][a-z0-9]{1,4}\b|(^|\s)\.[a-z]{2,}\b|\S[\/\\]\S|\b[A-Za-z]:[\/\\]|`|\(\)|=>|[{}<>]|\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b|\b[a-z0-9]+_[a-z0-9_]+\b/.test(t))) return null;
+    // The finished / merged state is computed by code and shown first, apart:
+    // a sentence claiming completion or arrival in the app (e.g. injected through
+    // a report) is refused. A word list cannot catch every paraphrase, which is
+    // why the card also labels these sentences as the report's account, not the state.
+    // Word boundaries that know accented letters ("définis" is not "finis").
+    if (texts.some((t) => /fusionn|termin[eé]|(?<!\p{L})fini(e|s|es)?(?!\p{L})|achev|int[eé]gr|d[eé]ploy|en production|mis(e)? en ligne|(?<!\p{L})publi[eé]|(?<!\p{L})complet(e|s|es)?(?!\p{L})|(?<!\p{L})tout est(?!\p{L})|dans l.?application|(?<!\p{L})il ne reste(?!\p{L})|rien (de plus )?[aà] faire|(?<!\p{L})(est|sont) (fait|faite|faits|faites|r[eé]gl[eé]|pr[eê]t|disponible|actif|active|en place|livr)|(?<!\p{L})livr[eé]/iu.test(t))) return null;
     return { titre: j.titre.trim(), fait: j.fait.trim(), ameliore: j.ameliore.trim() };
   } catch (_) { return null; }
 }
@@ -198,7 +202,7 @@ function makeSummaries({ cacheFile, write, log = () => {}, now = Date.now }) {
       if (c && c.hash === hash && !c.failed && !valid) { delete cache[facts.key]; save(); }
       if (!cache[facts.key] || cache[facts.key].hash !== hash) { if (!queue.some((q) => q.key === facts.key)) queue.push({ key: facts.key, hash, text }); }
       out.push({ ...facts, titre: fresh ? fresh.titre : null, fait: fresh ? fresh.fait : null, ameliore: fresh ? fresh.ameliore : null,
-        redaction: fresh ? 'Texte redige automatiquement par ' + fresh.by + ' a partir du rapport de la tache ; l etat ci-dessus est calcule, pas redige.'
+        redaction: fresh ? 'Ces deux phrases resument le rapport de la tache (redigees par ' + fresh.by + ') ; elles ne disent pas si le travail est termine : seul l etat ci-dessus, calcule a partir des faits, le dit.'
           : (c && c.failed && c.hash === hash ? 'Resume indisponible pour cette tache (texte refuse par le controle).' : 'Resume en preparation.') });
     }
     setImmediate(() => { drain().catch(() => {}); });
