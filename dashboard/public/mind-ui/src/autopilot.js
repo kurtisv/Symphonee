@@ -22,7 +22,9 @@ import { escapeHtml } from './helpers.js';
   const CATEGORY_LABELS = { correctness: 'Correction', performance: 'Performance', quality: 'Structure',
     cleanup: 'Nettoyage', testing: 'Tests' };
 
-  const ap = { snap: null, busy: false, message: '', poll: null, draftGoal: null, draftRepo: null, draftConsent: false, pilot: 'default' };
+  const ap = { snap: null, busy: false, message: '', poll: null, draftGoal: null, draftRepo: null, draftConsent: false, pilot: 'default',
+    // A non-autopilot loop shown in detail (pleinsens | porte-fusion | veille), else null.
+    loopView: null, loopDetail: null };
   try { ap.pilot = localStorage.getItem('mind-autopilot-pilot') || 'default'; } catch (_) {}
   const esc = (v) => escapeHtml(v == null ? '' : String(v));
   const fmt = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('fr-CA') : '0');
@@ -44,6 +46,7 @@ import { escapeHtml } from './helpers.js';
     // Overview of every unattended loop (autopilots, PleinSens loop, merge gate, watchdog).
     fetch('/api/automation/loops', { cache: 'no-store' }).then(r => r.ok ? r.json() : null)
       .then(d => { if (d && d.loops) { ap.loops = d; paint(); } }).catch(() => {});
+    if (ap.loopView) loadLoopDetail();
     try { ap.snap = await call('/api/mind/autopilot'); ap.pilots = ap.snap.pilots || ap.pilots; ap.message = ap.message || ''; }
     catch (e) {
       // A remembered pilot that no longer exists falls back to the main loop.
@@ -51,6 +54,13 @@ import { escapeHtml } from './helpers.js';
       ap.message = 'Lecture impossible : ' + e.message;
     }
     paint();
+  }
+
+  function loadLoopDetail() {
+    const id = ap.loopView;
+    return fetch('/api/automation/loops/detail?id=' + encodeURIComponent(id), { cache: 'no-store' })
+      .then(r => r.json()).then(d => { if (ap.loopView === id) { ap.loopDetail = d; paint(); } })
+      .catch(e => { ap.loopDetail = { error: e.message }; paint(); });
   }
 
   async function act(label, fn) {
@@ -75,8 +85,28 @@ import { escapeHtml } from './helpers.js';
     acknowledge() { return act('Archivage', () => call('/api/mind/autopilot/acknowledge', {})); },
     resume() { return act('Reprise', () => call('/api/mind/autopilot/resume', {})); },
     refresh() { return load(); },
+    showLoop(id) {
+      if (ap.busy) return;
+      ap.loopView = id; ap.loopDetail = null; ap.message = '';
+      paint(); return loadLoopDetail();
+    },
+    async retryNode(runId, nodeId, taskId) {
+      if (ap.busy) return;
+      ap.busy = true; ap.message = 'Reprise de l etape ' + nodeId + '...'; paint();
+      try {
+        const r = await fetch('/api/graph-runs/' + encodeURIComponent(runId) + '/retry/' + encodeURIComponent(nodeId), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(taskId ? { taskId } : {}) });
+        const d = await r.json().catch(() => ({}));
+        ap.message = r.ok && !d.error
+          ? 'Etape ' + nodeId + ' reprise' + (taskId ? ' (tache ' + taskId + ' adoptee : si elle a fini, rien n est relance)' : '') + '.'
+          : 'Reprise refusee : ' + (d.error || 'HTTP ' + r.status);
+      } catch (e) { ap.message = 'Reprise impossible : ' + e.message; }
+      ap.busy = false; return loadLoopDetail();
+    },
     select(id) {
-      if (ap.busy || id === ap.pilot) return;
+      if (ap.busy) return;
+      if (ap.loopView) { ap.loopView = null; ap.loopDetail = null; if (id === ap.pilot) { paint(); return; } }
+      if (id === ap.pilot) return;
       ap.pilot = id; ap.snap = null; ap.message = ''; ap.draftGoal = null; ap.draftRepo = null; ap.draftConsent = false;
       try { localStorage.setItem('mind-autopilot-pilot', id); } catch (_) {}
       paint(); return load();
@@ -115,15 +145,72 @@ import { escapeHtml } from './helpers.js';
   function overview() {
     const d = ap.loops; if (!d) return '';
     const row = (l, svc) => {
-      const click = l.pilot ? ' style="cursor:pointer;" data-pilot="' + esc(l.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" title="Voir le detail"' : '';
-      return '<tr' + click + '><td><span class="ap-dot" style="background:' + (LOOP_COLOR[l.status] || 'var(--subtext0)') + ';margin-right:6px;"></span><b>' + esc(l.label) + '</b>' + (l.pilot && l.pilot === ap.pilot ? ' <span class="ap-tag">affichee</span>' : '') + '</td>' +
+      // Every row opens its detail: an autopilot below, the other loops in their own view.
+      const click = l.pilot ? ' style="cursor:pointer;" data-pilot="' + esc(l.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" title="Voir le detail"'
+        : LOOP_DETAIL.includes(l.id) ? ' style="cursor:pointer;" data-loop="' + esc(l.id) + '" onclick="MindAutopilot.showLoop(this.dataset.loop)" title="Voir le detail"' : '';
+      const shown = ap.loopView ? l.id === ap.loopView : (l.pilot && l.pilot === ap.pilot);
+      return '<tr' + click + '><td><span class="ap-dot" style="background:' + (LOOP_COLOR[l.status] || 'var(--subtext0)') + ';margin-right:6px;"></span><b>' + esc(l.label) + '</b>' + (shown ? ' <span class="ap-tag">affichee</span>' : '') + '</td>' +
         '<td>' + esc(l.window) + '</td><td><b>' + esc(l.statusLabel) + '</b></td><td>' + esc(l.detail) + '</td></tr>';
     };
     return '<div class="ap-card"><div class="ap-title">Les boucles automatiques</div>' +
       '<table class="ap-table"><thead><tr><th>Boucle</th><th>Plage</th><th>Etat</th><th>Maintenant</th></tr></thead><tbody>' +
       d.loops.map(l => row(l)).join('') + '</tbody></table>' +
       '<div class="ap-title" style="margin-top:12px;">Services</div><table class="ap-table"><tbody>' + (d.services || []).map(l => row(l, true)).join('') + '</tbody></table>' +
-      '<div class="ap-note">Mis a jour ' + esc(when(d.now)) + '. Une boucle au repos attend sa plage horaire : c est normal. Cliquez sur un autopilote pour son detail ci-dessous.</div></div>';
+      '<div class="ap-note">Mis a jour ' + esc(when(d.now)) + '. Une boucle au repos attend sa plage horaire : c est normal. Cliquez sur une ligne pour voir ce qu elle a fait.</div></div>';
+  }
+
+  const LOOP_DETAIL = ['pleinsens', 'porte-fusion', 'veille'];
+  const NODE_COLOR = { completed: 'var(--green)', running: 'var(--accent)', failed: 'var(--red)', awaiting_approval: 'var(--yellow)', pending: 'var(--subtext0)', cancelled: 'var(--subtext0)' };
+  const NODE_LABEL = { completed: 'terminee', running: 'en cours', failed: 'en echec', awaiting_approval: 'attend une approbation', pending: 'a venir', cancelled: 'annulee', paused: 'en pause' };
+  const RUN_LABEL = { pending: 'en attente', running: 'en cours', completed: 'termine', failed: 'en echec', cancelled: 'annule', paused: 'en pause', awaiting_approval: 'attend une approbation' };
+  const hm = (t) => t ? new Date(t).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
+  const dur = (a, b) => { if (!a) return ''; const m = Math.round(((b || Date.now()) - a) / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
+  const logBlock = (lines) => '<pre style="white-space:pre-wrap;font-size:11px;max-height:260px;overflow:auto;margin:0;">' + esc((lines || []).join('\n') || '(vide)') + '</pre>';
+  const jsArg = (v) => '\'' + esc(v) + '\'';
+
+  function loopDetailHtml() {
+    const d = ap.loopDetail; const id = ap.loopView;
+    const back = '<button class="tab-bar-btn" onclick="MindAutopilot.select(' + jsArg(ap.pilot) + ')">Retour aux autopilotes</button> '
+      + '<button class="tab-bar-btn" onclick="MindAutopilot.showLoop(' + jsArg(id) + ')">Actualiser</button>';
+    const head = (t) => '<div class="ap-card"><div class="ap-btns" style="align-items:center;justify-content:space-between;"><div class="ap-big">' + esc(t) + '</div><div>' + back + '</div></div>'
+      + (ap.message ? '<div class="ap-msg" style="margin-top:6px;">' + esc(ap.message) + '</div>' : '') + '</div>';
+    if (!d) return head('Chargement...');
+    if (d.error) return head('Detail indisponible') + '<div class="ap-card ap-err">' + esc(d.error) + '</div>';
+    if (id === 'pleinsens') {
+      const runs = (d.runs || []).map((r, i) => {
+        const rows = r.nodes.map(n => {
+          const canRetry = n.status === 'failed' && ['running', 'pending', 'failed', 'paused'].includes(r.status);
+          return '<tr><td><span class="ap-dot" style="background:' + (NODE_COLOR[n.status] || 'var(--subtext0)') + ';margin-right:6px;"></span><b>' + esc(n.id) + '</b></td>'
+            + '<td>' + esc(NODE_LABEL[n.status] || n.status) + '</td>'
+            + '<td>' + esc(n.cli ? n.cli + (n.model ? ' ' + n.model : '') : (n.type === 'branch' ? 'decision (sans IA)' : '')) + '</td>'
+            + '<td>' + esc(hm(n.startedAt)) + (n.startedAt ? ' (' + esc(dur(n.startedAt, n.endedAt)) + ')' : '') + '</td>'
+            + '<td style="max-width:520px;">' + (n.error ? '<div class="ap-err">' + esc(n.error) + '</div>' : '')
+            + (n.result ? '<details><summary>Resultat</summary><pre style="white-space:pre-wrap;font-size:11px;margin:4px 0;">' + esc(n.result) + '</pre></details>' : '')
+            + (canRetry ? '<button class="tab-bar-btn" style="margin-top:4px;" onclick="MindAutopilot.retryNode(' + jsArg(r.id) + ',' + jsArg(n.id) + ',' + (n.taskId ? jsArg(n.taskId) : 'null') + ')" title="'
+              + (n.taskId ? 'Reprend l etape en adoptant la tache deja lancee : si elle a fini, rien n est repaye' : 'Relance l etape') + '">Reprendre l etape</button>' : '')
+            + '</td></tr>';
+        }).join('');
+        const done = r.nodes.filter(n => n.status === 'completed').length;
+        return '<div class="ap-card"' + (i ? ' style="opacity:.75;"' : '') + '><div class="ap-title">' + (i ? 'Run precedent' : 'Dernier run') + ' : ' + esc(r.id)
+          + ' | ' + esc(RUN_LABEL[r.status] || r.status) + ' | ' + done + '/' + r.nodes.length + ' etapes | lance ' + esc(when(r.createdAt))
+          + (r.waitingUntil ? ' | reprend ' + esc(when(r.waitingUntil)) : '') + '</div>'
+          + '<table class="ap-table"><thead><tr><th>Etape</th><th>Etat</th><th>Modele</th><th>Debut (duree)</th><th>Detail</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      }).join('');
+      return head('Boucle PleinSens : ce qu elle a fait') + (runs || '<div class="ap-card ap-muted">Aucun run de la boucle.</div>')
+        + '<div class="ap-card"><div class="ap-title">Journal du lanceur (08:00)</div>' + logBlock(d.log) + '</div>';
+    }
+    if (id === 'porte-fusion') {
+      const rows = (d.candidates || []).map(c => '<tr><td><b>' + esc(c.branch) + '</b><div class="ap-muted">' + esc(c.sha) + ' | ' + esc(c.source || '') + '</div></td>'
+        + '<td>' + esc(c.status) + (c.attempts ? ' (' + esc(c.attempts) + ' essai(s))' : '') + '</td><td>' + esc(c.title || '') + '</td>'
+        + '<td>' + esc(c.note || '') + (c.pr ? ' <span class="ap-tag">PR #' + esc(c.pr) + '</span>' : '') + '</td></tr>').join('');
+      const merges = (d.merges || []).map(m => '<tr><td>' + esc(m.branch) + '</td><td>PR #' + esc(m.pr) + '</td><td>' + esc(m.status) + '</td><td>' + esc(when(m.at)) + '</td></tr>').join('');
+      return head('Porte de fusion : ce qu elle a fait') + (d.stopped ? '<div class="ap-card ap-err">Arretee : ' + esc(d.stopped.reason || '') + '</div>' : '')
+        + '<div class="ap-card"><div class="ap-title">Branches candidates</div><table class="ap-table"><thead><tr><th>Branche</th><th>Etat</th><th>Tache</th><th>Derniere note</th></tr></thead><tbody>'
+        + (rows || '<tr><td colspan="4" class="ap-muted">Aucune.</td></tr>') + '</tbody></table></div>'
+        + '<div class="ap-card"><div class="ap-title">Fusions</div><table class="ap-table"><tbody>' + (merges || '<tr><td class="ap-muted">Aucune fusion pour l instant.</td></tr>') + '</tbody></table></div>'
+        + '<div class="ap-card"><div class="ap-title">Journal</div>' + logBlock(d.log) + '</div>';
+    }
+    return head('Veille : ses derniers passages') + '<div class="ap-card">' + logBlock(d.log) + '</div>';
   }
 
   function selector() {
@@ -232,6 +319,7 @@ import { escapeHtml } from './helpers.js';
       </style>
       <div class="ap-wrap">
         ${overview()}
+        ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ''}
         ${selector()}
         <div class="ap-card">
           <div class="ap-status">
@@ -300,6 +388,7 @@ import { escapeHtml } from './helpers.js';
           <div class="ap-title">Decisions, erreurs et evenements</div>
           ${events}
         </div>
+        ${ap.loopView ? '</div>' : ''}
       </div>`;
   }
 

@@ -116,11 +116,62 @@ async function buildLoops({ port = 3800, repoRoot }) {
   return { now, loops, services };
 }
 
+// ── Detail of the loops that are not autopilots (read-only) ─────────────
+const short = (v, n) => { const t = String(v == null ? '' : v); return t.length > n ? t.slice(0, n) + '...' : t; };
+const tailText = (v, n) => { const t = String(v == null ? '' : v).trim(); return t.length > n ? '...' + t.slice(-n) : t; };
+
+// Pure: a graph run -> what the UI shows of it.
+function runView(run) {
+  return { id: run.id, name: run.name, status: run.status, createdAt: run.createdAt, updatedAt: run.updatedAt,
+    waitingUntil: run.waitingWindow ? run.waitingWindow.until : null, cycle: (run.state && run.state.cycle) || null,
+    nodes: (run.nodes || []).map((n) => ({ id: n.id, type: n.type, status: n.status, cli: n.cli || null, model: n.model || null,
+      startedAt: n.startedAt || null, endedAt: n.endedAt || null, taskId: n.taskId || (n.output && n.output.taskId) || null,
+      error: n.error ? short(n.error, 400) : null,
+      result: n.output && n.output.result ? tailText(n.output.result, 600) : null })) };
+}
+
+// Pure: merge gate state.json -> candidates and merges.
+function gateView(state) {
+  const st = state || {};
+  return { stopped: st.stopped || null,
+    candidates: Object.values(st.candidates || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map((c) => ({
+      branch: c.branch, sha: String(c.sha || '').slice(0, 10), source: c.source, status: c.status, attempts: c.attempts || 0,
+      title: c.origin && c.origin.title ? short(c.origin.title, 160) : null, createdAt: c.createdAt || null,
+      pr: c.pr || null, note: (c.history || []).length ? short(c.history[c.history.length - 1].note, 300) : null })),
+    merges: (st.merges || []).slice(-10).reverse().map((m) => ({ branch: m.branch, pr: m.pr, status: m.status, at: m.at || m.mergedAt || null })) };
+}
+
+async function buildLoopDetail(id, { port = 3800, repoRoot }) {
+  const ws = (f) => path.join(repoRoot, '.ai-workspace', f);
+  if (id === 'pleinsens') {
+    const runs = await getJson(port, '/api/graph-runs');
+    const mine = (Array.isArray(runs) ? runs : []).filter((r) => String(r.name || '').startsWith(LOOP_PREFIX))
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+    const details = await Promise.all(mine.map((r) => getJson(port, '/api/graph-runs/' + r.id)));
+    return { id, runs: details.filter(Boolean).map(runView), log: tail(ws('boucle-lanceur.log'), 15) };
+  }
+  if (id === 'porte-fusion') {
+    let st = null;
+    try { st = JSON.parse(fs.readFileSync(path.join(repoRoot, '.ai-workspace', 'merge-gate', 'state.json'), 'utf8')); } catch (_) {}
+    return { id, ...gateView(st), log: tail(path.join(repoRoot, '.ai-workspace', 'merge-gate', 'journal.log'), 20) };
+  }
+  if (id === 'veille') return { id, log: tail(ws('veille.log'), 20) };
+  return null;
+}
+
 function mountLoopsStatus(addRoute, json, { repoRoot, port = 3800 }) {
+  addRoute('GET', '/api/automation/loops/detail', async (req, res) => {
+    try {
+      const id = new URL(req.url, 'http://x').searchParams.get('id');
+      const d = await buildLoopDetail(id, { port, repoRoot });
+      if (!d) return json(res, { error: 'unknown loop ' + id }, 404);
+      json(res, d);
+    } catch (e) { json(res, { error: e.message }, 500); }
+  });
   addRoute('GET', '/api/automation/loops', async (_req, res) => {
     try { json(res, await buildLoops({ port, repoRoot })); }
     catch (e) { json(res, { error: e.message }, 500); }
   });
 }
 
-module.exports = { mountLoopsStatus, buildLoops, autopilotLoop, pleinsensLoop, gateService, watchdogService };
+module.exports = { mountLoopsStatus, buildLoops, buildLoopDetail, runView, gateView, autopilotLoop, pleinsensLoop, gateService, watchdogService };

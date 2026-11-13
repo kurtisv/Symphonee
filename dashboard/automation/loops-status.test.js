@@ -40,3 +40,18 @@ test('services: merge gate and watchdog', () => {
   assert.equal(watchdogService(new Date(NOW - 40 * 60000).toISOString() + ' VEILLE ok', NOW).status, 'error');
   assert.equal(watchdogService('', NOW).status, 'stopped');
 });
+
+test('detail views: graph run nodes and merge gate candidates', () => {
+  const { runView, gateView } = require('./loops-status');
+  const v = runView({ id: 'gr_1', name: 'PleinSens boucle predictions - cycle 1', status: 'running', createdAt: 1, state: { cycle: 1 },
+    nodes: [{ id: 'a', type: 'worker', status: 'completed', cli: 'codex', model: 'm', taskId: 't1', output: { result: 'x'.repeat(900) + 'FIN' } },
+      { id: 'b', type: 'worker', status: 'failed', cli: 'claude', error: 'read ECONNRESET' }] });
+  assert.equal(v.cycle, 1); assert.equal(v.nodes[0].taskId, 't1');
+  assert.ok(v.nodes[0].result.endsWith('FIN') && v.nodes[0].result.length <= 603, 'result tail, bounded');
+  assert.equal(v.nodes[1].error, 'read ECONNRESET'); assert.equal(v.nodes[1].result, null);
+  const g = gateView({ candidates: { k1: { branch: 'b1', sha: 'a'.repeat(40), status: 'new', createdAt: 1, origin: { title: 'T' }, history: [{ note: 'n1' }] },
+    k2: { branch: 'b2', sha: 'b'.repeat(40), status: 'refused', createdAt: 2, history: [] } }, merges: [] });
+  assert.deepEqual(g.candidates.map((c) => c.branch), ['b2', 'b1']);
+  assert.equal(g.candidates[1].sha, 'aaaaaaaaaa'); assert.equal(g.candidates[1].note, 'n1'); assert.equal(g.candidates[1].title, 'T');
+  assert.deepEqual(gateView(null).candidates, []);
+});
