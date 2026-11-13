@@ -121,9 +121,11 @@ async function openRevert(repo, m) {
     body: 'Ouverte par la porte de fusion apres une CI rouge sur ' + repo.base + '. **Non fusionnee automatiquement** : a valider par un humain.' });
   return pr && pr.url;
 }
+// Sentry sends still in flight; awaited before the explicit exit below.
+const pendingSends = [];
 function notify(level, message, fingerprint, extra = {}) {
   if (ESSAI) return log('MESSAGE ' + level + ' : ' + message);
-  sentry.event({ message, level, loop: 'porte-fusion', fingerprint, extra }).then((r) => { if (!r.ok) log('Sentry : ' + (r.error || r.skipped)); });
+  pendingSends.push(sentry.event({ message, level, loop: 'porte-fusion', fingerprint, extra }).then((r) => { if (!r.ok) log('Sentry : ' + (r.error || r.skipped)); }));
 }
 
 async function main() {
@@ -181,4 +183,9 @@ async function dryRun(policy) {
   }
 }
 
-main().catch((e) => { log('ERREUR ' + e.stack); process.exitCode = 1; try { fs.unlinkSync(LOCK); } catch (_) {} });
+// Exit explicitly once the work and the Sentry sends are done: a lingering
+// handle (a keep-alive socket, a child's pipe) otherwise kept the process
+// alive for hours, so the job stayed "running" and skipped its 30 min passes.
+main().catch((e) => { log('ERREUR ' + e.stack); process.exitCode = 1; try { fs.unlinkSync(LOCK); } catch (_) {} })
+  .then(() => Promise.allSettled(pendingSends))
+  .then(() => process.exit(process.exitCode || 0));

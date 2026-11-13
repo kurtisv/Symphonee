@@ -82,7 +82,7 @@ function world() {
   const io = {
     now: () => w.now, log: (l) => w.logs.push(l), stopFileExists: () => false,
     isAncestor: () => false,
-    readPilot: () => ({ history: [{ outcome: 'completed', title: 'Fix distance', at: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' },
+    readPilot: () => ({ history: [{ outcome: 'completed', title: 'Fix distance', at: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, commit: SHA,
       reviewerEvidence: 'VERDICT: PASS\nok', verified: ['types-app', 'jest'] }] }),
     git: (cwd, args) => {
       const a = args.join(' ');
@@ -198,14 +198,14 @@ test('scenario: the PR moved after verification -> refused; red CI after merge -
   assert.ok(w.notes.some((n) => /^error PORTE DE FUSION ARRETEE.*PR d annulation ouverte/.test(n)));
   // Stopped: no new candidate is processed.
   const before = w.chainRuns;
-  io.readPilot = () => ({ history: [{ outcome: 'completed', title: 'Autre', worktree: { branch: 'mind-autopilot/2026-11-13-def' }, reviewerEvidence: 'VERDICT: PASS', verified: ['jest'] }] });
+  io.readPilot = () => ({ history: [{ outcome: 'completed', title: 'Autre', worktree: { branch: 'mind-autopilot/2026-11-13-def' }, commit: 'a'.repeat(40), reviewerEvidence: 'VERDICT: PASS', verified: ['jest'] }] });
   await gate.pass(POLICY, state, io);
   assert.equal(w.chainRuns, before);
 });
 
 test('scenario: a candidate without its loop proof is refused before any chain', async () => {
   const { w, io } = world();
-  io.readPilot = () => ({ history: [{ outcome: 'completed', title: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, reviewerEvidence: 'VERDICT: FAIL', verified: [] }] });
+  io.readPilot = () => ({ history: [{ outcome: 'completed', title: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, commit: 'a'.repeat(40), reviewerEvidence: 'VERDICT: FAIL', verified: [] }] });
   const state = {};
   await gate.pass(POLICY, state, io);
   assert.equal(only(state).status, 'refused');
@@ -249,4 +249,26 @@ test('a transient API error is retried (PR creation) and never aborts the other 
   await gate.pass(POLICY, st, r.io);
   assert.equal(only(st).status, 'ready', 'not refused: retried next pass');
   assert.equal(r.w.notes.filter((n) => /erreur transitoire/.test(n)).length, 1, 'one message for the same error');
+});
+
+test('autopilot: only the commit made from the reviewed worktree is a candidate', async () => {
+  const { io } = world();
+  const h = { outcome: 'completed', title: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, reviewerEvidence: 'VERDICT: PASS', verified: ['jest'] };
+  io.readPilot = () => ({ history: [h] });
+  let state = {};
+  await gate.pass(POLICY, state, io);
+  assert.equal(Object.keys(state.candidates).length, 0, 'nothing committed: not a candidate');
+  h.commit = 'c'.repeat(40);
+  state = {};
+  await gate.pass(POLICY, state, io);
+  assert.equal(Object.keys(state.candidates).length, 0, 'branch moved past the reviewed commit: not a candidate');
+});
+
+test('a never-started candidate whose branch moved is replaced, not kept twice', async () => {
+  const { io } = world();
+  const h = { outcome: 'completed', title: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, commit: 'a'.repeat(40), reviewerEvidence: 'VERDICT: PASS', verified: ['jest'] };
+  io.readPilot = () => ({ history: [h] });
+  const state = { candidates: { ['Demo|mind-autopilot/2026-11-12-abc|' + 'f'.repeat(40)]: { repo: 'Demo', branch: 'mind-autopilot/2026-11-12-abc', status: 'new', history: [] } } };
+  await gate.pass(POLICY, state, io);
+  assert.deepEqual(Object.keys(state.candidates).map((k) => k.slice(-6)), ['aaaaaa']);
 });

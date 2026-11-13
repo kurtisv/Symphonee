@@ -183,6 +183,24 @@ function runGit(cwd, args, input) {
   return spawnSync('git', args, { cwd, timeout: 15000, encoding: 'utf8', windowsHide: true, input,
     maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
 }
+function validBaseRef(ref) {
+  const s = String(ref || '').trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(s) && !s.includes('..') ? s : null;
+}
+// The reviewed change becomes one commit on the task branch, so what the merge
+// gate later tests and merges is exactly what Codex approved. Returns the sha.
+function commitReviewed(cwd, plan, verified) {
+  const add = runGit(cwd, ['add', '-A']);
+  if (add.error || add.status !== 0) throw new Error('git add failed: ' + String(add.stderr || add.error?.message).slice(0, 200));
+  const subject = String(plan?.title || 'autopilot change').replace(/\s+/g, ' ').slice(0, 72);
+  const body = ['Autopilote Mind : revue Codex VERDICT: PASS.',
+    plan?.objective ? 'Objectif : ' + String(plan.objective).slice(0, 1500) : '',
+    verified && verified.length ? 'Verifications locales : ' + verified.join(', ') : ''].filter(Boolean).join('\n\n');
+  const r = spawnSync('git', ['commit', '--quiet', '-F', '-'], { cwd, timeout: 300000, encoding: 'utf8', windowsHide: true,
+    input: subject + '\n\n' + body + '\n', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  if (r.error || r.status !== 0) throw new Error('git commit failed: ' + String(r.stderr || r.stdout || r.error?.message).slice(0, 300));
+  return git(cwd, ['rev-parse', 'HEAD']);
+}
 function git(cwd, args) {
   const r = runGit(cwd, args);
   if (r.error || r.status !== 0) throw new Error('git failed: ' + String(r.stderr || r.error?.message || args[0]).slice(0, 200));
@@ -324,6 +342,9 @@ class MindAutopilot {
       sources: { files: (def.sources && Array.isArray(def.sources.files) ? def.sources.files : []).map(String).slice(0, 10),
         sentry: Boolean(def.sources && def.sources.sentry) },
       stepMinutes: Math.min(Math.max(Number(def.stepMinutes) || 0, 0), 240) || null,
+      // Where implementation worktrees start (e.g. "origin/master"). Without it
+      // they start from the main checkout's HEAD, whatever branch it is on.
+      baseRef: validBaseRef(def.baseRef),
       limits: def.limits && typeof def.limits === 'object' ? def.limits : null };
     this.profile = PROFILES[profile];
     this.limits = mergeLimits(this.profile.limits, this.def.limits);
@@ -722,10 +743,17 @@ class MindAutopilot {
         prompt: repoPin(this.state.repoPath, this.state.repoPath) + '\n\n'
           + (stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage)) });
     } else if (stage === 'implement') {
-      a.baseSha = git(this.state.repoPath, ['rev-parse', 'HEAD']);
+      let startPoint = null;
+      if (this.def.baseRef) {
+        const [remote, ...rest] = this.def.baseRef.split('/');
+        const f = rest.length ? runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]) : null;
+        if (f && (f.error || f.status !== 0)) this.log('warn', 'fetch ' + this.def.baseRef + ' impossible, base locale utilisee');
+        startPoint = this.def.baseRef;
+      }
+      a.baseSha = git(this.state.repoPath, ['rev-parse', '--verify', (startPoint || 'HEAD') + '^{commit}']);
       a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
       const branch = 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
-      task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch,
+      task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
         expectsRepoChanges: true, autoPermit: false, confineWrites: true, prompt: [
           repoPin('your current working directory', this.state.repoPath) + ' Never edit ' + this.state.repoPath + ' itself.',
           'Claude implementer in ISOLATED git worktree. Approved plan: ' + JSON.stringify(a.plan),
@@ -775,7 +803,7 @@ class MindAutopilot {
       evidence: a.plan?.evidence || [],
       key: a.plan ? taskKey(a.plan) : null, outcome,
       reviewerEvidence: reviewerEvidence ? String(reviewerEvidence).slice(0, 3000) : null,
-      worktree: a.worktree || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
+      worktree: a.worktree || null, commit: a.commit || null, baseSha: a.baseSha || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
       at: new Date().toISOString() });
@@ -847,6 +875,9 @@ class MindAutopilot {
       this.log('decision', 'Codex code review: ' + (v || 'NO VERDICT'));
       if (v === 'PASS') {
         if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('Review passed with no diff');
+        this.unlinkActive(a);
+        a.commit = commitReviewed(a.worktree.path, a.plan, a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : []);
+        this.log('commit', 'Changement revu commite sur ' + a.worktree.branch + ' : ' + a.commit.slice(0, 10));
         return this.complete('completed', raw);
       }
       a.review = raw; a.repairs++;
@@ -1059,7 +1090,7 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null,
-        stepMinutes: body.stepMinutes, limits: body.limits || null };
+        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, limits: body.limits || null };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
@@ -1072,5 +1103,5 @@ function mountMindAutopilot(addRoute, json, deps) {
   });
   return pilots.get('default');
 }
-module.exports = { MindAutopilot, mountMindAutopilot, parsePlan, verdict, taskKey, changedFiles,
+module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, verdict, taskKey, changedFiles,
   localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };

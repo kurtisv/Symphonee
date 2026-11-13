@@ -564,3 +564,25 @@ test('end of the window: the next stage of a running task waits for the next win
     assert.equal(f.tasks.get(f.pilot.state.active.taskId).opts.cli, 'codex');
   } finally { f.cleanup(); }
 });
+
+test('reviewed change is committed on the task branch; base refs are validated', () => {
+  const { commitReviewed, validBaseRef } = require('./autopilot');
+  assert.equal(validBaseRef('origin/master'), 'origin/master');
+  assert.equal(validBaseRef('-x'), null);
+  assert.equal(validBaseRef('origin/../x'), null);
+  assert.equal(validBaseRef(''), null);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-commit-'));
+  const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' }).trim();
+  g('init', '-q'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't');
+  fs.writeFileSync(path.join(dir, 'a.txt'), '1'); g('add', '.'); g('commit', '-qm', 'base');
+  const base = g('rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(dir, 'a.txt'), '2'); fs.writeFileSync(path.join(dir, 'b.test.js'), 'x');
+  const sha = commitReviewed(dir, { title: 'Fix   the\nthing', objective: 'Because' }, ['jest']);
+  assert.equal(sha, g('rev-parse', 'HEAD'));
+  assert.equal(g('rev-parse', 'HEAD~1'), base);
+  assert.equal(g('status', '--porcelain'), '');
+  const msg = g('log', '-1', '--format=%B');
+  assert.match(msg, /^Fix the thing\n\nAutopilote Mind : revue Codex VERDICT: PASS\./);
+  assert.match(msg, /Verifications locales : jest/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

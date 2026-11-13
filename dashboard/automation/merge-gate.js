@@ -155,8 +155,13 @@ function discoverAutopilot(repo, source, io) {
   for (const h of (st && st.history) || []) {
     if (h.outcome !== 'completed' || !h.worktree || !h.worktree.branch) continue;
     if (!h.worktree.branch.startsWith(source.branchPrefix)) continue;
+    // Only the commit the autopilot made from the reviewed worktree counts: a
+    // branch whose tip is not that commit (nothing committed, or changed since)
+    // is not what Codex approved.
+    if (!h.commit) continue;
     let sha;
     try { sha = io.git(repo.path, ['rev-parse', '--verify', h.worktree.branch + '^{commit}']); } catch (_) { continue; }
+    if (sha !== h.commit) { io.log && io.log('ignoree ' + h.worktree.branch + ' : la pointe n est plus le commit revu ' + String(h.commit).slice(0, 10)); continue; }
     out.push({ repo: repo.name, source: source.type, branch: h.worktree.branch, sha, origin: { pilot: source.pilot, title: h.title, at: h.at },
       proof: { review: /^\s*VERDICT:\s*PASS\b/.test(String(h.reviewerEvidence || '')), verified: Array.isArray(h.verified) && h.verified.length > 0, verifiedList: h.verified || [] } });
   }
@@ -199,7 +204,14 @@ async function pass(policy, state, io) {
     for (const m of state.merges.filter((x) => x.repo === repo.name && x.status === 'merged')) await watchMerge(m, repo, state, io);
     if (stopped) continue;
 
-    for (const c of await discover(repo, io)) {
+    const found = await discover(repo, io);
+    // A candidate never started whose branch now points elsewhere (re-committed,
+    // rebased) is replaced by the new commit: drop the stale entry.
+    const live = new Set(found.map((c) => c.repo + '|' + c.branch + '|' + c.sha));
+    for (const [k, c] of Object.entries(state.candidates)) {
+      if (c.repo === repo.name && c.status === 'new' && !live.has(k)) { delete state.candidates[k]; io.log('candidate remplacee ' + k); }
+    }
+    for (const c of found) {
       const key = c.repo + '|' + c.branch + '|' + c.sha;
       if (!state.candidates[key] && io.isAncestor(repo.path, c.sha, baseSha)) continue; // already in the base (merged by hand)
       if (!state.candidates[key]) {
