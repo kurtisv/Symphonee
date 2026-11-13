@@ -10,14 +10,16 @@
 const fs = require('fs');
 const path = require('path');
 
+// config/runtime.json is rewritten at every boot, so it wins: an inherited
+// SYMPHONEE_TOKEN goes stale after a restart (403 TOKEN_REQUIRED) in shells
+// that outlive it. The environment is the fallback when the file is absent.
 function apiToken() {
-  if (process.env.SYMPHONEE_TOKEN) return process.env.SYMPHONEE_TOKEN;
   try {
     const runtimePath = path.join(__dirname, '..', 'config', 'runtime.json');
-    return JSON.parse(fs.readFileSync(runtimePath, 'utf8')).token || '';
-  } catch (_) {
-    return '';
-  }
+    const t = JSON.parse(fs.readFileSync(runtimePath, 'utf8')).token;
+    if (t) return t;
+  } catch (_) {}
+  return process.env.SYMPHONEE_TOKEN || '';
 }
 
 // Header object to merge into a request's headers ({} when no token is found).
