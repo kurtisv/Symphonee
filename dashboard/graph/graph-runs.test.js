@@ -154,9 +154,10 @@ test('an invalid schedule is refused at creation', async () => {
 
 // ── Dropped connections and adopting a finished task ──────────────────
 test('a dropped poll connection does not fail the node; a failed node adopts its finished task', async () => {
-  let resets = 2, polls = 0;
+  let resets = 2, polls = 0, hang = 0; // hang = n: cut the n-th next poll
   const spawns = [];
   let taskState = 'completed';
+  const owners = {}; // taskId -> from
   const server = http.createServer((req, res) => {
     let s = ''; req.on('data', (c) => { s += c; });
     req.on('end', () => {
@@ -164,7 +165,9 @@ test('a dropped poll connection does not fail the node; a failed node adopts its
       if (req.url.startsWith('/api/orchestrator/task')) {
         polls++;
         if (resets > 0) { resets--; return req.socket.destroy(); } // ECONNRESET / socket hang up
-        return res.end(JSON.stringify({ state: taskState, result: 'done ' + req.url.split('id=')[1] }));
+        const id = decodeURIComponent(req.url.split('id=')[1]);
+        if (hang && --hang === 0) { res.writeHead(200); res.write('{"sta'); return setTimeout(() => req.socket.destroy(), 50); } // cut after headers
+        return res.end(JSON.stringify({ state: taskState, result: 'done ' + id, from: owners[id] || null }));
       }
       res.statusCode = 404; res.end('{}');
     });
@@ -183,10 +186,44 @@ test('a dropped poll connection does not fail the node; a failed node adopts its
     await waitFor(() => r2.nodes[0].status === 'failed', 15000);
     taskState = 'completed';
     await assert.rejects(engine.retryNode(r2.id, 'b', { taskId: 'bad id!' }), /invalid taskId/);
+    owners['task-foreign'] = 'main';
+    await assert.rejects(engine.retryNode(r2.id, 'b', { taskId: 'task-foreign' }), /was not spawned by run/);
+    owners['task-old'] = 'graph-run:' + r2.id;
+    r2.nodes[0].taskId = null; // pre-fix node: no recorded taskId
+    hang = 2; // ownership check passes, then the first adopted poll is cut after its headers: must not freeze
     await engine.retryNode(r2.id, 'b', { taskId: 'task-old' });
     await waitFor(() => r2.status === 'completed', 15000);
     assert.equal(spawns.length, 2, 'the adopted task was not spawned again');
     assert.equal(r2.nodes[0].output.result, 'done task-old');
+    assert.equal(r2.nodes[0].adoptTaskId, undefined, 'cleared once the node settled');
     await assert.rejects(engine.retryNode(r2.id, 'b'), /run is completed/);
+  } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});
+
+test('a pending node keeps its adopted task across a restart', async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  const spawns = [];
+  const server = http.createServer((req, res) => {
+    let s = ''; req.on('data', (c) => { s += c; });
+    req.on('end', () => {
+      if (req.url === '/api/orchestrator/spawn') { spawns.push(1); return res.end('{"id":"new"}'); }
+      return res.end(JSON.stringify({ state: 'completed', result: 'r ' + req.url.split('id=')[1] }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const e1 = new GraphRunsEngine({ repoRoot, apiPort: server.address().port });
+    e1.windowStateFn = () => CLOSED;
+    const run = await e1.createRun({ name: 'p', schedule: SCHED, nodes: [{ id: 'a', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a' }] });
+    await waitFor(() => run.waitingWindow);
+    run.nodes[0].adoptTaskId = 'kept1'; e1._persist(run);
+    for (const t of e1.windowTimers.values()) clearTimeout(t);
+    const e2 = new GraphRunsEngine({ repoRoot, apiPort: server.address().port });
+    e2.windowStateFn = () => OPEN;
+    await e2._executeNextBatch(run.id);
+    const r = e2.getRun(run.id);
+    assert.equal(spawns.length, 0, 'no new worker after the restart');
+    assert.equal(r.nodes[0].output.result, 'r kept1');
+    for (const t of e2.windowTimers.values()) clearTimeout(t);
   } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
 });

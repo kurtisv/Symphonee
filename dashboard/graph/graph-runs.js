@@ -198,6 +198,16 @@ class GraphRunsEngine extends EventEmitter {
     if (!node) throw new Error('no such node');
     if (node.status !== 'failed') throw new Error('node is ' + node.status + ', not failed');
     if (taskId !== undefined && !/^[A-Za-z0-9_-]{4,64}$/.test(String(taskId))) throw new Error('invalid taskId');
+    if (taskId) {
+      // Only a task this run spawned, not already used by another node, and
+      // for this node's working folder: never an arbitrary task's output.
+      const t = await apiRequest(this.apiHost, this.apiPort, 'GET', '/api/orchestrator/task?id=' + encodeURIComponent(taskId)).catch(() => null);
+      if (!t || t.error) throw new Error('task ' + taskId + ' not found');
+      if (t.from !== 'graph-run:' + runId) throw new Error('task ' + taskId + ' was not spawned by run ' + runId);
+      if (node.taskId && node.taskId !== taskId) throw new Error('node ' + nodeId + ' ran task ' + node.taskId + ', not ' + taskId);
+      if (run.nodes.some(n => n !== node && (n.taskId === taskId || n.adoptTaskId === taskId))) throw new Error('task ' + taskId + ' already belongs to another node');
+      if (node.cwd && t.cwd && path.resolve(String(t.cwd)).toLowerCase() !== path.resolve(String(node.cwd)).toLowerCase()) throw new Error('task ' + taskId + ' ran in ' + t.cwd + ', not in the node folder');
+    }
     node.status = 'pending'; node.error = null; node.endedAt = null;
     if (taskId) node.adoptTaskId = String(taskId);
     run.status = 'pending'; delete run.error;
@@ -438,6 +448,7 @@ class GraphRunsEngine extends EventEmitter {
         throw new Error(`Unknown node type: ${node.type}`);
       }
       node.output = output;
+      delete node.adoptTaskId;
       node.status = 'completed';
       node.endedAt = Date.now();
       // Merge node output into state under state.results[nodeId]
@@ -457,6 +468,7 @@ class GraphRunsEngine extends EventEmitter {
         return;
       }
       node.error = err.message;
+      delete node.adoptTaskId;
       node.status = 'failed';
       node.endedAt = Date.now();
       this._wal({ kind: 'node_failed', runId: run.id, nodeId: node.id, error: err.message });
@@ -492,8 +504,9 @@ class GraphRunsEngine extends EventEmitter {
         ...(Number(node.timeoutMs) > 0 ? { workerTimeoutMs: Number(node.timeoutMs) } : {}) };
       // Adopt a task that already ran for this node (retryNode with taskId):
       // its finished work is collected instead of being paid for again.
+      // Kept on the node (persisted) until it settles, so a restart during the
+      // adoption adopts again instead of spawning a new worker.
       const adopted = attempt === 0 && node.adoptTaskId ? node.adoptTaskId : null;
-      if (adopted) delete node.adoptTaskId;
       const spawnRes = adopted ? { id: adopted }
         : await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
       if (spawnRes && spawnRes.__error) {

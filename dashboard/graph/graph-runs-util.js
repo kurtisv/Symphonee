@@ -61,8 +61,15 @@ function unreachableFrom(nodes, startId, alreadySkipped = []) {
   return Array.from(skip);
 }
 
-function apiRequest(host, port, method, pathname, body) {
-  return new Promise((resolve, reject) => {
+function apiRequest(host, port, method, pathname, body, { timeoutMs = 60000 } = {}) {
+  return new Promise((resolveP, rejectP) => {
+    // Settles exactly once: a response cut after its headers (aborted / closed
+    // without 'end') or a silent server used to leave the promise pending
+    // forever, freezing the node's poll loop.
+    let settled = false;
+    const resolve = (v) => { if (!settled) { settled = true; resolveP(v); } };
+    const reject = (e) => { if (!settled) { settled = true; rejectP(e); } };
+    const netError = (msg, code) => Object.assign(new Error(msg), { code });
     const data = body !== undefined ? JSON.stringify(body) : null;
     const req = http.request({
       host, port, path: pathname, method,
@@ -77,6 +84,9 @@ function apiRequest(host, port, method, pathname, body) {
     }, res => {
       let chunks = '';
       res.on('data', c => { chunks += c; });
+      res.on('error', reject);
+      res.on('aborted', () => reject(netError('response aborted', 'ECONNRESET')));
+      res.on('close', () => reject(netError('response closed before end', 'ECONNRESET')));
       res.on('end', () => {
         let parsed;
         try { parsed = chunks ? JSON.parse(chunks) : null; } catch (_) { parsed = chunks; }
@@ -85,6 +95,7 @@ function apiRequest(host, port, method, pathname, body) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(netError('no answer within ' + timeoutMs + ' ms', 'ETIMEDOUT')));
     if (data) req.write(data);
     req.end();
   });
