@@ -40,9 +40,12 @@ function autopilotFacts(h, gateCandidate, { gated = true } = {}) {
   return { ...base, state: 'arrete', stateText: 'Arretee (' + h.outcome + ').' };
 }
 
-const resultOf = (run, id) => { const n = (run.nodes || []).find((x) => x.id === id); return n && n.result ? String(n.result) : ''; };
-const statusOf = (run, id) => { const n = (run.nodes || []).find((x) => x.id === id); return n ? n.status : null; };
-function pleinsensFacts(run) {
+// Steps are named per cycle (c1-conception, c2-conception...): matched by their suffix.
+const stepOf = (run, suffix) => (run.nodes || []).find((x) => new RegExp('^c\\d+-' + suffix + '$').test(String(x.id)));
+const resultOf = (run, suffix) => { const n = stepOf(run, suffix); return n && n.result ? String(n.result) : ''; };
+const statusOf = (run, suffix) => { const n = stepOf(run, suffix); return n ? n.status : null; };
+// gateCandidate: the merge gate's latest record for the loop's branch, if any.
+function pleinsensFacts(run, gateCandidate) {
   const key = 'ps:' + run.id;
   const base = { key, kind: 'pleinsens', at: run.createdAt, rawTitle: 'Cycle ' + (run.cycle || '?') + ' de la boucle PleinSens (' + run.id + ')', runId: run.id };
   const done = (run.nodes || []).filter((n) => n.status === 'completed').length, total = (run.nodes || []).length;
@@ -55,11 +58,15 @@ function pleinsensFacts(run) {
   }
   if (run.status === 'cancelled') return { ...base, state: 'arrete', stateText: 'Arrete a la main avant la fin (' + done + '/' + total + ' etapes).' };
   if (run.status === 'failed') return { ...base, state: 'arrete', stateText: 'Arrete sur une erreur (' + done + '/' + total + ' etapes).' };
-  if (statusOf(run, 'c1-consigner-garde') === 'completed')
-    return { ...base, state: 'a-integrer', stateText: 'Amelioration mesuree et gardee. Elle attend la porte de fusion pour entrer dans l application.' };
-  if (statusOf(run, 'c1-consigner-rejet') === 'completed')
+  if (statusOf(run, 'consigner-garde') === 'completed') {
+    const g = gateCandidate && gateCandidate.status;
+    if (g === 'merged' || g === 'confirmed') return { ...base, state: 'termine', stateText: 'Termine : l amelioration mesuree et gardee est integree a l application (fusionnee).' };
+    if (g === 'refused') return { ...base, state: 'arrete', stateText: 'Amelioration gardee, mais refusee par la porte de fusion' + (gateCandidate.note ? ' : ' + clip(gateCandidate.note, 160) : '') + '. Un humain doit decider.' };
+    return { ...base, state: 'a-integrer', stateText: 'Amelioration mesuree et gardee. Pas encore dans l application : elle attend la porte de fusion' + (g ? ' (etat : ' + g + ')' : '') + '.' };
+  }
+  if (statusOf(run, 'consigner-rejet') === 'completed')
     return { ...base, state: 'termine', stateText: 'Cycle termine : le changement a ete essaye et mesure, mais il n ameliorait pas assez. Il a ete annule ; rien ne change dans l application.' };
-  if (statusOf(run, 'c1-consigner-rejet-conception') === 'completed')
+  if (statusOf(run, 'consigner-rejet-conception') === 'completed')
     return { ...base, state: 'termine', stateText: 'Cycle termine sans changement : l idee a ete jugee mal concue par la revue, avant toute modification du code. Elle est a repenser.' };
   return { ...base, state: 'termine', stateText: 'Cycle termine (' + done + '/' + total + ' etapes).' };
 }
@@ -71,9 +78,9 @@ function sourceText(f, item) {
       'Preuves : ' + (item.evidence || []).slice(0, 2).map((e) => clip(e, 400)).join(' | '),
       'Revue Codex : ' + clip(item.reviewerEvidence, 900)].join('\n');
   }
-  return ['Conception : ' + tailOf(resultOf(item, 'c1-conception'), 900), 'Revue de la conception : ' + tailOf(resultOf(item, 'c1-revue-conception'), 1200),
-    'Mesures : ' + tailOf(resultOf(item, 'c1-implementation'), 700), 'Revue finale : ' + tailOf(resultOf(item, 'c1-revue-finale'), 700),
-    'Consignation : ' + tailOf(resultOf(item, 'c1-consigner-garde') || resultOf(item, 'c1-consigner-rejet') || resultOf(item, 'c1-consigner-rejet-conception'), 500)].join('\n');
+  return ['Conception : ' + tailOf(resultOf(item, 'conception'), 900), 'Revue de la conception : ' + tailOf(resultOf(item, 'revue-conception'), 1200),
+    'Mesures : ' + tailOf(resultOf(item, 'implementation'), 700), 'Revue finale : ' + tailOf(resultOf(item, 'revue-finale'), 700),
+    'Consignation : ' + tailOf(resultOf(item, 'consigner-garde') || resultOf(item, 'consigner-rejet') || resultOf(item, 'consigner-rejet-conception'), 500)].join('\n');
 }
 
 const PROMPT_RULES = [
@@ -92,9 +99,14 @@ function parseWording(raw) {
     const j = JSON.parse(m[0]);
     const ok = (v, n) => typeof v === 'string' && v.trim().length > 2 && v.length <= n;
     if (!ok(j.titre, 140) || !ok(j.fait, 600) || !ok(j.ameliore, 400)) return null;
-    // A file name or code token means the model did not follow the rules: rejected.
-    // Also refused: API paths, source folders, camelCase identifiers.
-    if ([j.titre, j.fait, j.ameliore].some((t) => /[\w-]+\.(ts|tsx|js|json|md|py|sql)\b|`|\(\)|=>|\/api\/|\b(src|api|app)\/|\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b/.test(t))) return null;
+    const texts = [j.titre, j.fait, j.ameliore];
+    // A file name, path or code token means the model did not follow the rules:
+    // file extensions, code punctuation, Windows or slash paths (word/word),
+    // camelCase and snake_case identifiers.
+    if (texts.some((t) => /[\w-]+\.(ts|tsx|js|json|md|py|sql|env|ya?ml)\b|(^|\s)\.env\b|`|\(\)|=>|[A-Za-z]:\\|\\[\w.-]+\\|\b[\w.-]{3,}\/[\w.-]{3,}|\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]+\b|\b[a-z0-9]+_[a-z0-9_]+\b/.test(t))) return null;
+    // The finished / merged state is computed by code and shown apart: a
+    // sentence claiming it (e.g. injected through a report) is refused.
+    if (texts.some((t) => /fusionn|termin[eé]|int[eé]gr[eé]e? (a|à|dans) l.?application|d[eé]ploy|en production|mis(e)? en ligne|publi[eé]/i.test(t))) return null;
     return { titre: j.titre.trim(), fait: j.fait.trim(), ameliore: j.ameliore.trim() };
   } catch (_) { return null; }
 }
@@ -127,19 +139,20 @@ function parseBatch(raw, jobs) {
 }
 
 // Default writer: one Codex worker through the local orchestrator (read-only).
-function codexWriter({ host = '127.0.0.1', port = 3800, cwd, model = 'gpt-6.1-sol' } = {}) {
-  const { apiRequest } = require('../graph/graph-runs-util');
+function codexWriter({ host = '127.0.0.1', port = 3800, cwd, model = 'gpt-6.1-sol', request, pollMs = 3000, maxMs = 15 * 60000, now = Date.now } = {}) {
+  const apiRequest = request || require('../graph/graph-runs-util').apiRequest;
   return async (jobs) => {
     const t = await apiRequest(host, port, 'POST', '/api/orchestrator/spawn',
       { cli: 'codex', model, effort: 'low', readOnly: true, cwd, from: 'en-clair', prompt: batchPrompt(jobs) });
     if (!t || !t.id) throw new Error('spawn refused');
-    const t0 = Date.now();
+    const t0 = now();
     for (;;) {
-      await new Promise((r) => setTimeout(r, 3000));
+      // The deadline is checked first: a lasting read failure cannot hold the batch forever.
+      if (now() - t0 > maxMs) throw new Error('worker too slow or unreadable');
+      await new Promise((r) => setTimeout(r, pollMs));
       let task; try { task = await apiRequest(host, port, 'GET', '/api/orchestrator/task?id=' + t.id); } catch (_) { continue; }
-      if (task.state === 'completed') return { text: task.result, by: 'Codex ' + model };
-      if (['failed', 'cancelled', 'timeout'].includes(task.state)) throw new Error('worker ' + task.state);
-      if (Date.now() - t0 > 15 * 60000) throw new Error('worker too slow');
+      if (task && task.state === 'completed') return { text: task.result, by: 'Codex ' + model };
+      if (task && ['failed', 'cancelled', 'timeout'].includes(task.state)) throw new Error('worker ' + task.state);
     }
   };
 }

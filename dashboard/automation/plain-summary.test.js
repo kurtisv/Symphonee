@@ -68,3 +68,19 @@ test('a run with no finished step is not sent to the writer', async () => {
   assert.match(out[0].redaction, /rien a resumer/);
   assert.match(out[0].stateText, /Arrete a la main/);
 });
+
+test('review 3: any cycle number, gate state for PleinSens, no completion claims, paths refused, bounded polling', async () => {
+  const run = (done) => ({ id: 'gr', status: 'completed', cycle: 2, nodes: [{ id: done, status: 'completed' }] });
+  assert.equal(p.pleinsensFacts(run('c2-consigner-garde')).state, 'a-integrer');
+  assert.equal(p.pleinsensFacts(run('c2-consigner-garde'), { status: 'merged' }).state, 'termine');
+  assert.equal(p.pleinsensFacts(run('c2-consigner-garde'), { status: 'refused', note: 'CI' }).state, 'arrete');
+  assert.match(p.pleinsensFacts(run('c3-consigner-rejet')).stateText, /essaye et mesure/);
+  const ok = { titre: 'Limites contre la triche', fait: 'Chaque personne a sa propre limite.', ameliore: 'Les prix sont plus fiables.' };
+  for (const bad of ['La correction est terminee et fusionnee dans l application.', 'Elle est deployee en production.',
+    'voir C:\\projet\\notes ici', 'dans dashboard/automation', 'la fonction check_price', 'le fichier .env'])
+    assert.equal(p.parseWording(JSON.stringify({ ...ok, fait: bad })), null, bad);
+  assert.deepEqual(p.parseWording(JSON.stringify({ ...ok, fait: 'Jusqu a 30 envois par heure, soit 2 par minute.' })).fait, 'Jusqu a 30 envois par heure, soit 2 par minute.');
+  let t = 0;
+  const w = p.codexWriter({ request: async (h, port, method) => { if (method === 'POST') return { id: 'x' }; throw new Error('down'); }, pollMs: 1, maxMs: 50, now: () => (t += 10) });
+  await assert.rejects(w([{ key: 'k', text: 't' }]), /too slow or unreadable/);
+});

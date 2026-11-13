@@ -174,7 +174,12 @@ async function buildPlainSummary(loop, { port = 3800, repoRoot }) {
   for (const m of gate.merges || []) if (m.branch) byBranch[m.branch] = { ...(byBranch[m.branch] || {}), status: m.status === 'confirmed' ? 'confirmed' : 'merged' };
   if (loop === 'pleinsens') {
     const d = await buildLoopDetail('pleinsens', { port, repoRoot });
-    return ((d && d.runs) || []).slice(0, 5).map((r) => ({ facts: plain.pleinsensFacts(r), item: r }));
+    // The loop's branch in the merge gate (source pleinsens-loop), latest record.
+    const loopCand = Object.values(gate.candidates || {}).filter((c) => c.source === 'pleinsens-loop')
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+    const loopGate = loopCand ? byBranch[loopCand.branch] : null;
+    // Only the most recent run can be the one the gate holds; older runs keep their own outcome.
+    return ((d && d.runs) || []).slice(0, 5).map((r, i) => ({ facts: plain.pleinsensFacts(r, i === 0 ? loopGate : null), item: r }));
   }
   if (!/^[a-z0-9-]{1,40}$/.test(String(loop))) return null;
   const snap = await getJson(port, '/api/mind/autopilot?pilot=' + encodeURIComponent(loop));
