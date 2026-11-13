@@ -291,7 +291,30 @@ async function step(c, repo, baseSha, state, io) {
       for (let i = 0; i < 4 && !pr; i++) {
         try { pr = await io.api('POST', '/api/github/pulls/create', { repo: repo.github, head: c.branch, base: repo.base,
           title: prTitle(c), body: prBody(c, repo) }); }
-        catch (e) { lastErr = e; await (io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))))(5000 * (i + 1)); }
+        catch (e) {
+          lastErr = e;
+          if (/already exists/i.test(String(e && e.message))) break; // retrying cannot help
+          await (io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))))(5000 * (i + 1));
+        }
+      }
+      // A PR is already open for this branch (opened by hand or by an earlier
+      // pass): adopt it only if it carries the exact verified commit.
+      if (!pr && lastErr && /already exists/i.test(String(lastErr.message))) {
+        // The list does not say which repository a PR comes from (a fork can use
+        // the same branch name), so only a PR whose head IS the verified commit is
+        // adopted; the branch was just pushed to that commit. Anything else
+        // leaves the candidate ready, retried at the next pass, with one warning.
+        const list = await io.api('GET', '/api/github/pulls?repo=' + encodeURIComponent(repo.github) + '&state=open');
+        const same = ((list && list.pulls) || []).filter((p) => p.headRef === c.branch && p.baseRef === repo.base);
+        const open = same.find((p) => p.headSha === c.sha);
+        if (!open) throw new Error('une PR existe deja pour ' + c.branch + ' mais aucune PR ouverte visible ne porte le commit verifie ' + c.sha.slice(0, 8)
+          + (same.length ? ' (tete(s) : ' + same.map((p) => '#' + p.number + ' ' + String(p.headSha).slice(0, 8)).join(', ') + ')' : ''));
+        c.pr = open.number; c.prUrl = open.htmlUrl || null;
+        setStatus(c, 'pr-open', 'PR existante #' + open.number + ' reprise (meme commit)', io);
+        await io.api('POST', '/api/github/pulls/comment', { repo: repo.github, number: open.number,
+          body: 'Porte de fusion automatique : cette PR porte le commit verifie `' + c.sha.slice(0, 10) + '` (regles 3-7 vertes, chaine ' + (c.chain || []).length + '/' + (c.chain || []).length
+            + '). Elle est reprise par la porte : CI GitHub, gouvernance et rythme de fusion s appliquent comme pour une PR ouverte par la porte.' }).catch(() => {});
+        return;
       }
       if (!pr) throw lastErr;
       if (!pr || !pr.number) return refuse(c, repo, ['creation de la PR impossible : ' + JSON.stringify(pr).slice(0, 200)], io);

@@ -251,6 +251,42 @@ test('a transient API error is retried (PR creation) and never aborts the other 
   assert.equal(r.w.notes.filter((n) => /erreur transitoire/.test(n)).length, 1, 'one message for the same error');
 });
 
+test('a PR already open for the branch is adopted when it carries the verified commit', async () => {
+  const exists = () => { throw new Error('HTTP 502 /api/github/pulls/create {"error":"GitHub API error (422): A pull request already exists for kurtisv:mind-autopilot/2026-11-12-abc."}'); };
+  const setup = (headSha, listed = true) => {
+    const r = world(); let creates = 0;
+    r.io.sleep = async () => { throw new Error('no sleep expected on already-exists'); };
+    const api = r.io.api;
+    r.io.api = async (m, p, b) => {
+      if (p === '/api/github/pulls/create') { creates++; return exists(); }
+      if (p.startsWith('/api/github/pulls?')) return { pulls: listed ? [{ number: 126, headRef: 'other', baseRef: 'master', headSha: 'z' },
+        { number: 125, headRef: 'mind-autopilot/2026-11-12-abc', baseRef: 'master', headSha: 'e'.repeat(40) }, // fork, same name
+        { number: 127, headRef: 'mind-autopilot/2026-11-12-abc', baseRef: 'master', headSha: headSha || r.w.sha, htmlUrl: 'https://github.com/x/y/pull/127' }] : [] };
+      return api(m, p, b);
+    };
+    return { ...r, creates: () => creates };
+  };
+  // Same commit: adopted, a comment explains it, and the flow continues.
+  let r = setup();
+  let st = {};
+  await gate.pass(POLICY, st, r.io);
+  let c = only(st);
+  assert.equal(c.status, 'pr-open'); assert.equal(c.pr, 127); assert.equal(r.creates(), 1, 'no blind retry');
+  assert.equal(r.w.comments.length, 1); assert.match(r.w.comments[0].body, /reprise par la porte/);
+  // Another commit at the head (e.g. a fork with the same branch name): never
+  // adopted, never refused on that basis; stays ready with one warning.
+  r = setup('d'.repeat(40)); st = {};
+  await gate.pass(POLICY, st, r.io);
+  await gate.pass(POLICY, st, r.io);
+  c = only(st);
+  assert.equal(c.status, 'ready'); assert.equal(c.pr, undefined); assert.equal(r.w.comments.length, 0);
+  assert.equal(r.w.notes.filter((n) => /aucune PR ouverte visible ne porte le commit verifie/.test(n)).length, 1);
+  // Not listed yet: stays ready, retried next pass.
+  r = setup(null, false); st = {};
+  await gate.pass(POLICY, st, r.io);
+  assert.equal(only(st).status, 'ready');
+});
+
 test('autopilot: only the commit made from the reviewed worktree is a candidate', async () => {
   const { io } = world();
   const h = { outcome: 'completed', title: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, reviewerEvidence: 'VERDICT: PASS', verified: ['jest'] };
