@@ -55,3 +55,26 @@ test('detail views: graph run nodes and merge gate candidates', () => {
   assert.equal(g.candidates[1].sha, 'aaaaaaaaaa'); assert.equal(g.candidates[1].note, 'n1'); assert.equal(g.candidates[1].title, 'T');
   assert.deepEqual(gateView(null).candidates, []);
 });
+
+test('detail route builder: only known loops, constant files, runs from the API', async () => {
+  const http = require('http'); const fs = require('fs'); const os = require('os'); const path = require('path');
+  const { buildLoopDetail } = require('./loops-status');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loops-'));
+  fs.mkdirSync(path.join(root, '.ai-workspace'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.ai-workspace', 'boucle-lanceur.log'), 'l1\nl2\n');
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/api/graph-runs') return res.end(JSON.stringify([{ id: 'gr_a', name: 'PleinSens boucle predictions - cycle 1', createdAt: 2 }, { id: 'gr_x', name: 'autre', createdAt: 3 }]));
+    if (req.url === '/api/graph-runs/gr_a') return res.end(JSON.stringify({ id: 'gr_a', name: 'PleinSens boucle predictions - cycle 1', status: 'completed', nodes: [{ id: 'n', status: 'completed' }] }));
+    res.statusCode = 404; res.end('{}');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    assert.equal(await buildLoopDetail('../../etc', { port, repoRoot: root }), null, 'unknown id: nothing read');
+    const d = await buildLoopDetail('pleinsens', { port, repoRoot: root });
+    assert.deepEqual(d.runs.map((r) => r.id), ['gr_a'], 'only the loop runs');
+    assert.deepEqual(d.log, ['l1', 'l2']);
+    const g = await buildLoopDetail('porte-fusion', { port, repoRoot: root });
+    assert.deepEqual(g.candidates, []); assert.deepEqual(g.log, []);
+  } finally { srv.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});

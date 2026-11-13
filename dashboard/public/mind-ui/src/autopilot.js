@@ -60,7 +60,7 @@ import { escapeHtml } from './helpers.js';
     const id = ap.loopView;
     return fetch('/api/automation/loops/detail?id=' + encodeURIComponent(id), { cache: 'no-store' })
       .then(r => r.json()).then(d => { if (ap.loopView === id) { ap.loopDetail = d; paint(); } })
-      .catch(e => { ap.loopDetail = { error: e.message }; paint(); });
+      .catch(e => { if (ap.loopView === id) { ap.loopDetail = { error: e.message }; paint(); } });
   }
 
   async function act(label, fn) {
@@ -166,12 +166,11 @@ import { escapeHtml } from './helpers.js';
   const hm = (t) => t ? new Date(t).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
   const dur = (a, b) => { if (!a) return ''; const m = Math.round(((b || Date.now()) - a) / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
   const logBlock = (lines) => '<pre style="white-space:pre-wrap;font-size:11px;max-height:260px;overflow:auto;margin:0;">' + esc((lines || []).join('\n') || '(vide)') + '</pre>';
-  const jsArg = (v) => '\'' + esc(v) + '\'';
 
   function loopDetailHtml() {
     const d = ap.loopDetail; const id = ap.loopView;
-    const back = '<button class="tab-bar-btn" onclick="MindAutopilot.select(' + jsArg(ap.pilot) + ')">Retour aux autopilotes</button> '
-      + '<button class="tab-bar-btn" onclick="MindAutopilot.showLoop(' + jsArg(id) + ')">Actualiser</button>';
+    const back = '<button class="tab-bar-btn" data-pilot="' + esc(ap.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)">Retour aux autopilotes</button> '
+      + '<button class="tab-bar-btn" data-loop="' + esc(id) + '" onclick="MindAutopilot.showLoop(this.dataset.loop)">Actualiser</button>';
     const head = (t) => '<div class="ap-card"><div class="ap-btns" style="align-items:center;justify-content:space-between;"><div class="ap-big">' + esc(t) + '</div><div>' + back + '</div></div>'
       + (ap.message ? '<div class="ap-msg" style="margin-top:6px;">' + esc(ap.message) + '</div>' : '') + '</div>';
     if (!d) return head('Chargement...');
@@ -180,14 +179,17 @@ import { escapeHtml } from './helpers.js';
       const runs = (d.runs || []).map((r, i) => {
         const rows = r.nodes.map(n => {
           const canRetry = n.status === 'failed' && ['running', 'pending', 'failed', 'paused'].includes(r.status);
+          const adopt = canRetry && n.taskId && !/^worker (failed|cancelled|timeout) on /.test(String(n.error || '')) ? n.taskId : '';
           return '<tr><td><span class="ap-dot" style="background:' + (NODE_COLOR[n.status] || 'var(--subtext0)') + ';margin-right:6px;"></span><b>' + esc(n.id) + '</b></td>'
             + '<td>' + esc(NODE_LABEL[n.status] || n.status) + '</td>'
             + '<td>' + esc(n.cli ? n.cli + (n.model ? ' ' + n.model : '') : (n.type === 'branch' ? 'decision (sans IA)' : '')) + '</td>'
             + '<td>' + esc(hm(n.startedAt)) + (n.startedAt ? ' (' + esc(dur(n.startedAt, n.endedAt)) + ')' : '') + '</td>'
             + '<td style="max-width:520px;">' + (n.error ? '<div class="ap-err">' + esc(n.error) + '</div>' : '')
             + (n.result ? '<details><summary>Resultat</summary><pre style="white-space:pre-wrap;font-size:11px;margin:4px 0;">' + esc(n.result) + '</pre></details>' : '')
-            + (canRetry ? '<button class="tab-bar-btn" style="margin-top:4px;" onclick="MindAutopilot.retryNode(' + jsArg(r.id) + ',' + jsArg(n.id) + ',' + (n.taskId ? jsArg(n.taskId) : 'null') + ')" title="'
-              + (n.taskId ? 'Reprend l etape en adoptant la tache deja lancee : si elle a fini, rien n est repaye' : 'Relance l etape') + '">Reprendre l etape</button>' : '')
+            + (canRetry ? '<button class="tab-bar-btn" style="margin-top:4px;" data-run="' + esc(r.id) + '" data-node="' + esc(n.id) + '" data-task="' + esc(adopt) + '"'
+              + ' onclick="MindAutopilot.retryNode(this.dataset.run, this.dataset.node, this.dataset.task)" title="'
+              + (adopt ? 'Reprend l etape en adoptant sa tache deja lancee : si elle a fini, rien n est repaye' : 'Relance l etape avec un nouveau worker') + '">'
+              + (adopt ? 'Reprendre l etape (adopter sa tache)' : 'Relancer l etape') + '</button>' : '')
             + '</td></tr>';
         }).join('');
         const done = r.nodes.filter(n => n.status === 'completed').length;
