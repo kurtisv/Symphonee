@@ -27,6 +27,12 @@ try { sentry = require('../automation/sentry-report'); } catch (_) {}
 
 const STATES = ['pending', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'paused'];
 
+function isTransientNetError(e) {
+  const code = e && (e.code || '');
+  return ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ECONNABORTED'].includes(code)
+    || /socket hang up|ECONNRESET/i.test(String(e && e.message));
+}
+
 class GraphRunsEngine extends EventEmitter {
   constructor({ repoRoot, apiHost = '127.0.0.1', apiPort = 3800, injectToTerminal = null }) {
     super();
@@ -178,6 +184,27 @@ class GraphRunsEngine extends EventEmitter {
     run.updatedAt = Date.now();
     this._wal({ kind: 'paused', runId: id });
     this._persist(run);
+    return run;
+  }
+
+  // Re-run a FAILED node. With taskId, the node adopts that orchestrator task
+  // (typically the one it had spawned, which finished after the engine lost
+  // track of it) instead of spawning a new worker.
+  async retryNode(runId, nodeId, { taskId } = {}) {
+    const run = this.runs.get(runId);
+    if (!run) throw new Error('no such run');
+    if (['cancelled', 'completed'].includes(run.status)) throw new Error('run is ' + run.status);
+    const node = run.nodes.find(n => n.id === nodeId);
+    if (!node) throw new Error('no such node');
+    if (node.status !== 'failed') throw new Error('node is ' + node.status + ', not failed');
+    if (taskId !== undefined && !/^[A-Za-z0-9_-]{4,64}$/.test(String(taskId))) throw new Error('invalid taskId');
+    node.status = 'pending'; node.error = null; node.endedAt = null;
+    if (taskId) node.adoptTaskId = String(taskId);
+    run.status = 'pending'; delete run.error;
+    run.updatedAt = Date.now();
+    this._wal({ kind: 'node_retried', runId, nodeId, adoptTaskId: node.adoptTaskId || null });
+    this._persist(run);
+    setImmediate(() => this._executeNextBatch(runId).catch(err => { this._failRun(runId, err.message); }));
     return run;
   }
 
@@ -463,7 +490,12 @@ class GraphRunsEngine extends EventEmitter {
         // Optional per-node time limit (ms). Without it a cloud worker is cut
         // at the task store default (15 min), too short for long steps.
         ...(Number(node.timeoutMs) > 0 ? { workerTimeoutMs: Number(node.timeoutMs) } : {}) };
-      const spawnRes = await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
+      // Adopt a task that already ran for this node (retryNode with taskId):
+      // its finished work is collected instead of being paid for again.
+      const adopted = attempt === 0 && node.adoptTaskId ? node.adoptTaskId : null;
+      if (adopted) delete node.adoptTaskId;
+      const spawnRes = adopted ? { id: adopted }
+        : await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
       if (spawnRes && spawnRes.__error) {
         lastError = `spawn ${cli} failed: ${spawnRes.__error.message || spawnRes.__error}`;
         if (!this._shouldRetryOnAnotherModel(lastError)) throw new Error(lastError);
@@ -473,7 +505,10 @@ class GraphRunsEngine extends EventEmitter {
         throw new Error(`spawn ${cli} refused: ${JSON.stringify(spawnRes)}`);
       }
       const taskId = spawnRes.id;
+      node.taskId = taskId; // kept so a failed node can adopt its task later
+      this._persist(run);
       let taskFailed = false;
+      let netErrors = 0;
       while (true) {
         await sleep(1500);
         if (['paused', 'cancelled'].includes(run.status)) throw new Error('run paused/cancelled');
@@ -481,7 +516,16 @@ class GraphRunsEngine extends EventEmitter {
           await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/cancel', { taskId }).catch(() => {});
           throw Object.assign(new Error('stopped at the work window hard end ' + run.schedule.hardEnd), { windowStop: true });
         }
-        const task = await apiRequest(this.apiHost, this.apiPort, 'GET', `/api/orchestrator/task?id=${taskId}`);
+        let task;
+        try {
+          task = await apiRequest(this.apiHost, this.apiPort, 'GET', `/api/orchestrator/task?id=${taskId}`);
+          netErrors = 0;
+        } catch (e) {
+          // A dropped local connection is not a worker failure: poll again
+          // (about one minute of consecutive errors before giving up).
+          if (isTransientNetError(e) && ++netErrors <= 40) continue;
+          throw e;
+        }
         if (!task) { lastError = `task ${taskId} disappeared on ${cli}`; taskFailed = true; break; }
         if (task.state === 'completed') return { taskId, cli, model, result: task.result, attempts: attempt + 1, triedClis };
         if (['failed', 'cancelled', 'timeout'].includes(task.state)) {

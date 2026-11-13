@@ -66,6 +66,9 @@ function apiRequest(host, port, method, pathname, body) {
     const data = body !== undefined ? JSON.stringify(body) : null;
     const req = http.request({
       host, port, path: pathname, method,
+      // No pooled keep-alive socket: reusing one the server just closed gave
+      // "read ECONNRESET" and failed a whole graph node mid-poll.
+      agent: false,
       // The server gates every mutating request behind the per-boot token and
       // exports it as SYMPHONEE_TOKEN; without it a worker spawn is a 403.
       headers: Object.assign({ Accept: 'application/json' },

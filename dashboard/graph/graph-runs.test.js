@@ -151,3 +151,42 @@ test('an invalid schedule is refused at creation', async () => {
     await assert.rejects(engine.createRun({ name: 'x', schedule: { start: '13:00', end: '08:00', hardEnd: '07:00' }, nodes: [] }), /hardEnd/);
   } finally { fs.rmSync(repoRoot, { recursive: true, force: true }); }
 });
+
+// ── Dropped connections and adopting a finished task ──────────────────
+test('a dropped poll connection does not fail the node; a failed node adopts its finished task', async () => {
+  let resets = 2, polls = 0;
+  const spawns = [];
+  let taskState = 'completed';
+  const server = http.createServer((req, res) => {
+    let s = ''; req.on('data', (c) => { s += c; });
+    req.on('end', () => {
+      if (req.method === 'POST' && req.url === '/api/orchestrator/spawn') { spawns.push(JSON.parse(s)); return res.end(JSON.stringify({ id: 'task-' + spawns.length })); }
+      if (req.url.startsWith('/api/orchestrator/task')) {
+        polls++;
+        if (resets > 0) { resets--; return req.socket.destroy(); } // ECONNRESET / socket hang up
+        return res.end(JSON.stringify({ state: taskState, result: 'done ' + req.url.split('id=')[1] }));
+      }
+      res.statusCode = 404; res.end('{}');
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: server.address().port });
+    const run = await engine.createRun({ name: 'n', nodes: [{ id: 'a', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a' }] });
+    await waitFor(() => ['completed', 'failed'].includes(run.status), 15000);
+    assert.equal(run.nodes[0].status, 'completed', 'two dropped polls, then the result');
+    assert.equal(run.nodes[0].taskId, 'task-1');
+
+    taskState = 'failed';
+    const r2 = await engine.createRun({ name: 'm', nodes: [{ id: 'b', type: 'worker', cli: 'codex', noFallback: true, prompt: 'b' }] });
+    await waitFor(() => r2.nodes[0].status === 'failed', 15000);
+    taskState = 'completed';
+    await assert.rejects(engine.retryNode(r2.id, 'b', { taskId: 'bad id!' }), /invalid taskId/);
+    await engine.retryNode(r2.id, 'b', { taskId: 'task-old' });
+    await waitFor(() => r2.status === 'completed', 15000);
+    assert.equal(spawns.length, 2, 'the adopted task was not spawned again');
+    assert.equal(r2.nodes[0].output.result, 'done task-old');
+    await assert.rejects(engine.retryNode(r2.id, 'b'), /run is completed/);
+  } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});
