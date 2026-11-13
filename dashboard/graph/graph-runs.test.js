@@ -51,3 +51,103 @@ test('worker node timeoutMs is forwarded to the spawn as workerTimeoutMs', async
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+// ── Work windows ──────────────────────────────────────────────────────
+function fakeApi() {
+  const calls = { spawns: [], cancels: [] };
+  let taskState = 'completed';
+  const server = http.createServer((req, res) => {
+    let s = '';
+    req.on('data', (c) => { s += c; });
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'POST' && req.url === '/api/orchestrator/spawn') { calls.spawns.push(JSON.parse(s)); return res.end(JSON.stringify({ id: 'task-' + calls.spawns.length })); }
+      if (req.method === 'POST' && req.url === '/api/orchestrator/cancel') { calls.cancels.push(JSON.parse(s)); return res.end('{"ok":true}'); }
+      if (req.method === 'GET' && req.url.startsWith('/api/orchestrator/task')) return res.end(JSON.stringify({ state: taskState, result: 'ok' }));
+      res.statusCode = 404; res.end('{}');
+    });
+  });
+  return { server, calls, setTaskState: (v) => { taskState = v; },
+    listen: () => new Promise((r) => server.listen(0, '127.0.0.1', r)), port: () => server.address().port };
+}
+const OPEN = { canStart: true, inHard: true, msToHardEnd: 4 * 3600000, nextStart: Date.now() + 86400000 };
+const CLOSED = { canStart: false, inHard: false, msToHardEnd: 0, nextStart: Date.now() + 3600000 };
+const waitFor = async (pred, ms = 8000) => { const t0 = Date.now(); while (!pred()) { if (Date.now() - t0 > ms) throw new Error('timeout'); await new Promise(r => setTimeout(r, 50)); } };
+const SCHED = { start: '08:00', end: '13:00', hardEnd: '14:00' };
+
+test('outside its window a run starts nothing, waits, and runs when the window opens', async () => {
+  const api = fakeApi(); await api.listen();
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: api.port() });
+    let w = CLOSED; engine.windowStateFn = () => w;
+    const run = await engine.createRun({ name: 'w', schedule: SCHED, nodes: [{ id: 'a', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a' }] });
+    await waitFor(() => run.waitingWindow);
+    assert.equal(api.calls.spawns.length, 0, 'nothing spawned outside the window');
+    assert.equal(run.status, 'pending');
+    w = OPEN;
+    await engine._executeNextBatch(run.id);
+    assert.equal(api.calls.spawns.length, 1);
+    assert.equal(run.status, 'completed');
+    assert.equal(run.waitingWindow, undefined);
+    for (const t of engine.windowTimers.values()) clearTimeout(t);
+  } finally { api.server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});
+
+test('a node needing more time than is left before hardEnd does not start', async () => {
+  const api = fakeApi(); await api.listen();
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: api.port() });
+    engine.windowStateFn = () => ({ ...OPEN, msToHardEnd: 3600000 });
+    const run = await engine.createRun({ name: 'w', schedule: SCHED, nodes: [{ id: 'long', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a', minWindowMs: 3 * 3600000 }] });
+    await waitFor(() => run.waitingWindow);
+    assert.equal(api.calls.spawns.length, 0, 'one hour left, three needed: waits for the next window');
+    for (const t of engine.windowTimers.values()) clearTimeout(t);
+  } finally { api.server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});
+
+test('at hardEnd a running node is stopped, re-queued (not failed) and the run waits', async () => {
+  const api = fakeApi(); await api.listen(); api.setTaskState('running');
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: api.port() });
+    let w = OPEN; engine.windowStateFn = () => w;
+    const run = await engine.createRun({ name: 'w', schedule: SCHED, nodes: [{ id: 'a', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a' }] });
+    await waitFor(() => api.calls.spawns.length === 1);
+    w = CLOSED;
+    await waitFor(() => run.waitingWindow, 10000);
+    const node = run.nodes[0];
+    assert.deepEqual(api.calls.cancels, [{ taskId: 'task-1' }], 'the worker task was cancelled');
+    assert.equal(node.status, 'pending');
+    assert.equal(node.windowStops, 1);
+    assert.equal(node.error, null);
+    assert.notEqual(run.status, 'failed');
+    for (const t of engine.windowTimers.values()) clearTimeout(t);
+  } finally { api.server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});
+
+test('after a restart a waiting run is resumed and runs once its window is open', async () => {
+  const api = fakeApi(); await api.listen();
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const e1 = new GraphRunsEngine({ repoRoot, apiPort: api.port() });
+    e1.windowStateFn = () => CLOSED;
+    const run = await e1.createRun({ name: 'w', schedule: SCHED, nodes: [{ id: 'a', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a' }] });
+    await waitFor(() => run.waitingWindow);
+    for (const t of e1.windowTimers.values()) clearTimeout(t);
+    // New server process: the run is loaded from disk and its window re-checked.
+    const e2 = new GraphRunsEngine({ repoRoot, apiPort: api.port() });
+    e2.windowStateFn = () => OPEN; // set before the deferred resume runs
+    await waitFor(() => (e2.runs.get(run.id) || {}).status === 'completed');
+    assert.equal(api.calls.spawns.length, 1);
+  } finally { api.server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});
+
+test('an invalid schedule is refused at creation', async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: 1 });
+    await assert.rejects(engine.createRun({ name: 'x', schedule: { start: '13:00', end: '08:00', hardEnd: '07:00' }, nodes: [] }), /hardEnd/);
+  } finally { fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});

@@ -87,6 +87,38 @@ function apiRequest(host, port, method, pathname, body) {
   });
 }
 
+
+// ── Work windows ──────────────────────────────────────────────────────
+// A run may carry schedule { start, end, hardEnd } (local "HH:MM"; a window
+// may cross midnight). No node STARTS outside [start, end); a node still
+// running at hardEnd is stopped and re-queued for the next window. hardEnd
+// defaults to end and must not come before it.
+const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const toMin = (s) => { const m = HHMM.exec(String(s || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+function validRunSchedule(s) {
+  if (s === undefined || s === null) return null;
+  const start = toMin(s.start), end = toMin(s.end), hard = s.hardEnd === undefined ? end : toMin(s.hardEnd);
+  if (start === null || end === null || hard === null || start === end) throw new Error('schedule needs {start:"HH:MM", end:"HH:MM", hardEnd?:"HH:MM"}');
+  const len = (x) => ((x - start + 1440) % 1440) || 1440;
+  if (len(hard) < len(end)) throw new Error('schedule.hardEnd must not come before schedule.end');
+  return { start: s.start, end: s.end, hardEnd: s.hardEnd === undefined ? s.end : s.hardEnd };
+}
+// { canStart, inHard, msToHardEnd, nextStart } at `now` (local time).
+function windowState(s, now = Date.now()) {
+  const d = new Date(now);
+  const exact = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60 + d.getMilliseconds() / 60000;
+  const start = toMin(s.start);
+  const len = (x) => ((x - start + 1440) % 1440) || 1440;
+  const elapsed = (exact - start + 1440) % 1440;
+  const lenEnd = len(toMin(s.end)), lenHard = len(toMin(s.hardEnd || s.end));
+  return {
+    canStart: elapsed < lenEnd,
+    inHard: elapsed < lenHard,
+    msToHardEnd: elapsed < lenHard ? Math.round((lenHard - elapsed) * 60000) : 0,
+    nextStart: now + Math.round((1440 - elapsed) * 60000),
+  };
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-module.exports = { deepMerge, renderTemplate, readPath, evalSafe, unreachableFrom, apiRequest, sleep };
+module.exports = { deepMerge, renderTemplate, readPath, evalSafe, unreachableFrom, apiRequest, sleep, validRunSchedule, windowState };

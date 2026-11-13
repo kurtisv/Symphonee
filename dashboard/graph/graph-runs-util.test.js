@@ -62,3 +62,26 @@ test('apiRequest sends the per-boot token so gated POSTs (worker spawn) are not 
     srv.close();
   }
 });
+
+test('work windows: validation, start/hard-end state, crossing midnight', () => {
+  const at = (h, m = 0) => new Date(2026, 10, 13, h, m).getTime();
+  assert.equal(u.validRunSchedule(undefined), null);
+  assert.deepEqual(u.validRunSchedule({ start: '08:00', end: '13:00' }), { start: '08:00', end: '13:00', hardEnd: '13:00' });
+  assert.throws(() => u.validRunSchedule({ start: '08:00', end: '13:00', hardEnd: '12:00' }), /hardEnd/);
+  assert.throws(() => u.validRunSchedule({ start: '8h', end: '13:00' }), /schedule needs/);
+  const s = u.validRunSchedule({ start: '08:00', end: '13:00', hardEnd: '14:00' });
+  let w = u.windowState(s, at(9));
+  assert.equal(w.canStart, true); assert.equal(w.inHard, true); assert.equal(w.msToHardEnd, 5 * 3600000);
+  w = u.windowState(s, at(13, 30));
+  assert.equal(w.canStart, false, 'no new node after 13:00'); assert.equal(w.inHard, true, 'a running node may go on until 14:00');
+  w = u.windowState(s, at(14));
+  assert.equal(w.inHard, false); assert.equal(w.nextStart, at(8) + 24 * 3600000, 'next start is tomorrow 08:00');
+  w = u.windowState(s, at(7));
+  assert.equal(w.canStart, false); assert.equal(w.nextStart, at(8), 'before the window: today 08:00');
+  const night = u.validRunSchedule({ start: '22:00', end: '04:00', hardEnd: '05:00' });
+  assert.equal(u.windowState(night, at(2)).canStart, true);
+  assert.equal(u.windowState(night, at(4, 30)).canStart, false);
+  assert.equal(u.windowState(night, at(4, 30)).inHard, true);
+  assert.equal(u.windowState(night, at(12)).inHard, false);
+  assert.equal(u.windowState(night, at(12)).nextStart, at(22));
+});

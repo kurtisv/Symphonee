@@ -268,32 +268,58 @@ test('mid-task budget exhaustion parks the stage until the next day without laun
     assert.equal(f.tasks.size, 1, 'still parked on later ticks the same day');
   } finally { f.cleanup(); }
 });
-test('restart of an ACTIVE pilot archives the running stage without replay and the loop continues', async () => {
+test('restart of an ACTIVE pilot resumes the interrupted stage automatically, at most twice', async () => {
   const f = fixture();
   try {
     f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
     const oldId = f.pilot.state.active.taskId;
     f.pilot.close();
     f.tasks.delete(oldId); // the process and its task died with the old server
-    const restarted = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch,
+    const boot = () => new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch,
       getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: f.pilot.getRepoPath, autoTimer: false });
+    let restarted = boot();
     let s = restarted.snapshot();
     assert.equal(s.enabled, true, 'configuration and activation survive the restart');
     assert.equal(s.goal, 'Improve tests');
-    assert.equal(s.active, null);
-    assert.equal(s.history[0].outcome, 'interrupted');
-    assert.match(s.history[0].error, /restarted during stage discover/);
+    assert.equal(s.active.waitingStage, 'discover', 'the interrupted discovery is parked, not archived');
+    assert.equal(s.active.parkReason, 'restart');
+    assert.equal(s.history.length, 0);
     assert.equal(s.budget.calls, 1, 'interrupted call stays charged');
-    assert.equal(s.status, 'waiting', 'short cooldown before the next discovery');
     await restarted.tick();
-    assert.equal(f.tasks.size, 0, 'no replay during the cooldown');
+    assert.equal(f.tasks.size, 0, 'short cooldown first');
     restarted.state.nextAt = 0;
     await restarted.tick();
-    assert.equal(f.tasks.size, 1, 'a fresh discovery starts after the cooldown');
-    assert.match(f.tasks.values().next().value.opts.prompt, /"outcome":"interrupted"/, 'discovery knows the interrupted attempt');
+    assert.equal(f.tasks.size, 1, 'the discovery is launched again');
+    assert.equal(restarted.snapshot().active.stage, 'discover');
+    // A second and a third restart: the third archives as before.
+    for (const n of [2, 3]) {
+      const id = restarted.state.active.taskId; restarted.close(); f.tasks.delete(id);
+      restarted = boot();
+      if (n === 2) { assert.equal(restarted.snapshot().active.waitingStage, 'discover'); restarted.state.nextAt = 0; await restarted.tick(); }
+    }
     s = restarted.snapshot();
-    assert.equal(s.today.discoveries, 2);
+    assert.equal(s.active, null, 'third restart: archived');
+    assert.equal(s.history[0].outcome, 'interrupted');
+    assert.match(s.history[0].error, /after two automatic resumes/);
     restarted.close();
+  } finally { f.cleanup(); }
+});
+test('restart during implementation continues in the same worktree as a non-counted repair', async () => {
+  const f = fixture();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'Improve tests', allowWorktreeWrites: true });
+    const a = f.pilot.state.active;
+    a.stage = 'implement'; a.plan = goodPlan; a.baseSha = 'abc'; a.repairs = 0;
+    a.worktree = { path: f.pilot.getRepoPath(), branch: 'mind-autopilot/x' };
+    f.pilot.save(); f.pilot.close(); f.tasks.clear();
+    const r = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch,
+      getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: f.pilot.getRepoPath, autoTimer: false });
+    const s = r.snapshot();
+    assert.equal(s.active.waitingStage, 'repair');
+    assert.equal(s.active.repairs, 0, 'a restart does not consume a repair');
+    assert.match(r.state.active.review, /INTERRUPTED BY A SYMPHONEE RESTART/);
+    assert.equal(r.state.active.worktree.branch, 'mind-autopilot/x', 'same worktree');
+    r.close();
   } finally { f.cleanup(); }
 });
 test('restart while parked on quota keeps waiting instead of relaunching', async () => {
@@ -516,5 +542,24 @@ test('every prompt tells the agents to read files as UTF-8', () => {
     f.pilot.state.active = { plan: { title: 'x', objective: 'y' }, baseSha: 'abc', worktree: { path: '.' } };
     assert.match(f.pilot.reviewPrompt('code-review'), /Get-Content -Raw -Encoding UTF8/);
     assert.match(f.pilot.reviewPrompt('plan-review'), /YOUR reading artifact/);
+  } finally { f.cleanup(); }
+});
+
+test('end of the window: the next stage of a running task waits for the next window', async () => {
+  const f = nightFixture();
+  try {
+    f.pilot.state = { ...f.pilot.state, enabled: true, goal: 'Night', repoName: 'demo', repoPath: f.pilot.getRepoPath(), consent: { worktreeWrites: true } };
+    await f.pilot.tick(at(6, 50));
+    const t = [...f.tasks.values()][0];
+    t.state = 'completed'; t.result = JSON.stringify(goodPlan);
+    await f.pilot.tick(at(7, 10)); // discovery finished after 07:00
+    const s = f.pilot.snapshot(at(7, 10));
+    assert.equal(f.tasks.size, 1, 'no plan review launched outside the window');
+    assert.equal(s.active.waitingStage, 'plan-review');
+    assert.equal(s.active.parkReason, 'window');
+    assert.equal(f.pilot.state.nextAt, at(22, 0));
+    await f.pilot.tick(at(22, 1));
+    assert.equal(f.tasks.size, 2, 'the plan review starts when the window opens');
+    assert.equal(f.tasks.get(f.pilot.state.active.taskId).opts.cli, 'codex');
   } finally { f.cleanup(); }
 });

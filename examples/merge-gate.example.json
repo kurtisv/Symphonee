@@ -1,0 +1,188 @@
+{
+  "enabled": true,
+  "repos": [
+    {
+      "name": "My App",
+      "github": "My App",
+      "path": "C:path\to\repo",
+      "base": "master",
+      "governanceMarker": {
+        "file": "AGENTS.md",
+        "text": "FUSION_AUTOMATIQUE_ENCADREE_V1"
+      },
+      "maxMergesPerDay": 2,
+      "minHoursBetweenMerges": 2,
+      "linkDirs": [
+        "node_modules",
+        "api/node_modules",
+        "admin-dashboard/node_modules"
+      ],
+      "chain": [
+        {
+          "name": "jest-mobile",
+          "cmd": [
+            "node",
+            "node_modules/jest/bin/jest.js",
+            "--ci"
+          ],
+          "timeoutMs": 1800000
+        },
+        {
+          "name": "jest-api",
+          "cwd": "api",
+          "cmd": [
+            "node",
+            "node_modules/jest/bin/jest.js",
+            "--ci"
+          ],
+          "timeoutMs": 1800000
+        },
+        {
+          "name": "vitest-admin",
+          "cwd": "admin-dashboard",
+          "cmd": [
+            "node",
+            "node_modules/vitest/vitest.mjs",
+            "run"
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "name": "types-mobile",
+          "cmd": [
+            "node",
+            "node_modules/typescript/bin/tsc",
+            "--noEmit"
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "name": "types-api",
+          "cmd": [
+            "node",
+            "node_modules/typescript/bin/tsc",
+            "--noEmit",
+            "-p",
+            "api/tsconfig.json"
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "name": "api-routes",
+          "cmd": [
+            "node",
+            "scripts/api-module-classification.js",
+            "--assert-clean"
+          ],
+          "timeoutMs": 300000
+        },
+        {
+          "name": "script-paths",
+          "cmd": [
+            "node",
+            "scripts/check-script-paths.js"
+          ],
+          "timeoutMs": 300000
+        },
+        {
+          "name": "baseline-facts",
+          "cmd": [
+            "node",
+            "scripts/baseline-facts.js",
+            "--check"
+          ],
+          "timeoutMs": 300000
+        },
+        {
+          "name": "domain-map",
+          "cmd": [
+            "node",
+            "scripts/domain-map.js",
+            "--check"
+          ],
+          "timeoutMs": 300000
+        },
+        {
+          "name": "build-admin-types",
+          "cwd": "admin-dashboard",
+          "cmd": [
+            "node",
+            "node_modules/typescript/bin/tsc",
+            "-b"
+          ],
+          "timeoutMs": 900000
+        },
+        {
+          "name": "build-admin",
+          "cwd": "admin-dashboard",
+          "cmd": [
+            "node",
+            "node_modules/vite/bin/vite.js",
+            "build"
+          ],
+          "timeoutMs": 900000
+        }
+      ],
+      "forbidden": [
+        "^AGENTS\\.md$",
+        "(^|/)CLAUDE\\.md$",
+        "(^|/)GEMINI\\.md$",
+        "^docs/agent-governance/STABLE_AVANT_DEPLOIEMENT\\.md$",
+        "^docs/agent-governance/FUSION_AUTOMATIQUE\\.md$",
+        "^\\.github/",
+        "^\\.symphonee/",
+        "^supabase/",
+        "(^|/)migrations?/",
+        "^secrets/",
+        "(^|/)\\.env",
+        "(^|/)eas\\.json$",
+        "(^|/)vercel\\.json$",
+        "(^|/)app\\.json$",
+        "(^|/)app\\.config\\.[jt]s$",
+        "google-services\\.json$",
+        "GoogleService-Info\\.plist$",
+        "(^|/)package(-lock)?\\.json$",
+        "^patches/",
+        "^android/",
+        "^ios/",
+        "^api/core/forecast/",
+        "^api/src/cron/",
+        "(^|/)auth",
+        "billing|payment|stripe|revenuecat|subscription"
+      ],
+      "sources": [
+        {
+          "type": "pleinsens-loop",
+          "branchPrefix": "codex/pleinsens-boucle-",
+          "runPrefix": "PleinSens boucle predictions - cycle ",
+          "allowed": [
+            "^api/core/pleinsens/modeleLocal/",
+            "^api/src/__tests__/pleinsens(ComprehensionLocale|ModeleLocal)[^/]*$",
+            "^entrainement/",
+            "^tests/pleinsens-comprehension-locale/",
+            "^docs/PLEINSENS_[A-Z0-9_]+\\.md$",
+            "^docs/agent-governance/evidence/pleinsens-",
+            "^docs/agent-governance/lots/boucle/"
+          ],
+          "maxCodeLines": 600,
+          "maxCodeFiles": 12
+        },
+        {
+          "type": "autopilot",
+          "pilot": "gas-saver",
+          "branchPrefix": "mind-autopilot/",
+          "forbidden": [
+            "(^|/)api/core/pleinsens/",
+            "^automation/",
+            "^plugins/",
+            "^admin-dashboard/",
+            "^website/",
+            "^(STATUS|TASKS)\\.md$"
+          ],
+          "maxCodeLines": 300,
+          "maxCodeFiles": 8
+        }
+      ]
+    }
+  ]
+}

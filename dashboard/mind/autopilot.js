@@ -10,6 +10,9 @@ const insights = require('./insights');
 const store = require('./store');
 const budget = require('./autopilot-budget');
 const guard = require('./autopilot-verify');
+// Optional Sentry reporting (window check-ins, completions, halts). Never throws.
+let sentry = null;
+try { sentry = require('../automation/sentry-report'); } catch (_) {}
 
 // Measured 2026-11-12: Codex read a valid UTF-8 lot file through Windows
 // PowerShell 5.1's default (ANSI) decoding, saw garbled accents and failed a
@@ -347,13 +350,33 @@ class MindAutopilot {
     const a = this.state.active;
     if (this.state.enabled && a.waitingStage) {
       this.log('resumed', 'Restart: still waiting for quota before ' + a.waitingStage);
+    } else if (this.state.enabled && this.restartStage(a) && (a.restartResumes || 0) < 2) {
+      // Automatic resume (decision of 2026-11-12): the interrupted stage is
+      // parked and launched again, inside the work window. Implementation and
+      // repair continue in the SAME worktree as a non-counted repair. At most
+      // two automatic resumes per task; the third restart archives as before.
+      if (a.budgetRef) budget.settleCall(this.state, a.budgetRef, { state: 'interrupted-by-restart' });
+      const was = a.stage, stage = this.restartStage(a);
+      if (stage === 'repair') {
+        a.review = 'INTERRUPTED BY A SYMPHONEE RESTART before the work was finished (this is not a reviewer finding). Continue the approved plan in this worktree from where it stopped and keep what is already correct.'
+          + (was === 'repair' && a.review ? '\n\nFindings that were being fixed:\n' + String(a.review).slice(0, 6000) : '');
+      }
+      a.restartResumes = (a.restartResumes || 0) + 1;
+      a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'restart';
+      if (a.verify) a.verify.running = false;
+      this.state.error = null;
+      const sched = this.def.schedule;
+      this.state.nextAt = sched && !inSchedule(sched, now + 2 * 60_000) ? nextWindowStart(sched, now) : now + 2 * 60_000;
+      this.log('resumed', 'Restart during ' + was + ': automatic resume ' + a.restartResumes + '/2 with ' + stage
+        + ' at ' + new Date(this.state.nextAt).toLocaleString() + (a.worktree ? ' (same worktree ' + a.worktree.path + ')' : ''));
     } else if (this.state.enabled) {
       this.unlinkActive(a);
       if (a.budgetRef) budget.settleCall(this.state, a.budgetRef, { state: 'interrupted-by-restart' });
       this.state.history.push({ category: a.plan?.category || null,
         title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
         key: a.plan ? taskKey(a.plan) : null, outcome: 'interrupted',
-        worktree: a.worktree || null, error: 'Symphonee restarted during stage ' + a.stage,
+        worktree: a.worktree || null, error: 'Symphonee restarted during stage ' + a.stage
+          + ((a.restartResumes || 0) >= 2 ? ' (after two automatic resumes)' : ''),
         at: new Date(now).toISOString() });
       this.state.history = this.state.history.slice(-100);
       this.state.active = null;
@@ -369,6 +392,43 @@ class MindAutopilot {
       this.log('interrupted', 'Restart while stopped during stage ' + a.stage);
     }
     this.save();
+  }
+  // Which stage to launch again after a restart (null: cannot be resumed).
+  restartStage(a) {
+    const kept = a.worktree && a.worktree.path && fs.existsSync(a.worktree.path);
+    if (a.stage === 'verify') return kept ? 'verify' : null;
+    if (a.stage === 'implement' || a.stage === 'repair') return kept && a.baseSha ? 'repair' : (a.plan && !a.worktree ? 'implement' : null);
+    if (a.stage === 'code-review') return kept ? 'code-review' : null;
+    if (a.stage === 'plan-review') return a.plan ? 'plan-review' : null;
+    if (a.stage === 'discover') return 'discover';
+    return null;
+  }
+  // End of the work window: the next stage of the current task is parked
+  // until the next window instead of starting outside it.
+  parkForWindow(stage, now = Date.now()) {
+    const a = this.state.active;
+    a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'window';
+    this.state.nextAt = nextWindowStart(this.def.schedule, now);
+    this.log('schedule', 'Work window ' + this.def.schedule.start + '-' + this.def.schedule.end + ' is over: ' + stage
+      + ' postponed to ' + new Date(this.state.nextAt).toLocaleString());
+    this.save();
+    return this.snapshot(now);
+  }
+  report(level, message, fingerprint, extra = {}) {
+    if (!sentry) return;
+    sentry.event({ message, level, loop: 'autopilote', fingerprint: ['autopilote', this.id, ...fingerprint],
+      tags: { pilote: this.id, depot: this.state.repoName || null }, extra }).catch(() => {});
+  }
+  // One 'ok' check-in per work window: Sentry raises an issue (and the alert
+  // emails) when the pilot was not alive at the start of its window.
+  windowCheckIn(now = Date.now()) {
+    const sched = this.def.schedule;
+    if (!sentry || !sched || !this.inWindow(now)) return;
+    const key = new Date(nextWindowStart(sched, now) - 86400000).toDateString();
+    if (this.state.lastWindowCheckIn === key) return;
+    this.state.lastWindowCheckIn = key;
+    sentry.checkIn({ slug: 'autopilote-' + this.id, status: 'ok',
+      monitor: { schedule: sentry.dailyCrontab(sched.start), margin: 90, maxRuntime: 60 } }).catch(() => {});
   }
   log(kind, msg, extra = {}) {
     this.state.events.push({ at: new Date().toISOString(), kind, msg: String(msg).slice(0, 600),
@@ -538,6 +598,7 @@ class MindAutopilot {
     if (this._verifyProc) { guard.killTree(this._verifyProc); this._verifyProc = null; }
     this.unlinkActive();
     this.log('error', this.state.error);
+    this.report('error', 'Autopilote ' + this.id + ' arrete sur erreur : ' + this.state.error.slice(0, 300), ['halt']);
     this.save();
   }
   discoveryPrompt() {
@@ -627,6 +688,9 @@ class MindAutopilot {
   dispatch(stage, now = Date.now()) {
     const a = this.state.active;
     if (!STAGES.includes(stage)) throw new Error('Invalid stage');
+    // No stage starts outside the work window, not even the next stage of a
+    // task begun inside it: it waits for the next window.
+    if (this.def.schedule && !this.inWindow(now)) return this.parkForWindow(stage, now);
     const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
@@ -715,6 +779,8 @@ class MindAutopilot {
       at: new Date().toISOString() });
     this.state.history = this.state.history.slice(-100);
     this.unlinkActive(a);
+    this.report(outcome === 'completed' ? 'info' : 'warning', 'Autopilote ' + this.id + ' : tache ' + outcome + ' : ' + (a.plan?.title || '(decouverte)'),
+      [outcome], { branche: a.worktree?.branch || null, revue: reviewerEvidence ? String(reviewerEvidence).slice(0, 1500) : null });
     this.log('complete', outcome + ': ' + (a.plan?.title || '(discovery)')
       + (a.worktree ? ' - worktree kept for human review: ' + a.worktree.path : ''));
     this.state.active = null;
@@ -837,6 +903,7 @@ class MindAutopilot {
     if (a.creditHits > 8) retry = sched ? nextWindowStart(sched, now + 60_000) : budget.startOfNextDay(now);
     else if (sched && !inSchedule(sched, retry)) retry = nextWindowStart(sched, retry);
     this.state.nextAt = retry;
+    this.report('warning', 'Autopilote ' + this.id + ' : limite d usage pendant ' + resume + ', reprise le ' + new Date(retry).toLocaleString(), ['credit']);
     this.log('credit', 'Provider usage/credit limit reached during ' + resume + ' (' + String(why).replace(/\s+/g, ' ').slice(0, 160)
       + '); task parked, retry at ' + new Date(retry).toLocaleString());
     this.save();
@@ -860,6 +927,7 @@ class MindAutopilot {
     if (this.busy || !this.state.enabled) return this.snapshot();
     this.busy = true;
     try {
+      this.windowCheckIn(now);
       if (!this.state.active) {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
         if (now < this.state.nextAt || this.todayCompleted(now) >= this.limits.dailyCompletions
@@ -901,6 +969,7 @@ class MindAutopilot {
         if (a.waitingStage) {
           if (now < this.state.nextAt || !budget.canDispatch(this.state, now, this.limits)) return this.snapshot();
           a.parkReason = null;
+          if (a.waitingStage === 'verify') { a.waitingStage = null; this.startVerify(); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
           return this.snapshot();
         }

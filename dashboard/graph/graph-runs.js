@@ -20,7 +20,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const EventEmitter = require('events');
-const { deepMerge, renderTemplate, evalSafe, unreachableFrom, apiRequest, sleep } = require('./graph-runs-util');
+const { deepMerge, renderTemplate, evalSafe, unreachableFrom, apiRequest, sleep, validRunSchedule, windowState } = require('./graph-runs-util');
+// Optional Sentry reporting for runs created with notify:true (never throws).
+let sentry = null;
+try { sentry = require('../automation/sentry-report'); } catch (_) {}
 
 const STATES = ['pending', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'paused'];
 
@@ -35,6 +38,8 @@ class GraphRunsEngine extends EventEmitter {
     this.walPath = path.join(this.runsDir, 'events.jsonl');
     this.runs = new Map(); // runId -> run object (in memory + persisted)
     this.approvalWaiters = new Map(); // `${runId}:${nodeId}` -> resolver
+    this.windowTimers = new Map(); // runId -> timer waiting for the run's next work window
+    this.windowStateFn = windowState; // replaceable in tests
     this._ensureDir();
     this._loadPersisted();
   }
@@ -56,7 +61,8 @@ class GraphRunsEngine extends EventEmitter {
         // waiter is gone, so we reset those nodes to pending and re-enter the
         // scheduler — it will recreate the waiter, the modal will surface
         // again, and Approve / Reject will work as expected.
-        const needsResume = run.status === 'running' || run.status === 'awaiting_approval';
+        // 'pending' also covers a run that was waiting for its work window.
+        const needsResume = run.status === 'running' || run.status === 'awaiting_approval' || run.status === 'pending';
         if (needsResume) run.status = 'pending';
         for (const n of run.nodes) {
           if (n.status === 'running' || n.status === 'awaiting_approval') n.status = 'pending';
@@ -93,7 +99,8 @@ class GraphRunsEngine extends EventEmitter {
   }
 
   // ── Public API ────────────────────────────────────────────────────────
-  async createRun({ name, nodes, state = {}, from = 'user', originTermId = null }) {
+  async createRun({ name, nodes, state = {}, from = 'user', originTermId = null, schedule = null, notify = false }) {
+    const runSchedule = validRunSchedule(schedule || undefined); // throws on an invalid window
     if (!Array.isArray(nodes) || !nodes.length) throw new Error('nodes array required');
     const id = this._newId();
     const now = Date.now();
@@ -106,6 +113,8 @@ class GraphRunsEngine extends EventEmitter {
       from,
       originTermId,
       state,
+      schedule: runSchedule,
+      notify: !!notify,
       nodes: nodes.map(n => ({
         ...n,
         status: 'pending',
@@ -192,6 +201,8 @@ class GraphRunsEngine extends EventEmitter {
     if (['completed', 'failed', 'cancelled'].includes(run.status)) return run;
     run.status = 'cancelled';
     run.updatedAt = Date.now();
+    delete run.waitingWindow;
+    const wt = this.windowTimers.get(id); if (wt) { clearTimeout(wt); this.windowTimers.delete(id); }
     for (const n of run.nodes) if (n.status === 'pending' || n.status === 'awaiting_approval') n.status = 'cancelled';
     // Unblock any waiting approval
     for (const n of run.nodes) {
@@ -256,8 +267,17 @@ class GraphRunsEngine extends EventEmitter {
       }
       if (cancelledSomething) this._persist(run);
 
-      const ready = run.nodes.filter(n => n.status === 'pending' && this._areDepsComplete(run, n) && !this._isSkipped(run, n));
+      let ready = run.nodes.filter(n => n.status === 'pending' && this._areDepsComplete(run, n) && !this._isSkipped(run, n));
       if (!ready.length) break;
+      if (run.schedule) {
+        // Work window: a node starts only inside [start, end) and only if it
+        // has its minimum time (minWindowMs) before hardEnd. After two window
+        // stops a node may start with less time (it is then no longer stopped).
+        const w = this.windowStateFn(run.schedule);
+        ready = ready.filter(n => w.canStart && (w.msToHardEnd >= (Number(n.minWindowMs) || 0) || (n.windowStops || 0) >= 2));
+        if (!ready.length) { this._waitForWindow(run, w); break; }
+        if (run.waitingWindow) { delete run.waitingWindow; this._wal({ kind: 'window_opened', runId }); }
+      }
       // Execute ready nodes sequentially for v1 (parallel is phase 2)
       for (const node of ready) {
         if (['paused', 'cancelled'].includes(run.status)) break;
@@ -267,7 +287,7 @@ class GraphRunsEngine extends EventEmitter {
     }
 
     // Terminal state decision
-    if (!['paused', 'cancelled'].includes(run.status)) {
+    if (!['paused', 'cancelled'].includes(run.status) && !run.waitingWindow) {
       const unfinished = run.nodes.find(n => n.status === 'pending' || n.status === 'running' || n.status === 'awaiting_approval');
       if (!unfinished) {
         const anyFailed = run.nodes.some(n => n.status === 'failed');
@@ -275,6 +295,8 @@ class GraphRunsEngine extends EventEmitter {
         run.updatedAt = Date.now();
         this._wal({ kind: 'run_ended', runId, status: run.status });
         this._deliverResult(run);
+        this._notify(run, run.status === 'failed' ? 'error' : 'info', 'Graph run ' + run.status + ' : ' + run.name,
+          { etat: run.status }, ['graph-run', run.id, 'ended']);
       }
     }
     this._persist(run);
@@ -325,6 +347,36 @@ class GraphRunsEngine extends EventEmitter {
     } catch (_) {}
   }
 
+  // Park the run until its next window opens. A pending run is resumed at
+  // boot, so this survives restarts: the run simply re-checks its window.
+  _waitForWindow(run, w) {
+    const first = !run.waitingWindow;
+    run.status = 'pending';
+    run.waitingWindow = { until: w.nextStart, since: run.waitingWindow ? run.waitingWindow.since : Date.now() };
+    run.updatedAt = Date.now();
+    if (first) {
+      this._wal({ kind: 'window_wait', runId: run.id, until: w.nextStart });
+      this._notify(run, 'info', 'Graph run en attente de sa fenetre ' + run.schedule.start + '-' + run.schedule.end
+        + ', reprise le ' + new Date(w.nextStart).toLocaleString(), { reprise: new Date(w.nextStart).toISOString() }, ['graph-run', run.id, 'window-wait']);
+    }
+    const old = this.windowTimers.get(run.id);
+    if (old) clearTimeout(old);
+    // Re-check at least every 6 h (sleep, clock changes); waking early only re-parks.
+    const delay = Math.max(1000, Math.min(w.nextStart - Date.now() + 1000, 6 * 3600000));
+    const t = setTimeout(() => {
+      this.windowTimers.delete(run.id);
+      this._executeNextBatch(run.id).catch(err => this._failRun(run.id, err.message));
+    }, delay);
+    if (t.unref) t.unref();
+    this.windowTimers.set(run.id, t);
+  }
+
+  _notify(run, level, message, extra = {}, fingerprint) {
+    if (!run.notify || !sentry) return;
+    sentry.event({ message, level, loop: 'graph-run', fingerprint,
+      tags: { run: run.id, nom: String(run.name || '').slice(0, 120) }, extra }).catch(() => {});
+  }
+
   _areDepsComplete(run, node) {
     const deps = node.dependsOn || [];
     for (const depId of deps) {
@@ -367,10 +419,22 @@ class GraphRunsEngine extends EventEmitter {
       }
       this._wal({ kind: 'node_completed', runId: run.id, nodeId: node.id });
     } catch (err) {
+      if (err && err.windowStop) {
+        // Stopped at the window's hardEnd: not a failure. Back to pending; it
+        // starts again from the beginning in the next window.
+        node.status = 'pending'; node.error = null; node.startedAt = null;
+        node.windowStops = (node.windowStops || 0) + 1; node.lastWindowStopAt = Date.now();
+        this._wal({ kind: 'node_window_stopped', runId: run.id, nodeId: node.id, stops: node.windowStops });
+        this._notify(run, 'warning', 'Etape ' + node.id + ' arretee en fin de fenetre (' + run.schedule.hardEnd + '), reprise a la prochaine fenetre',
+          { noeud: node.id, arrets: node.windowStops }, ['graph-run', run.id, node.id, 'window-stop']);
+        return;
+      }
       node.error = err.message;
       node.status = 'failed';
       node.endedAt = Date.now();
       this._wal({ kind: 'node_failed', runId: run.id, nodeId: node.id, error: err.message });
+      this._notify(run, 'error', 'Etape ' + node.id + ' en echec : ' + String(err.message).slice(0, 300),
+        { noeud: node.id }, ['graph-run', run.id, node.id, 'failed']);
     }
   }
 
@@ -413,6 +477,10 @@ class GraphRunsEngine extends EventEmitter {
       while (true) {
         await sleep(1500);
         if (['paused', 'cancelled'].includes(run.status)) throw new Error('run paused/cancelled');
+        if (run.schedule && (node.windowStops || 0) < 2 && !this.windowStateFn(run.schedule).inHard) {
+          await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/cancel', { taskId }).catch(() => {});
+          throw Object.assign(new Error('stopped at the work window hard end ' + run.schedule.hardEnd), { windowStop: true });
+        }
         const task = await apiRequest(this.apiHost, this.apiPort, 'GET', `/api/orchestrator/task?id=${taskId}`);
         if (!task) { lastError = `task ${taskId} disappeared on ${cli}`; taskFailed = true; break; }
         if (task.state === 'completed') return { taskId, cli, model, result: task.result, attempts: attempt + 1, triedClis };

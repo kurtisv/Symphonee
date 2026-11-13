@@ -1479,6 +1479,8 @@ function startServer() {
     const url = `http://${HOST}:${PORT}`;
     console.log(`\n  Symphonee running at ${url}\n`);
     if (!process.env.ELECTRON) exec(`start ${url}`);
+    // Where every unattended loop stands after this (re)start: log + Sentry.
+    try { require('./automation/startup-report').scheduleStartupReport({ repoRoot, port: PORT }); } catch (_) {}
   });
 }
 
