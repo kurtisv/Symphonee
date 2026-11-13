@@ -250,3 +250,27 @@ test('a run definition cannot pre-set an adopted task; a hardEnd stop drops the 
     for (const t of engine.windowTimers.values()) clearTimeout(t);
   } finally { api.server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
 });
+
+test('retryNode re-checks the run after its ownership lookup (cancel during the await)', async () => {
+  let release;
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/api/orchestrator/spawn')) return res.end('{"id":"t1"}');
+    if (req.url.includes('id=adopt1')) { release = () => res.end(JSON.stringify({ state: 'completed', from: 'graph-run:' + runId })); return; }
+    res.end(JSON.stringify({ state: 'failed', error: 'boom' }));
+  });
+  let runId;
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-graph-'));
+  try {
+    const engine = new GraphRunsEngine({ repoRoot, apiPort: server.address().port });
+    const run = await engine.createRun({ name: 'c', nodes: [{ id: 'a', type: 'worker', cli: 'codex', noFallback: true, prompt: 'a' }] });
+    runId = run.id;
+    await waitFor(() => run.nodes[0].status === 'failed');
+    const p = engine.retryNode(run.id, 'a', { taskId: 'adopt1' });
+    await waitFor(() => typeof release === 'function');
+    run.status = 'cancelled'; // what a concurrent cancel leaves (cancelRun ignores a failed run)
+    release();
+    await assert.rejects(p, /run is cancelled/);
+    assert.equal(run.status, 'cancelled');
+  } finally { server.close(); fs.rmSync(repoRoot, { recursive: true, force: true }); }
+});

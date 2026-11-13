@@ -200,12 +200,18 @@ class GraphRunsEngine extends EventEmitter {
     if (['cancelled', 'completed'].includes(run.status)) throw new Error('run is ' + run.status);
     const node = run.nodes.find(n => n.id === nodeId);
     if (!node) throw new Error('no such node');
-    if (node.status !== 'failed') throw new Error('node is ' + node.status + ', not failed');
+    const checkStates = () => {
+      if (['cancelled', 'completed'].includes(run.status)) throw new Error('run is ' + run.status);
+      if (node.status !== 'failed') throw new Error('node is ' + node.status + ', not failed');
+    };
+    checkStates();
     if (taskId !== undefined && !/^[A-Za-z0-9_-]{4,64}$/.test(String(taskId))) throw new Error('invalid taskId');
     if (taskId) {
       // Only a task this run spawned, not already used by another node, and
       // for this node's working folder: never an arbitrary task's output.
       const t = await apiRequest(this.apiHost, this.apiPort, 'GET', '/api/orchestrator/task?id=' + encodeURIComponent(taskId)).catch(() => null);
+      // The run may have been cancelled (or the node retried) during the await.
+      checkStates();
       if (!t || t.error) throw new Error('task ' + taskId + ' not found');
       if (t.from !== 'graph-run:' + runId) throw new Error('task ' + taskId + ' was not spawned by run ' + runId);
       if (node.taskId && node.taskId !== taskId) throw new Error('node ' + nodeId + ' ran task ' + node.taskId + ', not ' + taskId);
