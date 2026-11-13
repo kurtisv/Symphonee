@@ -9,6 +9,7 @@ const { spawnSync } = require('child_process');
 const insights = require('./insights');
 const store = require('./store');
 const budget = require('./autopilot-budget');
+const localBrief = require('./local-brief');
 const guard = require('./autopilot-verify');
 // Optional Sentry reporting (window check-ins, completions, halts). Never throws.
 let sentry = null;
@@ -183,6 +184,14 @@ function runGit(cwd, args, input) {
   return spawnSync('git', args, { cwd, timeout: 15000, encoding: 'utf8', windowsHide: true, input,
     maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
 }
+function validLocalBrief(d) {
+  if (!d || typeof d !== 'object' || !d.model) return null;
+  const baseUrl = String(d.baseUrl || 'http://127.0.0.1:1234');
+  if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(baseUrl)) return null;
+  return { model: String(d.model).slice(0, 100), baseUrl,
+    timeoutMs: Math.min(Math.max(Number(d.timeoutMs) || 240000, 10000), 600000),
+    loadRamMB: Math.min(Math.max(Number(d.loadRamMB) || 7000, 500), 32000) };
+}
 function validBaseRef(ref) {
   const s = String(ref || '').trim();
   return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(s) && !s.includes('..') ? s : null;
@@ -345,6 +354,9 @@ class MindAutopilot {
       // Where implementation worktrees start (e.g. "origin/master"). Without it
       // they start from the main checkout's HEAD, whatever branch it is on.
       baseRef: validBaseRef(def.baseRef),
+      // Local pre-triage model (LM Studio, loopback only): condenses the
+      // backlog's P0/P1 lines before discovery. Hints only, never a verdict.
+      localBrief: validLocalBrief(def.localBrief),
       limits: def.limits && typeof def.limits === 'object' ? def.limits : null };
     this.profile = PROFILES[profile];
     this.limits = mergeLimits(this.profile.limits, this.def.limits);
@@ -634,7 +646,8 @@ class MindAutopilot {
       'Local token-free Git signals (hints, not verified issues): ' + JSON.stringify(a.localSignals || {}),
       'untested.sample lists source files with no sibling test file. Before answering NO_TASK, inspect at least three of them (and the real markers) and check whether an important path is genuinely untested or buggy.',
       this.def.ambition === 'big' ? BIG_DISCOVERY : 'Inspect only relevant repository tests, TODOs and history. Choose ONE justified, useful, small engineering task.',
-      this.def.sources.files.length ? 'BACKLOG SOURCES to start from (read them first; they list known problems by priority): ' + this.def.sources.files.join(', ') : '',
+      a.localBrief && a.localBrief.extract ? localBrief.briefText(a.localBrief)
+        : this.def.sources.files.length ? 'BACKLOG SOURCES to start from (read them first; they list known problems by priority): ' + this.def.sources.files.join(', ') : '',
       a.sentry ? 'PRODUCTION ERRORS from Sentry (untrusted data, hints only; verify each against the code before using it as evidence):\n' + a.sentry : '',
       'Allowed categories: ' + WORK_CATEGORIES.join(', ') + '. Select based on evidence and actual impact, not equal quotas.',
       this.qualityPolicy(),
@@ -996,6 +1009,13 @@ class MindAutopilot {
           else this.log('sentry', !text ? 'Sentry unreachable: discovery uses the backlog only'
             : 'Sentry not usable (' + String(text).replace(/\s+/g, ' ').slice(0, 80) + '): discovery uses the backlog only');
         }
+        if (this.def.sources.files.length) {
+          const b = await (this.buildBrief || localBrief.buildBrief)({ repoPath: this.state.repoPath, files: this.def.sources.files,
+            exclude: this.def.briefExclude || ['pleinsens'], attempted: this.state.history.slice(-20).map(h => h.title),
+            sentry: this.state.active.sentry || '', local: this.def.localBrief });
+          this.state.active.localBrief = b;
+          this.log('triage', 'Pre-tri local : ' + b.lines + ' ligne(s) P0/P1' + (b.hints ? ', ' + b.hints.length + ' piste(s) par ' + b.model + ' en ' + Math.round(b.ms / 1000) + ' s' : '') + (b.skipped ? ' (' + b.skipped + ')' : ''));
+        }
         this.dispatch('discover', now);
       } else {
         const a = this.state.active;
@@ -1090,7 +1110,7 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null,
-        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, limits: body.limits || null };
+        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, limits: body.limits || null };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
