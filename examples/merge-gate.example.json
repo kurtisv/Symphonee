@@ -1,5 +1,15 @@
 {
   "enabled": true,
+  "chainWindows": [
+    {
+      "start": "13:00",
+      "end": "14:00"
+    },
+    {
+      "start": "19:00",
+      "end": "22:00"
+    }
+  ],
   "repos": [
     {
       "name": "My App",

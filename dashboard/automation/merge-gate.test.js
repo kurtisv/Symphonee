@@ -212,3 +212,23 @@ test('scenario: a candidate without its loop proof is refused before any chain',
   assert.equal(w.chainRuns, 0);
   assert.match(only(state).history[0].note, /VERDICT: PASS.*verifications locales/);
 });
+
+test('the CPU-heavy chain runs only inside chainWindows; light steps run at any time', async () => {
+  const { w, io } = world();
+  const policy = { ...POLICY, chainWindows: [{ start: '13:00', end: '14:00' }, { start: '19:00', end: '22:00' }] };
+  w.now = new Date(2026, 10, 13, 9).getTime(); // 09:00: PleinSens window
+  const state = {};
+  await gate.pass(policy, state, io);
+  assert.equal(w.chainRuns, 0, 'no chain at 09:00');
+  assert.equal(only(state).status, 'new');
+  w.now = new Date(2026, 10, 13, 13, 10).getTime();
+  await gate.pass(policy, state, io);
+  assert.equal(w.chainRuns, 1, 'chain at 13:10');
+  assert.equal(only(state).status, 'pr-open');
+  w.now = new Date(2026, 10, 13, 23).getTime(); w.marker = true;
+  w.checks = [{ name: 'CI', status: 'completed', conclusion: 'success' }];
+  await gate.pass(policy, state, io);
+  assert.equal(only(state).status, 'merged', 'reading CI and merging need no chain window');
+  assert.equal(gate.inAnyWindow([{ start: '22:00', end: '04:00' }], new Date(2026, 10, 13, 2).getTime()), true);
+  assert.equal(gate.inAnyWindow(undefined, 0), true);
+});

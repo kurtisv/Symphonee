@@ -78,6 +78,14 @@ function checksVerdict(checks) {
   return checks.some((c) => c.conclusion === 'success') ? 'success' : 'pending';
 }
 
+// windows: [{ start:'HH:MM', end:'HH:MM' }] local time (may cross midnight); absent = always.
+function inAnyWindow(windows, now) {
+  if (!Array.isArray(windows) || !windows.length) return true;
+  const d = new Date(now), m = d.getHours() * 60 + d.getMinutes();
+  const min = (s) => { const x = /^(\d{2}):(\d{2})$/.exec(String(s)); return x ? Number(x[1]) * 60 + Number(x[2]) : null; };
+  return windows.some((w) => { const a = min(w.start), b = min(w.end); if (a === null || b === null) return false; return a < b ? m >= a && m < b : m >= a || m < b; });
+}
+
 function dayKey(t) { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
 // Pace rule (9). merges: [{ repo, at, status }]
 function paceAllows(merges, repo, now) {
@@ -178,7 +186,10 @@ async function pass(policy, state, io) {
   state.merges = state.merges || [];
   const now = io.now();
   const stopped = !policy.enabled || io.stopFileExists() || !!state.stopped;
-  let heavyDone = false;
+  // The full chain (CPU heavy) only runs inside policy.chainWindows, so it never
+  // competes with a loop's own work (e.g. the PleinSens CPU benchmark). Light
+  // steps (PR, CI reading, merge) run at any time.
+  let heavyDone = !inAnyWindow(policy.chainWindows, now);
 
   for (const repo of policy.repos) {
     try { io.git(repo.path, ['fetch', '--quiet', 'origin', repo.base]); } catch (e) { io.log('fetch impossible pour ' + repo.name + ' : ' + e.message); continue; }
@@ -352,4 +363,4 @@ function prBody(c, repo) {
   return lines.join('\n');
 }
 
-module.exports = { pass, discover, step, evaluateDiff, checksVerdict, paceAllows, parseNumstat, parseNameStatus, parseAddedLines, proofReasons, MARK };
+module.exports = { pass, discover, step, inAnyWindow, evaluateDiff, checksVerdict, paceAllows, parseNumstat, parseNameStatus, parseAddedLines, proofReasons, MARK };
