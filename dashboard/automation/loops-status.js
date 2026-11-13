@@ -116,11 +116,115 @@ async function buildLoops({ port = 3800, repoRoot }) {
   return { now, loops, services };
 }
 
+// ── Detail of the loops that are not autopilots (read-only) ─────────────
+const short = (v, n) => { const t = String(v == null ? '' : v); return t.length > n ? t.slice(0, n) + '...' : t; };
+const tailText = (v, n) => { const t = String(v == null ? '' : v).trim(); return t.length > n ? '...' + t.slice(-n) : t; };
+
+// Pure: a graph run -> what the UI shows of it.
+function runView(run) {
+  return { id: run.id, name: run.name, status: run.status, createdAt: run.createdAt, updatedAt: run.updatedAt,
+    waitingUntil: run.waitingWindow ? run.waitingWindow.until : null, cycle: (run.state && run.state.cycle) || null,
+    nodes: (run.nodes || []).map((n) => ({ id: n.id, type: n.type, status: n.status, cli: n.cli || null, model: n.model || null,
+      startedAt: n.startedAt || null, endedAt: n.endedAt || null, taskId: n.taskId || (n.output && n.output.taskId) || null,
+      error: n.error ? short(n.error, 400) : null,
+      result: n.output && n.output.result ? tailText(n.output.result, 600) : null })) };
+}
+
+// Pure: merge gate state.json -> candidates and merges.
+function gateView(state) {
+  const st = state || {};
+  return { stopped: st.stopped || null,
+    candidates: Object.values(st.candidates || {}).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map((c) => ({
+      branch: c.branch, sha: String(c.sha || '').slice(0, 10), source: c.source, status: c.status, attempts: c.attempts || 0,
+      title: c.origin && c.origin.title ? short(c.origin.title, 160) : null, createdAt: c.createdAt || null,
+      pr: c.pr || null, note: (c.history || []).length ? short(c.history[c.history.length - 1].note, 300) : null })),
+    merges: (st.merges || []).slice(-10).reverse().map((m) => ({ branch: m.branch, pr: m.pr, status: m.status, at: m.at || m.mergedAt || null })) };
+}
+
+async function buildLoopDetail(id, { port = 3800, repoRoot }) {
+  const ws = (f) => path.join(repoRoot, '.ai-workspace', f);
+  if (id === 'pleinsens') {
+    const runs = await getJson(port, '/api/graph-runs');
+    const mine = (Array.isArray(runs) ? runs : []).filter((r) => String(r.name || '').startsWith(LOOP_PREFIX))
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+    const details = await Promise.all(mine.map((r) => getJson(port, '/api/graph-runs/' + r.id)));
+    return { id, runs: details.filter(Boolean).map(runView), log: tail(ws('boucle-lanceur.log'), 15) };
+  }
+  if (id === 'porte-fusion') {
+    let st = null;
+    try { st = JSON.parse(fs.readFileSync(path.join(repoRoot, '.ai-workspace', 'merge-gate', 'state.json'), 'utf8')); } catch (_) {}
+    return { id, ...gateView(st), log: tail(path.join(repoRoot, '.ai-workspace', 'merge-gate', 'journal.log'), 20) };
+  }
+  if (id === 'veille') return { id, log: tail(ws('veille.log'), 20) };
+  return null;
+}
+
+// Plain-language summaries ("En clair") of the latest items of one loop.
+async function buildPlainSummary(loop, { port = 3800, repoRoot }) {
+  const plain = require('./plain-summary');
+  let gate = {};
+  try { gate = JSON.parse(fs.readFileSync(path.join(repoRoot, '.ai-workspace', 'merge-gate', 'state.json'), 'utf8')); } catch (_) {}
+  // A candidate's state as the facts need it: its merge record (keyed by the
+  // candidate key) wins, so a red CI after a merge is never shown as finished.
+  const gateFacts = (c) => {
+    if (!c) return null;
+    const last = (c.history || []).slice(-1)[0];
+    const m = (gate.merges || []).filter((x) => x.key === c.key).slice(-1)[0];
+    if (m && m.status === 'failed-after-merge') return { status: 'failed-after-merge', note: (gate.stopped && gate.stopped.reason) || 'tests rouges apres la fusion' };
+    if (m && m.status === 'confirmed') return { status: 'confirmed', note: null };
+    if (m) return { status: 'merged', note: null };
+    return { status: c.status, note: last ? last.note : null };
+  };
+  const latest = (list) => list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  const cands = Object.values(gate.candidates || {});
+  if (loop === 'pleinsens') {
+    const d = await buildLoopDetail('pleinsens', { port, repoRoot });
+    // Each cycle's OWN gate record: the gate stores the run it came from (origin.run).
+    // All cycles share one branch, so a branch-level status would mix cycles.
+    const gateOfRun = (runId) => gateFacts(latest(cands.filter((x) => x.source === 'pleinsens-loop' && x.origin && x.origin.run === runId)));
+    return ((d && d.runs) || []).slice(0, 5).map((r) => ({ facts: plain.pleinsensFacts(r, gateOfRun(r.id)), item: r }));
+  }
+  if (!/^[a-z0-9-]{1,40}$/.test(String(loop))) return null;
+  const snap = await getJson(port, '/api/mind/autopilot?pilot=' + encodeURIComponent(loop));
+  if (!snap || !Array.isArray(snap.history)) return null;
+  // Does the merge gate take this pilot's branches? (config/merge-gate.json)
+  let gated = false;
+  try {
+    const policy = JSON.parse(fs.readFileSync(path.join(repoRoot, 'config', 'merge-gate.json'), 'utf8'));
+    gated = !!policy.enabled && (policy.repos || []).some((r) => (r.sources || []).some((s) => s.type === 'autopilot' && s.pilot === loop));
+  } catch (_) {}
+  // Discoveries that found nothing are not listed one by one. Newest first.
+  const hist = snap.history.filter((h) => h.outcome !== 'no-task')
+    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, 8);
+  const gateOfBranch = (branch) => branch ? gateFacts(latest(cands.filter((x) => x.branch === branch))) : null;
+  return hist.map((h) => ({ facts: plain.autopilotFacts(h, gateOfBranch(h.worktree && h.worktree.branch), { gated }), item: h }));
+}
+
 function mountLoopsStatus(addRoute, json, { repoRoot, port = 3800 }) {
+  const plain = require('./plain-summary');
+  const summaries = plain.makeSummaries({ cacheFile: path.join(repoRoot, '.ai-workspace', 'resumes-simples.json'),
+    write: plain.codexWriter({ port, cwd: path.join(repoRoot, '.ai-workspace') }),
+    log: (m) => console.log('[en-clair] ' + m) });
+  addRoute('GET', '/api/automation/loops/summary', async (req, res) => {
+    try {
+      const loop = new URL(req.url, 'http://x').searchParams.get('loop');
+      const items = await buildPlainSummary(loop, { port, repoRoot });
+      if (!items) return json(res, { error: 'unknown loop ' + loop }, 404);
+      json(res, { loop, items: summaries.present(items) });
+    } catch (e) { json(res, { error: e.message }, 500); }
+  });
+  addRoute('GET', '/api/automation/loops/detail', async (req, res) => {
+    try {
+      const id = new URL(req.url, 'http://x').searchParams.get('id');
+      const d = await buildLoopDetail(id, { port, repoRoot });
+      if (!d) return json(res, { error: 'unknown loop ' + id }, 404);
+      json(res, d);
+    } catch (e) { json(res, { error: e.message }, 500); }
+  });
   addRoute('GET', '/api/automation/loops', async (_req, res) => {
     try { json(res, await buildLoops({ port, repoRoot })); }
     catch (e) { json(res, { error: e.message }, 500); }
   });
 }
 
-module.exports = { mountLoopsStatus, buildLoops, autopilotLoop, pleinsensLoop, gateService, watchdogService };
+module.exports = { mountLoopsStatus, buildLoops, buildLoopDetail, buildPlainSummary, runView, gateView, autopilotLoop, pleinsensLoop, gateService, watchdogService };

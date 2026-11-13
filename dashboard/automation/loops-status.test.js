@@ -40,3 +40,69 @@ test('services: merge gate and watchdog', () => {
   assert.equal(watchdogService(new Date(NOW - 40 * 60000).toISOString() + ' VEILLE ok', NOW).status, 'error');
   assert.equal(watchdogService('', NOW).status, 'stopped');
 });
+
+test('detail views: graph run nodes and merge gate candidates', () => {
+  const { runView, gateView } = require('./loops-status');
+  const v = runView({ id: 'gr_1', name: 'PleinSens boucle predictions - cycle 1', status: 'running', createdAt: 1, state: { cycle: 1 },
+    nodes: [{ id: 'a', type: 'worker', status: 'completed', cli: 'codex', model: 'm', taskId: 't1', output: { result: 'x'.repeat(900) + 'FIN' } },
+      { id: 'b', type: 'worker', status: 'failed', cli: 'claude', error: 'read ECONNRESET' }] });
+  assert.equal(v.cycle, 1); assert.equal(v.nodes[0].taskId, 't1');
+  assert.ok(v.nodes[0].result.endsWith('FIN') && v.nodes[0].result.length <= 603, 'result tail, bounded');
+  assert.equal(v.nodes[1].error, 'read ECONNRESET'); assert.equal(v.nodes[1].result, null);
+  const g = gateView({ candidates: { k1: { branch: 'b1', sha: 'a'.repeat(40), status: 'new', createdAt: 1, origin: { title: 'T' }, history: [{ note: 'n1' }] },
+    k2: { branch: 'b2', sha: 'b'.repeat(40), status: 'refused', createdAt: 2, history: [] } }, merges: [] });
+  assert.deepEqual(g.candidates.map((c) => c.branch), ['b2', 'b1']);
+  assert.equal(g.candidates[1].sha, 'aaaaaaaaaa'); assert.equal(g.candidates[1].note, 'n1'); assert.equal(g.candidates[1].title, 'T');
+  assert.deepEqual(gateView(null).candidates, []);
+});
+
+test('detail route builder: only known loops, constant files, runs from the API', async () => {
+  const http = require('http'); const fs = require('fs'); const os = require('os'); const path = require('path');
+  const { buildLoopDetail } = require('./loops-status');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loops-'));
+  fs.mkdirSync(path.join(root, '.ai-workspace'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.ai-workspace', 'boucle-lanceur.log'), 'l1\nl2\n');
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/api/graph-runs') return res.end(JSON.stringify([{ id: 'gr_a', name: 'PleinSens boucle predictions - cycle 1', createdAt: 2 }, { id: 'gr_x', name: 'autre', createdAt: 3 }]));
+    if (req.url === '/api/graph-runs/gr_a') return res.end(JSON.stringify({ id: 'gr_a', name: 'PleinSens boucle predictions - cycle 1', status: 'completed', nodes: [{ id: 'n', status: 'completed' }] }));
+    res.statusCode = 404; res.end('{}');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    assert.equal(await buildLoopDetail('../../etc', { port, repoRoot: root }), null, 'unknown id: nothing read');
+    const d = await buildLoopDetail('pleinsens', { port, repoRoot: root });
+    assert.deepEqual(d.runs.map((r) => r.id), ['gr_a'], 'only the loop runs');
+    assert.deepEqual(d.log, ['l1', 'l2']);
+    const g = await buildLoopDetail('porte-fusion', { port, repoRoot: root });
+    assert.deepEqual(g.candidates, []); assert.deepEqual(g.log, []);
+  } finally { srv.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('PleinSens En clair: each cycle gets its own gate record (origin.run), not the branch status', async () => {
+  const http = require('http'); const fs = require('fs'); const os = require('os'); const path = require('path');
+  const { buildPlainSummary } = require('./loops-status');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loops-g-'));
+  fs.mkdirSync(path.join(root, '.ai-workspace', 'merge-gate'), { recursive: true });
+  const writeGate = (g) => fs.writeFileSync(path.join(root, '.ai-workspace', 'merge-gate', 'state.json'), JSON.stringify(g));
+  writeGate({ candidates: {
+    k1: { key: 'k1', source: 'pleinsens-loop', branch: 'b', status: 'confirmed', createdAt: 1, origin: { run: 'gr_1' }, history: [] },
+    k2: { key: 'k2', source: 'pleinsens-loop', branch: 'b', status: 'new', createdAt: 2, origin: { run: 'gr_2' }, history: [] } },
+  merges: [{ key: 'k1', status: 'confirmed' }] });
+  const garde = (id, c) => ({ id, name: 'PleinSens boucle predictions - cycle ' + c, status: 'completed', createdAt: c, nodes: [{ id: 'c' + c + '-consigner-garde', status: 'completed' }] });
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/api/graph-runs') return res.end(JSON.stringify([garde('gr_1', 1), garde('gr_2', 2)]));
+    const id = req.url.split('/').pop(); res.end(JSON.stringify(garde(id, id === 'gr_1' ? 1 : 2)));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = srv.address().port;
+    let by = Object.fromEntries((await buildPlainSummary('pleinsens', { port, repoRoot: root })).map((i) => [i.facts.runId, i.facts]));
+    assert.equal(by.gr_1.state, 'termine'); assert.equal(by.gr_2.state, 'a-integrer');
+    // Red CI after the merge: the merge record wins over the candidate status.
+    writeGate({ candidates: { k1: { key: 'k1', source: 'pleinsens-loop', branch: 'b', status: 'merged', createdAt: 1, origin: { run: 'gr_1' }, history: [] } },
+      merges: [{ key: 'k1', status: 'failed-after-merge' }], stopped: { reason: 'CI rouge sur master' } });
+    by = Object.fromEntries((await buildPlainSummary('pleinsens', { port, repoRoot: root })).map((i) => [i.facts.runId, i.facts]));
+    assert.equal(by.gr_1.state, 'arrete'); assert.match(by.gr_1.stateText, /CI rouge sur master.*une personne doit intervenir/);
+  } finally { srv.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});

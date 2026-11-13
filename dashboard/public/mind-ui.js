@@ -3042,6 +3042,20 @@
     alert(lines.join("\n"));
   }
 
+  // dashboard/public/mind-ui/src/latest.js
+  function makeLatest() {
+    let seq = 0;
+    return {
+      start() {
+        const ticket = ++seq;
+        return () => ticket === seq;
+      },
+      invalidate() {
+        seq++;
+      }
+    };
+  }
+
   // dashboard/public/mind-ui/src/autopilot.js
   var STATUS = {
     disabled: { label: "Desactive", color: "var(--subtext0)", hint: "Le pilote ne lance rien." },
@@ -3076,7 +3090,21 @@
     cleanup: "Nettoyage",
     testing: "Tests"
   };
-  var ap = { snap: null, busy: false, message: "", poll: null, draftGoal: null, draftRepo: null, draftConsent: false, pilot: "default" };
+  var ap = {
+    snap: null,
+    busy: false,
+    message: "",
+    poll: null,
+    draftGoal: null,
+    draftRepo: null,
+    draftConsent: false,
+    pilot: "default",
+    // A non-autopilot loop shown in detail (pleinsens | porte-fusion | veille), else null.
+    loopView: null,
+    loopDetail: null,
+    // Plain-language summary ("En clair") of the loop on screen: { loop, items }.
+    clair: null
+  };
   try {
     ap.pilot = localStorage.getItem("mind-autopilot-pilot") || "default";
   } catch (_) {
@@ -3106,6 +3134,8 @@
       }
     }).catch(() => {
     });
+    if (ap.loopView) loadLoopDetail();
+    loadClair();
     try {
       ap.snap = await call("/api/mind/autopilot");
       ap.pilots = ap.snap.pilots || ap.pilots;
@@ -3118,6 +3148,39 @@
       ap.message = "Lecture impossible : " + e.message;
     }
     paint();
+  }
+  var detailRequests = makeLatest();
+  var clairRequests = makeLatest();
+  var clairLoop = () => ap.loopView ? ap.loopView === "pleinsens" ? "pleinsens" : null : ap.pilot;
+  function loadClair() {
+    const loop = clairLoop();
+    const current = clairRequests.start();
+    if (!loop) {
+      ap.clair = null;
+      return Promise.resolve();
+    }
+    return fetch("/api/automation/loops/summary?loop=" + encodeURIComponent(loop), { cache: "no-store" }).then((r) => r.json()).then((d) => {
+      if (current()) {
+        ap.clair = d && d.items ? { loop, items: d.items } : null;
+        paint();
+      }
+    }).catch(() => {
+    });
+  }
+  function loadLoopDetail() {
+    const id = ap.loopView;
+    const current = detailRequests.start();
+    return fetch("/api/automation/loops/detail?id=" + encodeURIComponent(id), { cache: "no-store" }).then((r) => r.json()).then((d) => {
+      if (current()) {
+        ap.loopDetail = d;
+        paint();
+      }
+    }).catch((e) => {
+      if (current()) {
+        ap.loopDetail = { error: e.message };
+        paint();
+      }
+    });
   }
   async function act(label, fn) {
     if (ap.busy) return;
@@ -3160,11 +3223,53 @@
     refresh() {
       return load();
     },
+    showLoop(id) {
+      if (ap.busy) return;
+      ap.loopView = id;
+      ap.loopDetail = null;
+      ap.message = "";
+      ap.clair = null;
+      paint();
+      loadClair();
+      return loadLoopDetail();
+    },
+    async retryNode(runId, nodeId, taskId) {
+      if (ap.busy) return;
+      ap.busy = true;
+      ap.message = "Reprise de l etape " + nodeId + "...";
+      paint();
+      try {
+        const r = await fetch("/api/graph-runs/" + encodeURIComponent(runId) + "/retry/" + encodeURIComponent(nodeId), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(taskId ? { taskId } : {})
+        });
+        const d = await r.json().catch(() => ({}));
+        ap.message = r.ok && !d.error ? "Etape " + nodeId + " reprise" + (taskId ? " (tache " + taskId + " adoptee : si elle a fini, rien n est relance)" : "") + "." : "Reprise refusee : " + (d.error || "HTTP " + r.status);
+      } catch (e) {
+        ap.message = "Reprise impossible : " + e.message;
+      }
+      ap.busy = false;
+      return loadLoopDetail();
+    },
     select(id) {
-      if (ap.busy || id === ap.pilot) return;
+      if (ap.busy) return;
+      if (ap.loopView) {
+        detailRequests.invalidate();
+        ap.loopView = null;
+        ap.loopDetail = null;
+        ap.clair = null;
+        if (id === ap.pilot) {
+          paint();
+          loadClair();
+          return;
+        }
+      }
+      if (id === ap.pilot) return;
       ap.pilot = id;
       ap.snap = null;
       ap.message = "";
+      ap.clair = null;
       ap.draftGoal = null;
       ap.draftRepo = null;
       ap.draftConsent = false;
@@ -3211,10 +3316,64 @@
     const d = ap.loops;
     if (!d) return "";
     const row = (l, svc) => {
-      const click = l.pilot ? ' style="cursor:pointer;" data-pilot="' + esc(l.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" title="Voir le detail"' : "";
-      return "<tr" + click + '><td><span class="ap-dot" style="background:' + (LOOP_COLOR[l.status] || "var(--subtext0)") + ';margin-right:6px;"></span><b>' + esc(l.label) + "</b>" + (l.pilot && l.pilot === ap.pilot ? ' <span class="ap-tag">affichee</span>' : "") + "</td><td>" + esc(l.window) + "</td><td><b>" + esc(l.statusLabel) + "</b></td><td>" + esc(l.detail) + "</td></tr>";
+      const click = l.pilot ? ' style="cursor:pointer;" data-pilot="' + esc(l.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" title="Voir le detail"' : LOOP_DETAIL.includes(l.id) ? ' style="cursor:pointer;" data-loop="' + esc(l.id) + '" onclick="MindAutopilot.showLoop(this.dataset.loop)" title="Voir le detail"' : "";
+      const shown = ap.loopView ? l.id === ap.loopView : l.pilot && l.pilot === ap.pilot;
+      return "<tr" + click + '><td><span class="ap-dot" style="background:' + (LOOP_COLOR[l.status] || "var(--subtext0)") + ';margin-right:6px;"></span><b>' + esc(l.label) + "</b>" + (shown ? ' <span class="ap-tag">affichee</span>' : "") + "</td><td>" + esc(l.window) + "</td><td><b>" + esc(l.statusLabel) + "</b></td><td>" + esc(l.detail) + "</td></tr>";
     };
-    return '<div class="ap-card"><div class="ap-title">Les boucles automatiques</div><table class="ap-table"><thead><tr><th>Boucle</th><th>Plage</th><th>Etat</th><th>Maintenant</th></tr></thead><tbody>' + d.loops.map((l) => row(l)).join("") + '</tbody></table><div class="ap-title" style="margin-top:12px;">Services</div><table class="ap-table"><tbody>' + (d.services || []).map((l) => row(l, true)).join("") + '</tbody></table><div class="ap-note">Mis a jour ' + esc(when(d.now)) + ". Une boucle au repos attend sa plage horaire : c est normal. Cliquez sur un autopilote pour son detail ci-dessous.</div></div>";
+    return '<div class="ap-card"><div class="ap-title">Les boucles automatiques</div><table class="ap-table"><thead><tr><th>Boucle</th><th>Plage</th><th>Etat</th><th>Maintenant</th></tr></thead><tbody>' + d.loops.map((l) => row(l)).join("") + '</tbody></table><div class="ap-title" style="margin-top:12px;">Services</div><table class="ap-table"><tbody>' + (d.services || []).map((l) => row(l, true)).join("") + '</tbody></table><div class="ap-note">Mis a jour ' + esc(when(d.now)) + ". Une boucle au repos attend sa plage horaire : c est normal. Cliquez sur une ligne pour voir ce qu elle a fait.</div></div>";
+  }
+  var LOOP_DETAIL = ["pleinsens", "porte-fusion", "veille"];
+  var NODE_COLOR = { completed: "var(--green)", running: "var(--accent)", failed: "var(--red)", awaiting_approval: "var(--yellow)", pending: "var(--subtext0)", cancelled: "var(--subtext0)" };
+  var NODE_LABEL = { completed: "terminee", running: "en cours", failed: "en echec", awaiting_approval: "attend une approbation", pending: "a venir", cancelled: "annulee", paused: "en pause" };
+  var RUN_LABEL = { pending: "en attente", running: "en cours", completed: "termine", failed: "en echec", cancelled: "annule", paused: "en pause", awaiting_approval: "attend une approbation" };
+  var hm = (t) => t ? new Date(t).toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit" }) : "";
+  var dur = (a, b) => {
+    if (!a) return "";
+    const m = Math.round(((b || Date.now()) - a) / 6e4);
+    return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + m % 60 + " min";
+  };
+  var logBlock = (lines) => '<pre style="white-space:pre-wrap;font-size:11px;max-height:260px;overflow:auto;margin:0;">' + esc((lines || []).join("\n") || "(vide)") + "</pre>";
+  var CLAIR_STATE = {
+    termine: { label: "Termine", color: "var(--green)" },
+    "a-integrer": { label: "Fait, pas encore dans l application", color: "var(--yellow)" },
+    "en-cours": { label: "En cours", color: "var(--accent)" },
+    abandonne: { label: "Abandonne", color: "var(--subtext0)" },
+    arrete: { label: "Arrete", color: "var(--red)" }
+  };
+  function clairHtml() {
+    const c = ap.clair;
+    if (!c || c.loop !== clairLoop()) return "";
+    const items = (c.items || []).map((it) => {
+      const st = CLAIR_STATE[it.state] || CLAIR_STATE.arrete;
+      return '<div style="border-top:1px solid var(--surface1);padding:10px 0;"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span class="ap-tag" style="background:' + st.color + ';color:var(--base);">' + esc(st.label) + "</span><b>" + esc(it.titre || it.rawTitle) + '</b><span class="ap-muted">' + esc(when(it.at)) + '</span></div><div style="margin-top:6px;"><b>Est-ce termine ?</b> ' + esc(it.stateText) + "</div>" + (it.fait ? '<div style="margin-top:6px;"><b>Ce qui a ete fait, selon le rapport :</b> ' + esc(it.fait) + '</div><div style="margin-top:4px;"><b>Ce que ca ameliore :</b> ' + esc(it.ameliore) + "</div>" : '<div class="ap-muted" style="margin-top:6px;">' + esc(it.redaction) + "</div>") + (it.fait ? '<div class="ap-muted" style="margin-top:4px;font-size:11px;">' + esc(it.redaction) + "</div>" : "") + "</div>";
+    }).join("");
+    return '<div class="ap-card"><div class="ap-title">En clair : ce qui a ete fait</div>' + (items || '<div class="ap-muted">Rien a resumer pour l instant.</div>') + "</div>";
+  }
+  function loopDetailHtml() {
+    const d = ap.loopDetail;
+    const id = ap.loopView;
+    const back = '<button class="tab-bar-btn" data-pilot="' + esc(ap.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)">Retour aux autopilotes</button> <button class="tab-bar-btn" data-loop="' + esc(id) + '" onclick="MindAutopilot.showLoop(this.dataset.loop)">Actualiser</button>';
+    const head = (t) => '<div class="ap-card"><div class="ap-btns" style="align-items:center;justify-content:space-between;"><div class="ap-big">' + esc(t) + "</div><div>" + back + "</div></div>" + (ap.message ? '<div class="ap-msg" style="margin-top:6px;">' + esc(ap.message) + "</div>" : "") + "</div>";
+    if (!d) return head("Chargement...");
+    if (d.error) return head("Detail indisponible") + '<div class="ap-card ap-err">' + esc(d.error) + "</div>";
+    if (id === "pleinsens") {
+      const runs = (d.runs || []).map((r, i) => {
+        const rows = r.nodes.map((n) => {
+          const canRetry = n.status === "failed" && ["running", "pending", "failed", "paused"].includes(r.status);
+          const adopt = canRetry && n.taskId && !/^worker (failed|cancelled|timeout) on /.test(String(n.error || "")) ? n.taskId : "";
+          return '<tr><td><span class="ap-dot" style="background:' + (NODE_COLOR[n.status] || "var(--subtext0)") + ';margin-right:6px;"></span><b>' + esc(n.id) + "</b></td><td>" + esc(NODE_LABEL[n.status] || n.status) + "</td><td>" + esc(n.cli ? n.cli + (n.model ? " " + n.model : "") : n.type === "branch" ? "decision (sans IA)" : "") + "</td><td>" + esc(hm(n.startedAt)) + (n.startedAt ? " (" + esc(dur(n.startedAt, n.endedAt)) + ")" : "") + '</td><td style="max-width:520px;">' + (n.error ? '<div class="ap-err">' + esc(n.error) + "</div>" : "") + (n.result ? '<details><summary>Resultat</summary><pre style="white-space:pre-wrap;font-size:11px;margin:4px 0;">' + esc(n.result) + "</pre></details>" : "") + (canRetry ? '<button class="tab-bar-btn" style="margin-top:4px;" data-run="' + esc(r.id) + '" data-node="' + esc(n.id) + '" data-task="' + esc(adopt) + '" onclick="MindAutopilot.retryNode(this.dataset.run, this.dataset.node, this.dataset.task)" title="' + (adopt ? "Reprend l etape en adoptant sa tache deja lancee : si elle a fini, rien n est repaye" : "Relance l etape avec un nouveau worker") + '">' + (adopt ? "Reprendre l etape (adopter sa tache)" : "Relancer l etape") + "</button>" : "") + "</td></tr>";
+        }).join("");
+        const done = r.nodes.filter((n) => n.status === "completed").length;
+        return '<div class="ap-card"' + (i ? ' style="opacity:.75;"' : "") + '><div class="ap-title">' + (i ? "Run precedent" : "Dernier run") + " : " + esc(r.id) + " | " + esc(RUN_LABEL[r.status] || r.status) + " | " + done + "/" + r.nodes.length + " etapes | lance " + esc(when(r.createdAt)) + (r.waitingUntil ? " | reprend " + esc(when(r.waitingUntil)) : "") + '</div><table class="ap-table"><thead><tr><th>Etape</th><th>Etat</th><th>Modele</th><th>Debut (duree)</th><th>Detail</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+      }).join("");
+      return head("Boucle PleinSens : ce qu elle a fait") + clairHtml() + (runs || '<div class="ap-card ap-muted">Aucun run de la boucle.</div>') + '<div class="ap-card"><div class="ap-title">Journal du lanceur (08:00)</div>' + logBlock(d.log) + "</div>";
+    }
+    if (id === "porte-fusion") {
+      const rows = (d.candidates || []).map((c) => "<tr><td><b>" + esc(c.branch) + '</b><div class="ap-muted">' + esc(c.sha) + " | " + esc(c.source || "") + "</div></td><td>" + esc(c.status) + (c.attempts ? " (" + esc(c.attempts) + " essai(s))" : "") + "</td><td>" + esc(c.title || "") + "</td><td>" + esc(c.note || "") + (c.pr ? ' <span class="ap-tag">PR #' + esc(c.pr) + "</span>" : "") + "</td></tr>").join("");
+      const merges = (d.merges || []).map((m) => "<tr><td>" + esc(m.branch) + "</td><td>PR #" + esc(m.pr) + "</td><td>" + esc(m.status) + "</td><td>" + esc(when(m.at)) + "</td></tr>").join("");
+      return head("Porte de fusion : ce qu elle a fait") + (d.stopped ? '<div class="ap-card ap-err">Arretee : ' + esc(d.stopped.reason || "") + "</div>" : "") + '<div class="ap-card"><div class="ap-title">Branches candidates</div><table class="ap-table"><thead><tr><th>Branche</th><th>Etat</th><th>Tache</th><th>Derniere note</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4" class="ap-muted">Aucune.</td></tr>') + '</tbody></table></div><div class="ap-card"><div class="ap-title">Fusions</div><table class="ap-table"><tbody>' + (merges || '<tr><td class="ap-muted">Aucune fusion pour l instant.</td></tr>') + '</tbody></table></div><div class="ap-card"><div class="ap-title">Journal</div>' + logBlock(d.log) + "</div>";
+    }
+    return head("Veille : ses derniers passages") + '<div class="ap-card">' + logBlock(d.log) + "</div>";
   }
   function selector() {
     const rows = ap.pilots || [];
@@ -3303,7 +3462,9 @@
       </style>
       <div class="ap-wrap">
         ${overview()}
+        ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ""}
         ${selector()}
+        ${ap.loopView ? "" : clairHtml()}
         <div class="ap-card">
           <div class="ap-status">
             <span class="ap-dot" style="background:${st.color};"></span>
@@ -3374,6 +3535,7 @@
           <div class="ap-title">Decisions, erreurs et evenements</div>
           ${events}
         </div>
+        ${ap.loopView ? "</div>" : ""}
       </div>`;
   }
   function renderAutopilot() {
