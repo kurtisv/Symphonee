@@ -21,10 +21,10 @@ const { execFileSync } = require('child_process');
 const MAX_BEFORE_MS = 10 * 60000;
 const SLACK_MS = 2000;
 
-// Start time (ms) of a live process, or null when it does not run. Cached per pid.
-const startCache = new Map();
+// Start time (ms) of a live process, or null when it does not run. Asked again
+// on every resolution (no cache): a long-running helper must notice that the
+// writer died or that its pid now belongs to another program.
 function processStart(pid) {
-  if (startCache.has(pid)) return startCache.get(pid);
   let t = null;
   try {
     const out = process.platform === 'win32'
@@ -35,7 +35,6 @@ function processStart(pid) {
     const ms = Date.parse(String(out).trim());
     t = Number.isFinite(ms) ? ms : null;
   } catch (_) { t = null; }
-  startCache.set(pid, t);
   return t;
 }
 

@@ -33,3 +33,18 @@ test('resolveToken: the file only while its writer runs, else the environment', 
   assert.equal(resolveToken({ runtimePath: rt, env }), 'from-env', 'real process, but it did not write that old file');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('a writer that dies is noticed by the same long-running process (no stale cache)', async () => {
+  const { spawn } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tok-dead-'));
+  const rt = path.join(dir, 'runtime.json');
+  const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 300));
+  fs.writeFileSync(rt, JSON.stringify({ token: 'from-file', pid: child.pid, startedAt: new Date().toISOString() }));
+  const env = { SYMPHONEE_TOKEN: 'from-env' };
+  assert.equal(resolveToken({ runtimePath: rt, env }), 'from-file', 'writer alive');
+  child.kill();
+  await new Promise((r) => child.on('exit', r));
+  assert.equal(resolveToken({ runtimePath: rt, env }), 'from-env', 'writer gone: environment token');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
