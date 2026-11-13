@@ -212,7 +212,16 @@ async function pass(policy, state, io) {
     for (const c of mine) {
       if (c.status === 'new' && heavyDone) continue; // one chain per pass
       if (c.status === 'new') heavyDone = true;
-      await step(c, repo, baseSha, state, io);
+      // A transient error (network, GitHub, Symphonee API) leaves the candidate
+      // where it was: retried at the next pass, the other candidates go on.
+      try { await step(c, repo, baseSha, state, io); }
+      catch (e) {
+        const msg = String(e && e.message || e).slice(0, 300);
+        io.log(c.key + ' : erreur pendant ' + c.status + ', nouvel essai au prochain passage : ' + msg);
+        if (c.lastError !== msg) io.notify('warning', 'Porte de fusion : erreur transitoire sur ' + c.branch + ' (' + c.status + '), nouvel essai dans 30 min : ' + msg,
+          ['porte-fusion', 'transitoire', c.key]);
+        c.lastError = msg;
+      }
     }
   }
   return state;
@@ -265,8 +274,14 @@ async function step(c, repo, baseSha, state, io) {
     else {
       try { io.git(repo.path, ['push', 'origin', c.sha + ':refs/heads/' + c.branch]); }
       catch (e) { return refuse(c, repo, ['push refuse : ' + String(e.message).split('\n')[0]], io); }
-      const pr = await io.api('POST', '/api/github/pulls/create', { repo: repo.github, head: c.branch, base: repo.base,
-        title: prTitle(c), body: prBody(c, repo) });
+      // GitHub may not see a just-pushed branch yet (422 "head invalid"): retry.
+      let pr = null, lastErr = null;
+      for (let i = 0; i < 4 && !pr; i++) {
+        try { pr = await io.api('POST', '/api/github/pulls/create', { repo: repo.github, head: c.branch, base: repo.base,
+          title: prTitle(c), body: prBody(c, repo) }); }
+        catch (e) { lastErr = e; await (io.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))))(5000 * (i + 1)); }
+      }
+      if (!pr) throw lastErr;
       if (!pr || !pr.number) return refuse(c, repo, ['creation de la PR impossible : ' + JSON.stringify(pr).slice(0, 200)], io);
       c.pr = pr.number; c.prUrl = pr.url;
       setStatus(c, 'pr-open', 'PR #' + pr.number, io);

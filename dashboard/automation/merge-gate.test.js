@@ -232,3 +232,21 @@ test('the CPU-heavy chain runs only inside chainWindows; light steps run at any 
   assert.equal(gate.inAnyWindow([{ start: '22:00', end: '04:00' }], new Date(2026, 10, 13, 2).getTime()), true);
   assert.equal(gate.inAnyWindow(undefined, 0), true);
 });
+
+test('a transient API error is retried (PR creation) and never aborts the other candidates', async () => {
+  const { w, io } = world();
+  io.sleep = async () => {};
+  const api = io.api; let fails = 2;
+  io.api = async (m, p, b) => { if (p === '/api/github/pulls/create' && fails-- > 0) throw new Error('HTTP 502 head invalid'); return api(m, p, b); };
+  const state = {};
+  await gate.pass(POLICY, state, io);
+  assert.equal(only(state).status, 'pr-open', 'created at the third try');
+  // An error that persists leaves the candidate in place, with one message.
+  const r = world(); r.io.sleep = async () => {};
+  r.io.api = async (m, p, b) => { if (p === '/api/github/pulls/create') throw new Error('HTTP 502 GitHub en panne'); return world().io.api(m, p, b); };
+  const st = {};
+  await gate.pass(POLICY, st, r.io);
+  await gate.pass(POLICY, st, r.io);
+  assert.equal(only(st).status, 'ready', 'not refused: retried next pass');
+  assert.equal(r.w.notes.filter((n) => /erreur transitoire/.test(n)).length, 1, 'one message for the same error');
+});
