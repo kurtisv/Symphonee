@@ -27,6 +27,12 @@ try { sentry = require('../automation/sentry-report'); } catch (_) {}
 
 const STATES = ['pending', 'running', 'awaiting_approval', 'completed', 'failed', 'cancelled', 'paused'];
 
+function isTransientNetError(e) {
+  const code = e && (e.code || '');
+  return ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ECONNABORTED'].includes(code)
+    || /socket hang up|ECONNRESET/i.test(String(e && e.message));
+}
+
 class GraphRunsEngine extends EventEmitter {
   constructor({ repoRoot, apiHost = '127.0.0.1', apiPort = 3800, injectToTerminal = null }) {
     super();
@@ -123,6 +129,10 @@ class GraphRunsEngine extends EventEmitter {
         endedAt: null,
         output: null,
         error: null,
+        // Engine-owned fields: a run definition can never pre-set them (an
+        // adopted task is only accepted through retryNode's ownership checks).
+        taskId: null,
+        adoptTaskId: undefined,
       })),
       events: [],
     };
@@ -178,6 +188,43 @@ class GraphRunsEngine extends EventEmitter {
     run.updatedAt = Date.now();
     this._wal({ kind: 'paused', runId: id });
     this._persist(run);
+    return run;
+  }
+
+  // Re-run a FAILED node. With taskId, the node adopts that orchestrator task
+  // (typically the one it had spawned, which finished after the engine lost
+  // track of it) instead of spawning a new worker.
+  async retryNode(runId, nodeId, { taskId } = {}) {
+    const run = this.runs.get(runId);
+    if (!run) throw new Error('no such run');
+    if (['cancelled', 'completed'].includes(run.status)) throw new Error('run is ' + run.status);
+    const node = run.nodes.find(n => n.id === nodeId);
+    if (!node) throw new Error('no such node');
+    const checkStates = () => {
+      if (['cancelled', 'completed'].includes(run.status)) throw new Error('run is ' + run.status);
+      if (node.status !== 'failed') throw new Error('node is ' + node.status + ', not failed');
+    };
+    checkStates();
+    if (taskId !== undefined && !/^[A-Za-z0-9_-]{4,64}$/.test(String(taskId))) throw new Error('invalid taskId');
+    if (taskId) {
+      // Only a task this run spawned, not already used by another node, and
+      // for this node's working folder: never an arbitrary task's output.
+      const t = await apiRequest(this.apiHost, this.apiPort, 'GET', '/api/orchestrator/task?id=' + encodeURIComponent(taskId)).catch(() => null);
+      // The run may have been cancelled (or the node retried) during the await.
+      checkStates();
+      if (!t || t.error) throw new Error('task ' + taskId + ' not found');
+      if (t.from !== 'graph-run:' + runId) throw new Error('task ' + taskId + ' was not spawned by run ' + runId);
+      if (node.taskId && node.taskId !== taskId) throw new Error('node ' + nodeId + ' ran task ' + node.taskId + ', not ' + taskId);
+      if (run.nodes.some(n => n !== node && (n.taskId === taskId || n.adoptTaskId === taskId))) throw new Error('task ' + taskId + ' already belongs to another node');
+      if (node.cwd && t.cwd && path.resolve(String(t.cwd)).toLowerCase() !== path.resolve(String(node.cwd)).toLowerCase()) throw new Error('task ' + taskId + ' ran in ' + t.cwd + ', not in the node folder');
+    }
+    node.status = 'pending'; node.error = null; node.endedAt = null;
+    if (taskId) node.adoptTaskId = String(taskId);
+    run.status = 'pending'; delete run.error;
+    run.updatedAt = Date.now();
+    this._wal({ kind: 'node_retried', runId, nodeId, adoptTaskId: node.adoptTaskId || null });
+    this._persist(run);
+    setImmediate(() => this._executeNextBatch(runId).catch(err => { this._failRun(runId, err.message); }));
     return run;
   }
 
@@ -411,6 +458,7 @@ class GraphRunsEngine extends EventEmitter {
         throw new Error(`Unknown node type: ${node.type}`);
       }
       node.output = output;
+      delete node.adoptTaskId;
       node.status = 'completed';
       node.endedAt = Date.now();
       // Merge node output into state under state.results[nodeId]
@@ -423,6 +471,7 @@ class GraphRunsEngine extends EventEmitter {
         // Stopped at the window's hardEnd: not a failure. Back to pending; it
         // starts again from the beginning in the next window.
         node.status = 'pending'; node.error = null; node.startedAt = null;
+        delete node.adoptTaskId; // its task was cancelled at hardEnd: start fresh next window
         node.windowStops = (node.windowStops || 0) + 1; node.lastWindowStopAt = Date.now();
         this._wal({ kind: 'node_window_stopped', runId: run.id, nodeId: node.id, stops: node.windowStops });
         this._notify(run, 'warning', 'Etape ' + node.id + ' arretee en fin de fenetre (' + run.schedule.hardEnd + '), reprise a la prochaine fenetre',
@@ -430,6 +479,7 @@ class GraphRunsEngine extends EventEmitter {
         return;
       }
       node.error = err.message;
+      delete node.adoptTaskId;
       node.status = 'failed';
       node.endedAt = Date.now();
       this._wal({ kind: 'node_failed', runId: run.id, nodeId: node.id, error: err.message });
@@ -463,7 +513,16 @@ class GraphRunsEngine extends EventEmitter {
         // Optional per-node time limit (ms). Without it a cloud worker is cut
         // at the task store default (15 min), too short for long steps.
         ...(Number(node.timeoutMs) > 0 ? { workerTimeoutMs: Number(node.timeoutMs) } : {}) };
-      const spawnRes = await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
+      // Adopt a task that already ran for this node (retryNode with taskId):
+      // its finished work is collected instead of being paid for again.
+      // Kept on the node (persisted) until it settles, so a restart during the
+      // adoption adopts again instead of spawning a new worker.
+      const adopted = attempt === 0 && node.adoptTaskId ? node.adoptTaskId : null;
+      // A real spawn replaces any adoption (the adopted task failed and the
+      // router moved on): never re-adopt it after a restart.
+      if (!adopted && node.adoptTaskId) { delete node.adoptTaskId; this._persist(run); } // saved BEFORE the spawn
+      const spawnRes = adopted ? { id: adopted }
+        : await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/spawn', body).catch(e => ({ __error: e }));
       if (spawnRes && spawnRes.__error) {
         lastError = `spawn ${cli} failed: ${spawnRes.__error.message || spawnRes.__error}`;
         if (!this._shouldRetryOnAnotherModel(lastError)) throw new Error(lastError);
@@ -473,7 +532,10 @@ class GraphRunsEngine extends EventEmitter {
         throw new Error(`spawn ${cli} refused: ${JSON.stringify(spawnRes)}`);
       }
       const taskId = spawnRes.id;
+      node.taskId = taskId; // kept so a failed node can adopt its task later
+      this._persist(run);
       let taskFailed = false;
+      let netErrors = 0;
       while (true) {
         await sleep(1500);
         if (['paused', 'cancelled'].includes(run.status)) throw new Error('run paused/cancelled');
@@ -481,7 +543,16 @@ class GraphRunsEngine extends EventEmitter {
           await apiRequest(this.apiHost, this.apiPort, 'POST', '/api/orchestrator/cancel', { taskId }).catch(() => {});
           throw Object.assign(new Error('stopped at the work window hard end ' + run.schedule.hardEnd), { windowStop: true });
         }
-        const task = await apiRequest(this.apiHost, this.apiPort, 'GET', `/api/orchestrator/task?id=${taskId}`);
+        let task;
+        try {
+          task = await apiRequest(this.apiHost, this.apiPort, 'GET', `/api/orchestrator/task?id=${taskId}`);
+          netErrors = 0;
+        } catch (e) {
+          // A dropped local connection is not a worker failure: poll again
+          // (about one minute of consecutive errors before giving up).
+          if (isTransientNetError(e) && ++netErrors <= 40) continue;
+          throw e;
+        }
         if (!task) { lastError = `task ${taskId} disappeared on ${cli}`; taskFailed = true; break; }
         if (task.state === 'completed') return { taskId, cli, model, result: task.result, attempts: attempt + 1, triedClis };
         if (['failed', 'cancelled', 'timeout'].includes(task.state)) {

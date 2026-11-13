@@ -426,6 +426,10 @@ const server = http.createServer(async (req, res) => {
         if (action === 'pause' && req.method === 'POST') {
           try { return json(res, graphRuns.pauseRun(runId)); } catch (e) { return json(res, { error: e.message }, 400); }
         }
+        if (action === 'retry' && nodeId && req.method === 'POST') {
+          const body = await readBody(req);
+          try { return json(res, await graphRuns.retryNode(runId, nodeId, { taskId: body.taskId })); } catch (e) { return json(res, { error: e.message }, 400); }
+        }
         if (action === 'resume' && req.method === 'POST') {
           try { return json(res, await graphRuns.resumeRun(runId)); } catch (e) { return json(res, { error: e.message }, 400); }
         }
