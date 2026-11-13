@@ -74,6 +74,25 @@ async function withWorktree(repo, base, fn) {
     else { try { git(repo.path, ['worktree', 'remove', '--force', dir]); } catch (e) { log('worktree temporaire non retiree : ' + dir + ' : ' + e.message.split('\n')[0]); } }
   }
 }
+// Temporary worktrees left by a killed pass: links removed FIRST, then the
+// worktree; a worktree whose links cannot be removed is left and reported.
+function cleanupLeftovers(policy) {
+  for (const repo of policy.repos) {
+    let list = '';
+    try { list = git(repo.path, ['worktree', 'list', '--porcelain']); } catch (_) { continue; }
+    for (const line of list.split(/\r?\n/)) {
+      const dir = line.startsWith('worktree ') ? line.slice(9).trim() : '';
+      if (!dir || !/[\\/]porte-[0-9a-f]{8}$/.test(dir)) continue;
+      const native = path.resolve(dir);
+      if (path.dirname(native).toLowerCase() !== path.resolve(os.tmpdir()).toLowerCase()) continue;
+      guard.unlinkDirs(native, repo.linkDirs || []);
+      const left = (repo.linkDirs || []).filter((d) => { try { return fs.lstatSync(path.join(native, d)).isSymbolicLink(); } catch (_) { return false; } });
+      if (left.length) { log('ATTENTION reste d un passage interrompu, liens non retires : ' + native); continue; }
+      try { git(repo.path, ['worktree', 'remove', '--force', native]); log('reste d un passage interrompu nettoye : ' + native); }
+      catch (e) { log('reste non retire ' + native + ' : ' + e.message.split('\n')[0]); }
+    }
+  }
+}
 async function runChain(repo, base, sha) {
   return withWorktree(repo, base, async (dir) => {
     try { git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'merge', '--no-ff', '--no-edit', sha]); }
@@ -111,9 +130,18 @@ async function main() {
   let policy;
   try { policy = JSON.parse(fs.readFileSync(POLICY, 'utf8')); } catch (e) { log('ARRET politique illisible ' + POLICY + ' : ' + e.message); process.exitCode = 1; return; }
   if (ESSAI) return dryRun(policy);
-  // One pass at a time (the job never overlaps, but a manual run could).
-  try { const st = fs.statSync(LOCK); if (Date.now() - st.mtimeMs < 6 * 3600000) { log('EN_COURS un autre passage tient le verrou'); return; } } catch (_) {}
+  // One pass at a time (the job never overlaps, but a manual run could). A lock
+  // only counts while its process is alive: a pass killed by the system (low
+  // memory, reboot) must not block the gate.
+  try {
+    const holder = Number(fs.readFileSync(LOCK, 'utf8'));
+    let alive = false;
+    try { if (holder && holder !== process.pid) { process.kill(holder, 0); alive = true; } } catch (_) {}
+    if (alive && Date.now() - fs.statSync(LOCK).mtimeMs < 6 * 3600000) { log('EN_COURS le passage ' + holder + ' tient le verrou'); return; }
+    if (!alive) log('verrou orphelin du passage ' + holder + ' retire');
+  } catch (_) {}
   fs.writeFileSync(LOCK, String(process.pid));
+  cleanupLeftovers(policy);
   const t0 = Date.now();
   const ci = await sentry.checkIn({ slug: 'porte-fusion', status: 'in_progress', monitor: { schedule: { type: 'interval', value: 30, unit: 'minute' }, margin: 30, maxRuntime: 240 } });
   let state = {};
