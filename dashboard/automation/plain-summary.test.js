@@ -57,3 +57,14 @@ test('facts: a pilot the merge gate does not handle needs a person to merge', ()
   assert.equal(f.state, 'a-integrer');
   assert.match(f.stateText, /pas de fusion automatique/);
 });
+
+test('a run with no finished step is not sent to the writer', async () => {
+  let calls = 0;
+  const m = p.makeSummaries({ cacheFile: path.join(os.tmpdir(), 'clair-none-' + process.pid + '.json'), write: async () => { calls++; return { text: '[]', by: 'x' }; } });
+  const run = { id: 'gr_z', status: 'cancelled', nodes: [{ id: 'a', status: 'failed' }] };
+  const out = m.present([{ facts: p.pleinsensFacts(run), item: run }]);
+  await m._drain();
+  assert.equal(calls, 0);
+  assert.match(out[0].redaction, /rien a resumer/);
+  assert.match(out[0].stateText, /Arrete a la main/);
+});

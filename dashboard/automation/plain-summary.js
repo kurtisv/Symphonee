@@ -46,6 +46,8 @@ function pleinsensFacts(run) {
   const key = 'ps:' + run.id;
   const base = { key, kind: 'pleinsens', at: run.createdAt, rawTitle: 'Cycle ' + (run.cycle || '?') + ' de la boucle PleinSens (' + run.id + ')', runId: run.id };
   const done = (run.nodes || []).filter((n) => n.status === 'completed').length, total = (run.nodes || []).length;
+  // No finished step: there is no report to summarise, the facts say it all.
+  if (!done) base.noReport = true;
   if (['running', 'pending', 'awaiting_approval', 'paused'].includes(run.status)) {
     const cur = (run.nodes || []).find((n) => n.status === 'running');
     return { ...base, state: 'en-cours', stateText: 'En cours : ' + done + ' etape(s) sur ' + total + ' terminee(s)' + (cur ? ', etape actuelle : ' + cur.id : '')
@@ -171,6 +173,7 @@ function makeSummaries({ cacheFile, write, log = () => {}, now = Date.now }) {
   function present(items) {
     const out = [];
     for (const { facts, item } of items) {
+      if (facts.noReport) { out.push({ ...facts, titre: null, fait: null, ameliore: null, redaction: 'Aucune etape terminee : rien a resumer.' }); continue; }
       const text = sourceText(facts, item); const hash = hashOf(text);
       const c = cache[facts.key];
       const fresh = c && c.hash === hash && !c.failed ? c : null;
