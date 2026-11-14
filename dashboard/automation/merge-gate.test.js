@@ -308,3 +308,37 @@ test('a never-started candidate whose branch moved is replaced, not kept twice',
   await gate.pass(POLICY, state, io);
   assert.deepEqual(Object.keys(state.candidates).map((k) => k.slice(-6)), ['aaaaaa']);
 });
+
+test('repository without GitHub CI: the gate chain stands for CI, merge confirmed at once', async () => {
+  const { w, io } = world();
+  w.marker = true; w.checks = []; // GitHub reports no check at all
+  const NOCI = { ...REPO, githubCi: false, sources: [{ ...REPO.sources[0], gateChainIsVerification: true }, REPO.sources[1]] };
+  io.readPilot = () => ({ history: [{ outcome: 'completed', title: 'Fix', at: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, commit: w.sha,
+    reviewerEvidence: 'VERDICT: PASS\nok', verified: [] }] }); // a pilot that had no local checks
+  const state = {};
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  let c = only(state);
+  assert.equal(c.status, 'pr-open', 'chain green, PR opened (no local checks needed: the chain stands for them)');
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  c = only(state);
+  assert.equal(c.status, 'merged', 'no CI to wait for: governance ok, merged');
+  assert.equal(w.merges.length, 1);
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  c = only(state);
+  assert.equal(c.status, 'confirmed'); assert.match(c.history.at(-1).note, /pas de CI GitHub/);
+  // With GitHub CI expected, the same missing local checks are refused.
+  const r = world(); r.io.readPilot = io.readPilot; const st = {};
+  await gate.pass(POLICY, st, r.io);
+  assert.equal(only(st).status, 'refused');
+});
+
+test('chains per pass and chain windows are per repository', async () => {
+  const { w, io } = world();
+  const branches = ['a', 'b', 'c'].map((x) => 'mind-autopilot/2026-11-12-' + x);
+  io.readPilot = () => ({ history: branches.map((b) => ({ outcome: 'completed', title: b, at: 'x', worktree: { branch: b }, commit: w.sha,
+    reviewerEvidence: 'VERDICT: PASS', verified: ['t'] })) });
+  // Global windows closed at 09:00, but this repository may chain at any time, 2 per pass.
+  const policy = { enabled: true, chainWindows: [{ start: '19:00', end: '22:00' }], repos: [{ ...REPO, chainWindows: null, chainsPerPass: 2 }] };
+  await gate.pass(policy, {}, io);
+  assert.equal(w.chainRuns, 2);
+});
