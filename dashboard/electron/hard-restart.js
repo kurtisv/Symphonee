@@ -16,7 +16,9 @@ function helperSource({ pid, execPath, args, cwd, waitMs = 8000 }) {
     "const created = () => { try { return cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', '(Get-Process -Id ' + pid + ' -ErrorAction Stop).StartTime.Ticks'], { encoding: 'utf8', windowsHide: true }).trim(); } catch (_) { return null; } };",
     'const birth = created();',
     'const alive = () => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };',
-    'const same = () => alive() && birth !== null && created() === birth;',
+    // Unknown identity (lookup failed) counts as STILL THERE: never start a second instance on a guess.
+    'const same = () => { if (!alive()) return false; const c = created(); return c === null || birth === null || c === birth; };',
+    'const sure = () => birth !== null && alive() && created() === birth;',
     'const start = () => {',
     '  const env = Object.assign({}, process.env); delete env.ELECTRON_RUN_AS_NODE;',
     '  cp.spawn(' + JSON.stringify(execPath) + ', ' + JSON.stringify(args) + ', { cwd: ' + JSON.stringify(cwd) + ', env, detached: true, stdio: "ignore" }).unref();',
@@ -26,9 +28,9 @@ function helperSource({ pid, execPath, args, cwd, waitMs = 8000 }) {
     '  if (!same()) return start();',
     '  if (waited >= ' + JSON.stringify(waitMs) + ') {',
     // Only the main process (not /T: this helper may still count as its child).
-    "    try { cp.execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore' }); } catch (_) {}",
+    "    if (sure()) { try { cp.execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore' }); } catch (_) {} }",
     // Start only once the old process is really gone (it holds the single-instance lock).
-    '    let n = 0; const after = () => { if (!same()) return setTimeout(start, 1000); if (++n < 20) setTimeout(after, 500); };',
+    '    let n = 0; const after = () => { if (!same()) return setTimeout(start, 1000); if (++n < 40) setTimeout(after, 500); };',
     '    return setTimeout(after, 500);',
     '  }',
     '  waited += 500; setTimeout(tick, 500);',
