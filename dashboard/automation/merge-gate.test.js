@@ -94,8 +94,10 @@ function world() {
       if (a.startsWith('diff --name-status')) return 'M\tsrc/utils/distance.ts\nA\tsrc/__tests__/distance.test.ts';
       if (a.startsWith('diff --unified=0')) return '+++ b/src/utils/distance.ts\n+return km;';
       if (a.startsWith('show origin/master:AGENTS.md')) return w.marker ? '... ' + gate.MARK + ' ...' : 'regles';
-      if (a.startsWith('push')) { w.pushes.push(a); return ''; }
+      if (a.startsWith('push')) { if (w.pushRefused && a.includes('refs/heads/master')) throw new Error('non-fast-forward'); w.pushes.push(a); return ''; }
       if (a.endsWith('^2')) return w.mergedParent || SHA;
+      if (a.endsWith('^1')) { if (w.unreadable) throw new Error('objet absent'); return w.mergedBase || w.base; }
+      if (a.endsWith('^{tree}')) return w.mergedTree || 'tree-tested';
       throw new Error('git inattendu : ' + a);
     },
     api: async (method, p, body) => {
@@ -107,7 +109,7 @@ function world() {
       if (p === '/api/github/pulls/comment') { w.comments.push(body); return { ok: true }; }
       throw new Error('api inattendue : ' + p);
     },
-    runChain: async () => { w.chainRuns++; return w.chainOk ? { ok: true, results: [{ name: 'jest', ok: true, code: 0, ms: 1000 }] }
+    runChain: async () => { w.chainRuns++; return w.chainOk ? { ok: true, tree: 'tree-tested', merge: 'm'.repeat(40), results: [{ name: 'jest', ok: true, code: 0, ms: 1000 }] }
       : { ok: false, results: [{ name: 'jest', ok: false, code: 1, ms: 1000, preexisting: false }] }; },
     openRevert: async () => { w.reverts++; return 'https://github.com/x/y/pull/8'; },
     notify: (level, message) => w.notes.push(level + ' ' + message),
@@ -307,4 +309,95 @@ test('a never-started candidate whose branch moved is replaced, not kept twice',
   const state = { candidates: { ['Demo|mind-autopilot/2026-11-12-abc|' + 'f'.repeat(40)]: { repo: 'Demo', branch: 'mind-autopilot/2026-11-12-abc', status: 'new', history: [] } } };
   await gate.pass(POLICY, state, io);
   assert.deepEqual(Object.keys(state.candidates).map((k) => k.slice(-6)), ['aaaaaa']);
+});
+
+test('repository without GitHub CI: the gate chain stands for CI, merge confirmed at once', async () => {
+  const { w, io } = world();
+  w.marker = true; w.checks = []; // GitHub reports no check at all
+  const NOCI = { ...REPO, githubCi: false, sources: [{ ...REPO.sources[0], gateChainIsVerification: true }, REPO.sources[1]] };
+  io.readPilot = () => ({ history: [{ outcome: 'completed', title: 'Fix', at: 'x', worktree: { branch: 'mind-autopilot/2026-11-12-abc' }, commit: w.sha,
+    reviewerEvidence: 'VERDICT: PASS\nok', verified: [] }] }); // a pilot that had no local checks
+  const state = {};
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  let c = only(state);
+  assert.equal(c.status, 'pr-open', 'chain green, PR opened (no local checks needed: the chain stands for them)');
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  c = only(state);
+  assert.equal(c.status, 'merged', 'no CI to wait for: governance ok, merged');
+  assert.equal(w.pushes.filter((x) => x.endsWith(':refs/heads/master')).length, 1, 'merged by pushing the tested merge');
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  c = only(state);
+  assert.equal(c.status, 'confirmed'); assert.match(c.history.at(-1).note, /pas de CI GitHub/);
+  // With GitHub CI expected, the same missing local checks are refused.
+  const r = world(); r.io.readPilot = io.readPilot; const st = {};
+  await gate.pass(POLICY, st, r.io);
+  assert.equal(only(st).status, 'refused');
+});
+
+test('chains per pass and chain windows are per repository', async () => {
+  const { w, io } = world();
+  const branches = ['a', 'b', 'c'].map((x) => 'mind-autopilot/2026-11-12-' + x);
+  io.readPilot = () => ({ history: branches.map((b) => ({ outcome: 'completed', title: b, at: 'x', worktree: { branch: b }, commit: w.sha,
+    reviewerEvidence: 'VERDICT: PASS', verified: ['t'] })) });
+  // Global windows closed at 09:00, but this repository may chain at any time, 2 per pass.
+  const policy = { enabled: true, chainWindows: [{ start: '19:00', end: '22:00' }], repos: [{ ...REPO, chainWindows: null, chainsPerPass: 2 }] };
+  await gate.pass(policy, {}, io);
+  assert.equal(w.chainRuns, 2);
+});
+
+test('no GitHub CI: a merge that is not exactly the tested one stops the gate; unreadable stays pending', async () => {
+  const NOCI = { ...REPO, githubCi: false };
+  const run = async (tweak) => {
+    const { w, io } = world(); w.marker = true;
+    const state = {};
+    for (let i = 0; i < 2; i++) await gate.pass({ enabled: true, repos: [NOCI] }, state, io); // -> merged
+    assert.equal(only(state).status, 'merged');
+    tweak(w);
+    await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+    return { w, state };
+  };
+  let r = await run((w) => { w.mergedBase = 'f'.repeat(40); });
+  assert.ok(r.state.stopped, 'base moved: stopped'); assert.match(r.state.stopped.reason, /a bouge avant la fusion/); assert.equal(r.w.reverts, 1);
+  r = await run((w) => { w.mergedTree = 'other-tree'; });
+  assert.match(r.state.stopped.reason, /contenu fusionne par GitHub differe/);
+  r = await run((w) => { w.unreadable = true; });
+  assert.equal(r.state.stopped, undefined); assert.equal(r.state.merges[0].status, 'merged', 'not confirmed by default');
+  r = await run(() => {});
+  assert.equal(r.state.merges[0].status, 'confirmed');
+});
+
+test('a mismatch detected by the post-merge watch stops every merge in the same pass', async () => {
+  const { w, io } = world(); w.marker = true;
+  const A = { ...REPO, name: 'A', githubCi: false };
+  const B = { ...REPO, name: 'B', githubCi: false };
+  const state = {};
+  // A: one merge already done; B: a candidate ready to merge.
+  state.merges = [{ repo: 'A', key: 'k', at: w.now - 60000, sha: 'm'.repeat(40), pr: 1, verified: w.sha, base: w.base, tree: 'tree-tested', status: 'merged' }];
+  state.candidates = { ['B|mind-autopilot/2026-11-12-abc|' + w.sha]: { repo: 'B', source: 'autopilot', branch: 'mind-autopilot/2026-11-12-abc', sha: w.sha,
+    key: 'B|mind-autopilot/2026-11-12-abc|' + w.sha, status: 'ci-green', pr: 7, evaluatedBase: w.base, evaluatedTree: 'tree-tested', createdAt: 0, attempts: 0, history: [] } };
+  w.mergedTree = 'other';
+  await gate.pass({ enabled: true, repos: [B, A] }, state, io); // the failing repository comes last
+  assert.ok(state.stopped);
+  assert.equal(w.merges.length, 0, 'B is not merged in the pass that stopped the gate');
+});
+
+test('no GitHub CI: merges by pushing the tested merge commit (fast-forward only); a moved base re-verifies', async () => {
+  const NOCI = { ...REPO, githubCi: false };
+  let { w, io } = world(); w.marker = true;
+  let state = {};
+  for (let i = 0; i < 2; i++) await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  assert.equal(only(state).status, 'merged');
+  assert.ok(w.pushes.includes('push --force-with-lease=refs/heads/master:' + w.base + ' origin ' + 'm'.repeat(40) + ':refs/heads/master'), 'the tested merge commit, leased on the tested base');
+  assert.equal(w.merges.length, 0, 'no GitHub API merge');
+  ({ w, io } = world()); w.marker = true; state = {};
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  w.pushRefused = true;
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  assert.equal(only(state).status, 'new', 'push refused: verified again, nothing merged');
+});
+
+test('legacy policy: repositories without own settings still share one chain per pass', async () => {
+  const { w, io } = world();
+  await gate.pass({ enabled: true, repos: [{ ...REPO, name: 'A' }, { ...REPO, name: 'B' }] }, {}, io);
+  assert.equal(w.chainRuns, 1);
 });
