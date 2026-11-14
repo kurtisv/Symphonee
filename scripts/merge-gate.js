@@ -169,20 +169,23 @@ async function openRevert(repo, m) {
     body: 'Ouverte par la porte de fusion apres une CI rouge sur ' + repo.base + '. **Non fusionnee automatiquement** : a valider par un humain.' });
   return pr && pr.url;
 }
-// A refusal caused by the branch itself teaches its pilot (not: conflicts, a
-// moving base, a changed PR, GitHub hiccups). New lessons also go to Mind.
-const NOT_A_MISTAKE = /conflit de fusion|a bouge|la PR a change|tete de la PR|GitHub a refuse|sans resultat|creation de la PR|push refuse/;
+// A refusal caused by the branch itself becomes a lesson of its pilot and
+// repository (not: conflicts, a moving base, a changed PR, GitHub hiccups, or a
+// check already red on the base). The gate writes its own file; the server
+// teaches Mind (one writer per file, no lost updates).
+const NOT_A_MISTAKE = /conflit de fusion|a bouge|la PR a change|tete de la PR|GitHub a refuse|sans resultat|creation de la PR|push refuse|preexistant/;
 async function lesson(c, repo, reasons) {
-  const scope = c.origin && c.origin.pilot;
-  if (!scope || ESSAI) return;
+  const pilot = c.origin && c.origin.pilot;
+  if (!pilot || ESSAI) return;
+  const st = readPilot(pilot) || {};
+  const scope = lessons.scopeOf(pilot, st.repoName);
   for (const reason of reasons) {
     if (NOT_A_MISTAKE.test(reason)) continue;
     const m = /chaine de verification en echec : ([\w.-]+)/.exec(reason);
     const step = m && (repo.chain || []).find((s) => s.name === m[1]);
     const text = step ? 'La porte de fusion a refuse une branche : le controle "' + step.name + '" (' + step.cmd.join(' ') + (step.cwd ? ', dans ' + step.cwd : '')
       + ') echouait. Le lancer et le faire passer avant de terminer.' : 'La porte de fusion a refuse une branche : ' + reason;
-    const r = lessons.record(ROOT, { scope, kind: 'porte', key: step ? 'chaine ' + step.name : reason, text, source: 'porte de fusion : ' + c.branch });
-    if (r.isNew) await api('POST', '/api/mind/teach', lessons.memorySpec(r.entry, repo.name)).catch(() => {});
+    lessons.record(ROOT, { scope, kind: 'porte', key: step ? 'chaine ' + step.name : reason, text, source: 'porte de fusion : ' + c.branch }, Date.now(), 'porte');
   }
 }
 // Sentry sends still in flight; awaited before the explicit exit below.

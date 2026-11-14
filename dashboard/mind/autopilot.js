@@ -782,21 +782,36 @@ class MindAutopilot {
       : CODE_QUALITY_POLICY;
   }
   contextPolicy() { return this.def.ambition === 'big' ? BIG_CONTEXT_POLICY : (this.profile.deep ? DEEP_CONTEXT_POLICY : CONTEXT_POLICY); }
-  // Records a mistake once (repeats are counted); a NEW one also becomes a Mind
-  // memory card so every CLI sees it at its next wake-up. Never throws.
+  // Records a mistake once (repeats are counted) for this pilot AND repository,
+  // then teaches Mind what is not taught yet (gate lessons included). Never throws.
+  lessonScope() { return lessons.scopeOf(this.id, this.state.repoName); }
   learn(kind, text, source) {
     try {
-      const r = lessons.record(this.repoRoot, { scope: this.id, kind, text, source });
-      if (!r.entry) return;
-      this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon repetee (' + r.entry.count + ') ') + '[' + kind + '] ' + r.entry.text.slice(0, 160));
-      if (r.isNew) {
-        const memory = require('./memory');
-        Promise.resolve(memory.addMemoryCard({ repoRoot: this.repoRoot, space: this.state.space || '_global', spec: lessons.memorySpec(r.entry, this.state.repoName) })).catch(() => {});
-      }
+      const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source });
+      if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon repetee (' + r.entry.count + ') ') + '[' + kind + '] ' + r.entry.text.slice(0, 160));
     } catch (_) {}
+    this.teachLessons();
+  }
+  // Mind memory cards for lessons not taught yet; a failure is retried next time.
+  teachLessons() {
+    if (this._teaching) return;
+    let todo = [];
+    try { todo = lessons.pendingTeach(this.repoRoot, this.lessonScope()); } catch (_) { return; }
+    if (!todo.length) return;
+    this._teaching = true;
+    const scope = this.lessonScope();
+    (async () => {
+      const memory = require('./memory');
+      for (const e of todo) {
+        try {
+          await memory.addMemoryCard({ repoRoot: this.repoRoot, space: this.state.space || '_global', spec: lessons.memorySpec(e, this.state.repoName) });
+          lessons.markTaught(this.repoRoot, scope, e.key);
+        } catch (_) { break; } // locked graph or other error: retried at the next lesson or discovery
+      }
+    })().catch(() => {}).finally(() => { this._teaching = false; });
   }
   lessonsText() {
-    try { return lessons.promptText(lessons.top(this.repoRoot, this.id, 8)); } catch (_) { return ''; }
+    try { return lessons.promptText(lessons.top(this.repoRoot, this.lessonScope(), 8)); } catch (_) { return ''; }
   }
   guardText() {
     return [this.lessonsText(), this.def.protectedPaths.length ? 'PROTECTED PATHS (never create, modify or delete a file whose path matches one of these case-insensitive patterns; a task that needs one must be rejected): ' + JSON.stringify(this.def.protectedPaths) : '',
@@ -1148,10 +1163,11 @@ class MindAutopilot {
           else this.log('sentry', !text ? 'Sentry unreachable: discovery uses the backlog only'
             : 'Sentry not usable (' + String(text).replace(/\s+/g, ' ').slice(0, 80) + '): discovery uses the backlog only');
         }
+        this.teachLessons();
         if (this.def.sources.files.length) {
           const b = await (this.buildBrief || localBrief.buildBrief)({ repoPath: this.state.repoPath, files: this.def.sources.files,
             exclude: this.def.briefExclude || ['pleinsens'], attempted: this.state.history.slice(-20).map(h => h.title),
-            lessons: lessons.top(this.repoRoot, this.id, 6).map(x => x.text),
+            lessons: (() => { try { return lessons.top(this.repoRoot, this.lessonScope(), 6).map(x => x.text); } catch (_) { return []; } })(),
             sentry: this.state.active.sentry || '', local: this.def.localBrief });
           this.state.active.localBrief = b;
           this.log('triage', 'Pre-tri local : ' + b.lines + ' ligne(s) P0/P1' + (b.hints ? ', ' + b.hints.length + ' piste(s) par ' + b.model + ' en ' + Math.round(b.ms / 1000) + ' s' : '') + (b.skipped ? ' (' + b.skipped + ')' : ''));
