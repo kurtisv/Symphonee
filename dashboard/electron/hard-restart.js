@@ -22,7 +22,9 @@ function helperSource({ pid, execPath, args, cwd, waitMs = 8000 }) {
     '  if (waited >= ' + JSON.stringify(waitMs) + ') {',
     // Only the main process (not /T: this helper may still count as its child).
     "    try { cp.execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore' }); } catch (_) {}",
-    '    return setTimeout(start, 1500);',
+    // Start only once the old process is really gone (it holds the single-instance lock).
+    '    let n = 0; const after = () => { if (!alive()) return setTimeout(start, 1000); if (++n < 20) setTimeout(after, 500); };',
+    '    return setTimeout(after, 500);',
     '  }',
     '  waited += 500; setTimeout(tick, 500);',
     '};',
