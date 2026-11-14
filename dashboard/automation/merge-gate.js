@@ -289,6 +289,7 @@ function setStatus(c, status, note, io) {
 }
 async function refuse(c, repo, reasons, io) {
   setStatus(c, 'refused', reasons.join(' ; '), io);
+  try { if (io.lesson) await io.lesson(c, repo, reasons); } catch (_) {}
   if (c.pr) await io.api('POST', '/api/github/pulls/comment', { repo: repo.github, number: c.pr,
     body: 'Porte de fusion automatique : **fusion refusee**.\n\n- ' + reasons.join('\n- ') + '\n\nLa PR reste ouverte pour une decision humaine.' }).catch(() => {});
   io.notify('warning', 'Fusion refusee (' + repo.name + ', ' + c.branch + ') : ' + reasons.join(' ; ').slice(0, 400),
