@@ -35,12 +35,13 @@ test('an unreadable folder keeps the remembered one and never creates an entry',
 });
 
 test('resume command: folder as base64 (no injection), permissions flag in bypass mode, known CLIs only', () => {
-  const enc = (d) => "Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + Buffer.from(d, 'utf8').toString('base64') + "'))); ";
-  assert.equal(resumeCommand('claude', 'edit', 'C:\\a b'), enc('C:\\a b') + 'claude --continue');
+  // The CLI runs only inside the if: a failed Set-Location never launches it elsewhere.
+  const enc = (d) => "if (Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + Buffer.from(d, 'utf8').toString('base64') + "'))) -PassThru -ErrorAction SilentlyContinue) { ";
+  assert.equal(resumeCommand('claude', 'edit', 'C:\\a b'), enc('C:\\a b') + 'claude --continue }');
   const evil = 'C:\\a\u2019; Write-Output X; #';
-  assert.equal(resumeCommand('claude', 'bypass', evil), enc(evil) + 'claude --continue --dangerously-skip-permissions');
+  assert.equal(resumeCommand('claude', 'bypass', evil), enc(evil) + 'claude --continue --dangerously-skip-permissions }');
   assert.ok(!/Write-Output/.test(resumeCommand('claude', 'edit', evil)), 'nothing of the path is readable as code');
-  assert.equal(resumeCommand('codex', 'bypass', 'C:\\r'), enc('C:\\r') + 'codex resume --last --dangerously-bypass-approvals-and-sandbox');
+  assert.equal(resumeCommand('codex', 'bypass', 'C:\\r'), enc('C:\\r') + 'codex resume --last --dangerously-bypass-approvals-and-sandbox }');
   assert.equal(resumeCommand('gemini', 'bypass', 'C:\\r'), null);
   assert.equal(resumeCommand('claude', 'edit', null), null, 'unknown folder: no resume');
 });

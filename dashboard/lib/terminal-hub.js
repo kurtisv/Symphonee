@@ -31,23 +31,36 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
   const pendingResume = new Map(); // termId -> cancel(): user input or an AI state change wins
   function cancelResume(termId) { const c = pendingResume.get(termId); if (c) c(); }
   // Remember an AI CLI with the folder it was launched in (from the shell prompt).
+  // The launch folder must be the terminal's own folder (set by Symphonee when
+  // it created the shell): terminal OUTPUT is untrusted, a program could print a
+  // fake prompt. A prompt showing another folder makes the session unresumable.
+  const sameDir = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
   function rememberAi(termId, cli) {
     const t = terminals.get(termId);
-    aiResume.remember(termId, cli, t ? lastPromptDir(t.outputBuffer) : null);
+    if (!t) return;
+    const seen = lastPromptDir(t.outputBuffer);
+    aiResume.remember(termId, cli, seen === null ? null : (sameDir(seen, t.cwd) ? t.cwd : false));
   }
   function scheduleResume(termId, ptyProcess, cli, cwd) {
-    let mode = null;
-    try { mode = ((getConfig && getConfig()) || {}).Permissions?.mode || null; } catch (_) {}
-    let isDir = false;
-    try { isDir = fs.statSync(cwd).isDirectory(); } catch (_) {}
-    const cmd = isDir ? resumeCommand(cli, mode, cwd) : null;
-    if (!cmd) return;
+    const t0 = terminals.get(termId);
+    // A remembered folder other than this terminal's own is never trusted (forged state file).
+    if (!t0 || !sameDir(cwd, t0.cwd)) return;
+    const buildCmd = () => {
+      let mode = null;
+      try { mode = ((getConfig && getConfig()) || {}).Permissions?.mode || null; } catch (_) {}
+      let isDir = false;
+      try { isDir = fs.statSync(cwd).isDirectory(); } catch (_) {}
+      return isDir ? resumeCommand(cli, mode, cwd) : null;
+    };
+    if (!buildCmd()) return;
     let done = false, settle = null;
     const stop = () => { done = true; pendingResume.delete(termId); clearTimeout(settle); clearTimeout(cap); try { sub && sub.dispose && sub.dispose(); } catch (_) {} };
     const fire = () => {
       if (done) return; stop();
       const t = terminals.get(termId);
       if (!t || t.pty !== ptyProcess) return; // terminal replaced or gone meanwhile
+      const cmd = buildCmd(); // current permission mode and folder, at the moment of typing
+      if (!cmd) return;
       try { ptyProcess.write(cmd + '\r'); } catch (_) { return; }
       termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now(), source: 'resume' });
       aiResume.remember(termId, cli, cwd);

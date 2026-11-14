@@ -22,7 +22,8 @@ function resumeCommand(cli, permissionMode, cwd) {
   if (!base || typeof cwd !== 'string' || !cwd) return null;
   const cmd = permissionMode === 'bypass' && YOLO[cli] ? base + ' ' + YOLO[cli] : base;
   const b64 = Buffer.from(cwd, 'utf8').toString('base64');
-  return "Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + b64 + "'))); " + cmd;
+  // -PassThru returns the location only on success: the CLI never runs elsewhere.
+  return "if (Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + b64 + "'))) -PassThru -ErrorAction SilentlyContinue) { " + cmd + " }";
 }
 
 // The folder where an AI CLI was launched, from the last PowerShell prompt
@@ -32,7 +33,7 @@ function resumeCommand(cli, permissionMode, cwd) {
 // is anything else (the real folder cannot be known); null when no prompt is
 // visible any more.
 const LAUNCH = /^\s*(cls\s*;\s*)?(claude|codex)(\.exe)?(\s+--(?!cd\b)[a-z][\w-]*(=[\w.-]+)?)*\s*$/i;
-const RESUME_LINE = /^\s*Set-Location -LiteralPath \(\[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\('([A-Za-z0-9+/=]+)'\)\)\); (claude --continue|codex resume --last)( --dangerously-skip-permissions| --dangerously-bypass-approvals-and-sandbox)?\s*$/;
+const RESUME_LINE = /^\s*if \(Set-Location -LiteralPath \(\[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\('([A-Za-z0-9+/=]+)'\)\)\) -PassThru -ErrorAction SilentlyContinue\) \{ (claude --continue|codex resume --last)( --dangerously-skip-permissions| --dangerously-bypass-approvals-and-sandbox)? \}\s*$/;
 function lastPromptDir(output) {
   const text = String(output || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
   let m, last = null;
@@ -52,7 +53,8 @@ function createAiResume({ file, now = () => Date.now(), write }) {
   // The plan is what was running when Symphonee stopped: captured once, at start.
   const plan = {};
   for (const [id, e] of Object.entries(live)) {
-    if (e && CONTINUE[e.cli] && typeof e.cwd === 'string' && e.cwd && Number.isFinite(e.at) && now() - e.at < MAX_AGE_MS) plan[id] = { cli: e.cli, cwd: e.cwd, at: e.at };
+    const age = Number.isFinite(e && e.at) ? now() - e.at : -1;
+    if (e && CONTINUE[e.cli] && typeof e.cwd === 'string' && e.cwd && age >= -60000 && age < MAX_AGE_MS) plan[id] = { cli: e.cli, cwd: e.cwd, at: e.at };
   }
   live = { ...plan };
   const persist = () => { try { save(file, JSON.stringify(live, null, 2)); } catch (_) {} };
