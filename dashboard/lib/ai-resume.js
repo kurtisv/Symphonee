@@ -1,10 +1,11 @@
 'use strict';
 // Resume the AI conversations of the terminals after a Symphonee restart.
 // While running, the hub remembers which AI CLI is running in which terminal
-// (set when it starts or is detected, cleared when it stops or is no longer
-// detected; NOT cleared when Symphonee itself shuts down). At the next start,
-// a terminal that had one gets the CLI's own "continue" command once its shell
-// is ready. File: .ai-workspace/terminal-ai.json (gitignored).
+// and in which folder it was launched (set when it starts or is detected,
+// cleared when it stops or is no longer detected; NOT cleared when Symphonee
+// itself shuts down). At the next start, a terminal that had one gets the CLI's
+// own "continue" command, in that folder, once its shell is ready.
+// File: .ai-workspace/terminal-ai.json (gitignored).
 const fs = require('fs');
 const path = require('path');
 
@@ -13,22 +14,28 @@ const MAX_AGE_MS = 24 * 3600000;
 const CONTINUE = { claude: 'claude --continue', codex: 'codex resume --last' };
 const YOLO = { claude: '--dangerously-skip-permissions', codex: '--dangerously-bypass-approvals-and-sandbox' };
 
-// PowerShell: go back to the folder the CLI was launched in, then continue
-// its last conversation there ("continue" is per folder).
+// PowerShell: go back to the folder the CLI was launched in, then continue its
+// last conversation there ("continue" is per folder). The path travels as
+// base64 (UTF-8): no quoting of any kind can break out of it.
 function resumeCommand(cli, permissionMode, cwd) {
   const base = CONTINUE[cli];
   if (!base || typeof cwd !== 'string' || !cwd) return null;
   const cmd = permissionMode === 'bypass' && YOLO[cli] ? base + ' ' + YOLO[cli] : base;
-  return "Set-Location -LiteralPath '" + cwd.replace(/'/g, "''") + "'; " + cmd;
+  const b64 = Buffer.from(cwd, 'utf8').toString('base64');
+  return "Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + b64 + "'))); " + cmd;
 }
-// The folder of the last PowerShell prompt shown in a terminal ("PS C:\x>"),
-// i.e. where the CLI was launched; null when none can be read.
+
+// The folder where an AI CLI was launched: the last PowerShell prompt
+// ("PS C:\x> ...") whose typed command starts the CLI directly ("claude ...",
+// "cls; claude ..."). Anything else on that line (a cd, several commands) makes
+// the folder unknown (null): never guess.
+const LAUNCH = /^\s*(cls\s*;\s*)?(claude|codex)(\.exe)?(\s+[\w\-=.]+)*\s*$/i;
 function lastPromptDir(output) {
   const text = String(output || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
-  let m, dir = null;
-  const rx = /PS ([A-Za-z]:\\[^\r\n<>|"*?]*?)> ?/g;
-  while ((m = rx.exec(text))) dir = m[1];
-  return dir;
+  let m, last = null;
+  const rx = /PS ([A-Za-z]:\\[^\r\n<>|"*?]*?)> ?([^\r\n]*)/g;
+  while ((m = rx.exec(text))) last = { dir: m[1], cmd: m[2] };
+  return last && LAUNCH.test(last.cmd) ? last.dir : null;
 }
 
 function createAiResume({ file, now = () => Date.now(), write }) {
@@ -43,12 +50,12 @@ function createAiResume({ file, now = () => Date.now(), write }) {
   live = { ...plan };
   const persist = () => { try { save(file, JSON.stringify(live, null, 2)); } catch (_) {} };
   return {
-    // cwd: folder the CLI was launched in (unknown: nothing to resume safely).
+    // cwd: folder the CLI was launched in.
     remember(termId, cli, cwd) {
       if (!termId || !CONTINUE[cli]) return this.forget(termId);
       const prev = live[termId];
-      // Folder unreadable now (prompt scrolled out of the buffer): keep what was
-      // remembered for this same CLI, never invent one.
+      // Folder unreadable now (prompt scrolled out, or launched with a cd on the
+      // same line): keep what was remembered for this same CLI, never invent one.
       if (typeof cwd !== 'string' || !cwd) {
         if (prev && prev.cli === cli) cwd = prev.cwd; else return;
       }
