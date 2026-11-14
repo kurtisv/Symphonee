@@ -133,3 +133,45 @@ test('grounding check flags invented numbers and file names, not supported ones'
   assert.match(mc.groundingNotice(['750421389']), /750421389 n apparait dans aucune source Mind/);
   assert.equal(mc.groundingNotice([]), '');
 });
+
+// ── regressions from the Codex review ────────────────────────────────────────
+test('review: excluded candidates never hide valid knowledge (filters before ranking)', async () => {
+  const nodes = Array.from({ length: 60 }, (_, i) => ({ id: 't' + i, kind: 'conversation', label: 'deployment notes ' + i, source: { type: 'orchestrator-task' }, body: body('deployment notes') }));
+  nodes.push({ id: 'mem_ok', kind: 'memory', label: 'deployment notes', body: body('The deployment notes say: deploy from integration.') });
+  const r = await mc.buildMindContext(opts({ question: 'deployment notes', loadGraph: () => ({ nodes }) }));
+  assert.ok(r.transmitted.some((t) => t.id === 'mem_ok'));
+});
+
+test('review: body-only matches are found without vectors', async () => {
+  const g = { nodes: [{ id: 'm1', kind: 'memory', label: 'Notes diverses', body: body('Le jeton runtime.json doit etre verifie par pid et heure de demarrage.') }] };
+  const r = await mc.buildMindContext(opts({ question: 'runtime.json pid heure demarrage', loadGraph: () => g }));
+  assert.deepEqual(r.transmitted.map((t) => t.id), ['m1']);
+});
+
+test('review: a symbol missing from the active repository is not taken from another one', async () => {
+  const g = { nodes: [{ id: 'repo_other__code_y__deduplicatestations', kind: 'code', label: 'deduplicateStations()', source: { file: 'other/y.ts' } }] };
+  const r = await mc.buildMindContext(opts({ question: 'Ou est deduplicateStations ?', loadGraph: () => g }));
+  assert.equal(r.transmitted.filter((t) => t.kind === 'code').length, 0);
+});
+
+test('review: a skill is sent whole when the budget allows, marked when cut', async () => {
+  const long = { ...SKILLS[0], body: '## Steps\n' + Array.from({ length: 40 }, (_, i) => (i + 1) + '. step ' + 'x'.repeat(40)).join('\n') + '\n## Safety\nnever drop\n## Verification\nrun it' };
+  const r = await mc.buildMindContext(opts({ question: 'migration de base de donnees', loadSkills: () => [long], budgetTokens: 3000 }));
+  assert.match(r.text, /## Verification\nrun it/); assert.equal(r.transmitted.find((t) => t.kind === 'skill').truncated, false);
+  const cut = await mc.buildMindContext(opts({ question: 'migration de base de donnees', loadSkills: () => [long], budgetTokens: 300 }));
+  assert.equal(cut.transmitted.find((t) => t.kind === 'skill').truncated, true); assert.match(cut.text, /\[truncated\]/);
+});
+
+test('review: the budget is a hard limit; no room -> skipped, not a block', async () => {
+  for (const b of [130, 181, 400, 900]) {
+    const r = await mc.buildMindContext(opts({ question: 'Dans quelle branche la porte de fusion fusionne Gas Saver ?', budgetTokens: b }));
+    assert.ok(r.contextTokens <= b, b + ' -> ' + r.contextTokens);
+  }
+  const z = await mc.buildMindContext(opts({ question: 'x', budgetTokens: 0 }));
+  assert.equal(z.status, 'skipped'); assert.equal(z.text, '');
+});
+
+test('review: a date or id copied verbatim from the context is not flagged', () => {
+  assert.deepEqual(mc.unsupportedClaims('Fusionne le 2026-11-13, commit 450c4a5.', '... 2026-11-13 ... 450c4a5 ...'), []);
+  assert.deepEqual(mc.unsupportedClaims('Numero 12 345 678.', 'le numero 12345678'), []);
+});

@@ -1077,10 +1077,23 @@ if (orchestrator) {
   {
     const mindContext = require('./brain/mind-context');
     const lessonsMod = require('./mind/lessons');
-    orchestrator.getLocalMindContext = (o = {}) => {
+    // The TASK's space and repository (its cwd) when known; the foreground UI's otherwise.
+    const repoOfPath = (dir) => {
+      if (!dir) return null;
+      const want = path.resolve(dir).toLowerCase();
+      for (const [name, p] of Object.entries((getConfig() || {}).Repos || {})) {
+        if (!p) continue;
+        const rp = path.resolve(p).toLowerCase();
+        if (want === rp || want.startsWith(rp + path.sep)) return name;
+      }
+      return null;
+    };
+    orchestrator.getLocalMindContext = ({ question, budgetTokens, space, cwd } = {}) => {
       const ui = getUiContextWithPath() || {};
-      return mindContext.buildMindContext({ repoRoot, space: ui.activeSpace || ui.notesNamespace || '_global', activeRepo: ui.activeRepo || null,
-        loadSkills: () => skills.loadCorpus(), lessonsMod, ...o });
+      return mindContext.buildMindContext({ repoRoot, question, budgetTokens,
+        space: space || ui.activeSpace || ui.notesNamespace || '_global',
+        activeRepo: (cwd && repoOfPath(cwd)) || ui.activeRepo || null,
+        loadSkills: () => skills.loadCorpus(), lessonsMod });
     };
     addRoute('GET', '/api/mind/local-diagnostics', (req, res) => {
       const u = new URL(req.url, 'http://x');

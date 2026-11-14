@@ -153,14 +153,15 @@ module.exports = {
         // here and put in its prompt (bounded). Failure is explicit, never silent.
         let mc = null;
         if (typeof this.getLocalMindContext === 'function') {
-          const budget = Math.max(0, Math.min(lp.mindBudgetTokens || 1800, lp.contextTokens - lp.outputReserveTokens - lp.promptOverheadTokens - estimateTokens(fullPrompt)));
-          try { mc = await this.getLocalMindContext({ question: prompt, budgetTokens: budget }); }
+          const budget = Math.max(0, Math.min(lp.mindBudgetTokens || 1800, lp.contextTokens - lp.outputReserveTokens - lp.promptOverheadTokens
+            - estimateTokens(SYSTEM_PROMPT_MIND) - estimateTokens(fullPrompt) - estimateTokens('\n\nTASK:\n') - 8));
+          try { mc = await this.getLocalMindContext({ question: prompt, budgetTokens: budget, space: space || null, cwd: cwd || null }); }
           catch (e) { mc = { status: 'error', error: String(e && e.message || e).slice(0, 160), text: 'MIND CONTEXT UNAVAILABLE (' + String(e && e.message || e).slice(0, 120) + '). If the answer depends on the user\'s projects, say that Mind could not be consulted instead of guessing.', transmitted: [], retrieved: {}, skills: [], contextTokens: 0, retrievalMs: 0 }; }
           if (mc && mc.text) fullPrompt = mc.text + '\n\nTASK:\n' + fullPrompt;
           task.execution.mindContext = mc ? { status: mc.status, space: mc.space || null, activeRepo: mc.activeRepo || null, retrieved: mc.retrieved, transmitted: mc.transmitted,
             skills: mc.skills, contextTokens: mc.contextTokens, retrievalMs: mc.retrievalMs, error: mc.error || null } : null;
         }
-        const systemPrompt = mc ? SYSTEM_PROMPT_MIND : SYSTEM_PROMPT;
+        const systemPrompt = mc && mc.text ? SYSTEM_PROMPT_MIND : SYSTEM_PROMPT;
         task.execution.inlinedFiles = files;
         if (requiresRepoContent && !files.length && !hasInlineContent(prompt)) {
           throw new Error('local-cannot-read-repo: task needs repo content that a tool-less local model cannot open (no readable file named, nothing inline)');
@@ -204,7 +205,7 @@ module.exports = {
           const mcx = task.execution.mindContext;
           mcx.citedRefs = mindContextLib.citedRefs(text, mcx.transmitted);
           mindContextLib.recordDiagnostic(this.workspaceDir ? require('path').resolve(this.workspaceDir, '..', '..') : process.cwd(), { path: 'orchestrator-lmstudio', taskId: task.id, provider: cli, model: task.execution.servedModel,
-            space: mcx.space, activeRepo: mcx.activeRepo, status: mcx.status, retrieved: mcx.retrieved, transmitted: mcx.transmitted.map((t) => ({ ref: t.ref, id: t.id, kind: t.kind, tokens: t.tokens })),
+            space: mcx.space, activeRepo: mcx.activeRepo, status: mcx.status, retrieved: mcx.retrieved, transmitted: mcx.transmitted.map((t) => ({ ref: t.ref, id: t.id, kind: t.kind, tokens: t.tokens, truncated: !!t.truncated })),
             skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, generationMs: task.execution.generationMs, citedRefs: mcx.citedRefs, unsupportedClaims: mcx.unsupportedClaims, error: mcx.error });
         }
       } catch (err) {
@@ -212,6 +213,10 @@ module.exports = {
         task.state = STATE.FAILED;
         task.error = `local ${cli} failed: ${err.message}`;
         task.errorClassification = localFailure(err.message);
+        const mcx = task.execution && task.execution.mindContext;
+        if (mcx) mindContextLib.recordDiagnostic(this.workspaceDir ? require('path').resolve(this.workspaceDir, '..', '..') : process.cwd(), { path: 'orchestrator-lmstudio', taskId: task.id, provider: cli, model: lp.model,
+          space: mcx.space, activeRepo: mcx.activeRepo, status: mcx.status, retrieved: mcx.retrieved, transmitted: (mcx.transmitted || []).map((t) => ({ ref: t.ref, id: t.id, kind: t.kind, tokens: t.tokens })),
+          skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, failed: String(err.message).slice(0, 200), error: mcx.error });
       } finally {
         if (task.state !== STATE.CANCELLED) {
           task.completedAt = Date.now();
