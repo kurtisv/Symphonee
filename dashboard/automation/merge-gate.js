@@ -231,6 +231,8 @@ async function pass(policy, state, io) {
   for (const repo of policy.repos) {
     const baseSha = bases[repo.name];
     if (!baseSha || stopped || state.stopped) continue;
+    // Regenerated files exist only in the tested merge: it must be what lands.
+    if ((repo.regenerate || []).length && !pushesMerge(repo)) { io.log(repo.name + ' : regenerate exige mergeMode push-tested ou githubCi false ; depot ignore'); continue; }
 
     const found = await discover(repo, io);
     // A candidate never started whose branch now points elsewhere (re-committed,

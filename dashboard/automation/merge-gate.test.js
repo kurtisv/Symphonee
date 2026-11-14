@@ -452,3 +452,9 @@ test('push-tested: PR from porte/<branch> at the tested merge; CI on that head; 
   await gate.pass({ enabled: true, repos: [PT] }, st, r.io);
   assert.equal(only(st).status, 'refused');
 });
+
+test('regenerate without a mode that pushes the tested merge: the repository is skipped', async () => {
+  const { w, io } = world(); w.marker = true;
+  await gate.pass({ enabled: true, repos: [{ ...REPO, regenerate: [{ cmd: ['node', 'x'] }] }] }, {}, io);
+  assert.equal(w.chainRuns, 0); assert.ok(w.logs.some((l) => /regenerate exige/.test(l)));
+});
