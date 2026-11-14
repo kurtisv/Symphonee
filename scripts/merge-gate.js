@@ -254,7 +254,12 @@ async function dryRun(policy) {
 // Exit explicitly once the work and the Sentry sends are done: a lingering
 // handle (a keep-alive socket, a child's pipe) otherwise kept the process
 // alive for hours, so the job stayed "running" and skipped its 30 min passes.
-if (require.main === module) {
+// Entry point: run when this file is the script being executed. The jobs
+// scheduler runs it with electron.exe (app mode), where require.main is
+// undefined, so the executed path is compared instead; a require() from a test
+// does not run it.
+const IS_ENTRY = require.main === module || process.argv.slice(1, 3).some((a) => { try { return path.resolve(a) === __filename; } catch (_) { return false; } });
+if (IS_ENTRY) {
   main().catch((e) => { log('ERREUR ' + e.stack); process.exitCode = 1; try { fs.unlinkSync(LOCK); } catch (_) {} })
     .then(() => Promise.allSettled(pendingSends))
     .then(() => process.exit(process.exitCode || 0));
