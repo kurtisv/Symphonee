@@ -71,6 +71,6 @@ test('a launch whose folder cannot be known forgets the remembered folder', () =
 
 test('security: missing or invalid timestamps never make a resume plan', () => {
   const file = tmpFile();
-  fs.writeFileSync(file, JSON.stringify({ a: { cli: 'claude', cwd: 'C:\x' }, b: { cli: 'claude', cwd: 'C:\x', at: null }, c: { cli: 'claude', cwd: 'C:\x', at: 'now' } }));
+  fs.writeFileSync(file, JSON.stringify({ a: { cli: 'claude', cwd: 'C:/x' }, b: { cli: 'claude', cwd: 'C:/x', at: null }, c: { cli: 'claude', cwd: 'C:/x', at: 'now' } }));
   assert.deepEqual(createAiResume({ file, now: () => 1_000_000 }).planned(), {});
 });
