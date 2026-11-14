@@ -16,10 +16,64 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { atomicWriteSync } = require('../utils/atomic-write');
 const { detectPwsh } = require('./detect-cli');
+const { createAiResume, resumeCommand, lastPromptDir } = require('./ai-resume');
+// Terminal protocol replies (device attributes, cursor reports, focus events)
+// sent automatically by xterm: not the user typing.
+const PROTOCOL_REPLY = /^(\x1b\[[?>]?[\d;]*[cRn]|\x1b\[[IO])+$/;
 
 function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
   const terminals = new Map();   // termId -> { pty, cols, rows, cwd, label }
   const termAiMeta = new Map();  // termId -> { cli, launched, updatedAt }
+  // AI conversations to resume after a restart (see ai-resume.js).
+  const aiResume = createAiResume({ file: path.join(repoRoot, '.ai-workspace', 'terminal-ai.json') });
+  // Types "claude --continue" (or the CLI's equivalent) once the new shell is
+  // ready: after its first output has settled, at most ~10 s after creation.
+  const pendingResume = new Map(); // termId -> cancel(): user input or an AI state change wins
+  function cancelResume(termId) { const c = pendingResume.get(termId); if (c) c(); }
+  // Remember an AI CLI with the folder it was launched in (from the shell prompt).
+  // The launch folder must be the terminal's own folder (set by Symphonee when
+  // it created the shell): terminal OUTPUT is untrusted, a program could print a
+  // fake prompt. A prompt showing another folder makes the session unresumable.
+  const sameDir = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  function rememberAi(termId, cli) {
+    const t = terminals.get(termId);
+    if (!t) return;
+    const seen = lastPromptDir(t.outputBuffer);
+    aiResume.remember(termId, cli, seen === null ? null : (sameDir(seen, t.cwd) ? t.cwd : false));
+  }
+  function scheduleResume(termId, ptyProcess, cli, cwd) {
+    const t0 = terminals.get(termId);
+    // A remembered folder other than this terminal's own is never trusted (forged state file),
+    // and only Symphonee's folder or a repository declared in its configuration is resumed.
+    if (!t0 || !sameDir(cwd, t0.cwd)) return;
+    let trusted = sameDir(cwd, repoRoot);
+    try { if (!trusted) trusted = Object.values(((getConfig && getConfig()) || {}).Repos || {}).some((p) => sameDir(cwd, p)); } catch (_) {}
+    if (!trusted) return;
+    const buildCmd = () => {
+      let mode = null;
+      try { mode = ((getConfig && getConfig()) || {}).Permissions?.mode || null; } catch (_) {}
+      let isDir = false;
+      try { isDir = fs.statSync(cwd).isDirectory(); } catch (_) {}
+      return isDir ? resumeCommand(cli, mode, cwd) : null;
+    };
+    if (!buildCmd()) return;
+    let done = false, settle = null;
+    const stop = () => { done = true; pendingResume.delete(termId); clearTimeout(settle); clearTimeout(cap); try { sub && sub.dispose && sub.dispose(); } catch (_) {} };
+    const fire = () => {
+      if (done) return; stop();
+      const t = terminals.get(termId);
+      if (!t || t.pty !== ptyProcess) return; // terminal replaced or gone meanwhile
+      const cmd = buildCmd(); // current permission mode and folder, at the moment of typing
+      if (!cmd) return;
+      try { ptyProcess.write(cmd + '\r'); } catch (_) { return; }
+      termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now(), source: 'resume' });
+      aiResume.remember(termId, cli, cwd);
+      broadcast({ type: 'term-ai-resumed', termId, cli, cmd });
+    };
+    const sub = ptyProcess.onData(() => { clearTimeout(settle); settle = setTimeout(fire, 1500); });
+    const cap = setTimeout(fire, 10000);
+    pendingResume.set(termId, stop);
+  }
   let defaultCols = 120, defaultRows = 30;
 
   // ── Terminal session persistence (under .ai-workspace, gitignored) ───────
@@ -106,6 +160,10 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
       terminals.delete(termId);
     }
     termAiMeta.delete(termId);
+    // A planned resume is taken once (first creation after the restart); any
+    // new shell starts without an AI, so the remembered one is forgotten.
+    const resume = aiResume.take(termId);
+    aiResume.forget(termId);
 
     const ptyProcess = pty.spawn(shellPath, ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NoLogo', '-NoExit'], {
       name: 'xterm-256color',
@@ -141,6 +199,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
 
     broadcast({ type: 'term-started', termId, cwd, isNew: true });
     _handleTerminalCwd(termId, cwd);
+    if (resume) scheduleResume(termId, ptyProcess, resume.cli, resume.cwd);
     return ptyProcess;
   }
 
@@ -151,6 +210,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
       terminals.delete(termId);
     }
     termAiMeta.delete(termId);
+    aiResume.forget(termId); // closed on purpose: nothing to resume
   }
 
   // ── WebSocket ────────────────────────────────────────────────────────────
@@ -188,6 +248,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
         const termId = msg.termId || 'main';
         switch (msg.type) {
           case 'input': {
+            if (!PROTOCOL_REPLY.test(String(msg.data || ''))) cancelResume(termId); // the user typed first: never type over it
             const t = terminals.get(termId);
             if (t) t.pty.write(msg.data || '');
             break;
@@ -228,10 +289,11 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
             break;
           }
           case 'term-ai-state': {
+            cancelResume(termId);
             const cli = typeof msg.cli === 'string' ? msg.cli.trim() : '';
             const launched = msg.launched !== false;
-            if (!cli || !launched) termAiMeta.delete(termId);
-            else termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now() });
+            if (!cli || !launched) { termAiMeta.delete(termId); aiResume.forget(termId); }
+            else { termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now() }); rememberAi(termId, cli); }
             break;
           }
         }
@@ -239,7 +301,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
     });
   });
 
-  return { broadcast, terminals, termAiMeta, createTerminal, killTerminal, wss };
+  return { broadcast, terminals, termAiMeta, aiResume, rememberAi, createTerminal, killTerminal, wss };
 }
 
 module.exports = { createTerminalHub };
