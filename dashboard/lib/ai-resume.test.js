@@ -50,4 +50,6 @@ test('lastPromptDir: only a prompt line that launches the CLI directly', () => {
   assert.equal(lastPromptDir('PS C:\\RepoA> Set-Location C:\\RepoB; claude\r\n'), null, 'folder changed on the same line');
   assert.equal(lastPromptDir('PS C:\\RepoA> npm test\r\n'), null, 'not a CLI launch');
   assert.equal(lastPromptDir('no prompt here'), null);
+  assert.equal(lastPromptDir('PS C:\\RepoA> codex -C RepoB\r\n'), null, 'codex -C');
+  assert.equal(lastPromptDir('PS C:\\RepoA> codex --cd=RepoB\r\n'), null, 'codex --cd=');
 });

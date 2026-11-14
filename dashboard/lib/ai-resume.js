@@ -35,7 +35,8 @@ function lastPromptDir(output) {
   let m, last = null;
   const rx = /PS ([A-Za-z]:\\[^\r\n<>|"*?]*?)> ?([^\r\n]*)/g;
   while ((m = rx.exec(text))) last = { dir: m[1], cmd: m[2] };
-  return last && LAUNCH.test(last.cmd) ? last.dir : null;
+  // A flag that changes the working folder (codex -C / --cd) makes it unknown too.
+  return last && LAUNCH.test(last.cmd) && !/(^|\s)(-C|--cd)(\s|=|$)/.test(last.cmd) ? last.dir : null;
 }
 
 function createAiResume({ file, now = () => Date.now(), write }) {
