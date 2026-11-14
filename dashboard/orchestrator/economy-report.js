@@ -45,7 +45,13 @@ function summarizeEconomy({ tasks, routingTelemetry } = {}) {
       measuredTotalOnlyTokens: 0,
     };
     row.tasks++;
-    const usage = task.geminiUsage || task.usage || null;
+    // Gemini seeds a zero-valued usage object BEFORE calling the API.
+    // Its extractor also falls back to all zeros when metadata is absent.
+    // Zero-only Gemini data is therefore not evidence of measured usage.
+    const g = task.geminiUsage;
+    const geminiZeroPlaceholder = g && ['inputTokens', 'outputTokens', 'totalTokens', 'cachedTokens', 'thoughtTokens']
+      .every(key => knownUsageNumber(g, key) === 0);
+    const usage = geminiZeroPlaceholder ? null : g || task.usage || null;
     const input = knownUsageNumber(usage, 'inputTokens');
     const output = knownUsageNumber(usage, 'outputTokens');
     const cached = knownUsageNumber(usage, 'cachedTokens') ?? knownUsageNumber(usage, 'cacheReadTokens');
