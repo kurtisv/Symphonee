@@ -25,6 +25,10 @@ function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'
   const repo = path.join(root, 'demo');
   fs.mkdirSync(repo);
   gitc(repo, 'init', '-q');
+  // The loop commits the reviewed work itself: give the throwaway repository an
+  // identity so the test does not depend on the machine's global git config.
+  gitc(repo, 'config', 'user.name', 'T');
+  gitc(repo, 'config', 'user.email', 't@example.invalid');
   fs.writeFileSync(path.join(repo, 'index.js'), 'function run() { return true; }\n// TODO: add coverage\nmodule.exports = { run };\n');
   // A repository check that passes only once a repair created fixed.flag,
   // and a heavy ignored folder shared with worktrees through a junction.
