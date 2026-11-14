@@ -40,12 +40,19 @@ function normalizeHost(input) {
   if (!input) return '__unknown__';
   let s = String(input).trim().toLowerCase();
   // Accept full URLs too.
+  let isUrl = false;
   try {
-    if (/^https?:\/\//.test(s)) s = new URL(s).hostname;
+    if (/^https?:\/\//.test(s)) { s = new URL(s).hostname; isUrl = true; }
   } catch (_) {}
+  if (!isUrl) {
+    // Bare "host:port/path?q#h" must map to the same slug as its URL form.
+    s = s.split(/[/?#]/)[0].replace(/:\d*$/, '');
+  }
   s = s.replace(/^www\./, '');
-  s = s.replace(/[^a-z0-9._-]+/g, '_');
-  return s.slice(0, 80) || '__unknown__';
+  s = s.replace(/[^a-z0-9._-]+/g, '_').slice(0, 80);
+  // Dot-only slugs ("." / "..") would resolve to or above the storage dir.
+  if (!s || /^\.+$/.test(s)) return '__unknown__';
+  return s;
 }
 
 function recipesPath(host) { return path.join(RECIPES_DIR, normalizeHost(host) + '.json'); }
