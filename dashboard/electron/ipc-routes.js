@@ -6,6 +6,8 @@
 // screen, the webview driver, and saveDisplayPref are injected.
 
 const path = require('path');
+// Loaded now: an update may rewrite the working tree before the restart.
+const { hardRestart } = require('./hard-restart');
 
 function registerIpcRoutes(addRoute, { getWin, app, dialog, screen, repoRoot, webviewDriver, saveDisplayPref }) {
     // ── Switch-screen API (Electron only) ──────────────────────────────
@@ -82,7 +84,7 @@ function registerIpcRoutes(addRoute, { getWin, app, dialog, screen, repoRoot, we
         execSync('npm install', { cwd: repoRoot, encoding: 'utf8', timeout: 120000 });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, status: 'updated' }));
-        setTimeout(() => { app.relaunch(); app.exit(0); }, 500);
+        hardRestart(app, { delayMs: 500 });
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: (err.message || '').substring(0, 500) }));
@@ -93,7 +95,7 @@ function registerIpcRoutes(addRoute, { getWin, app, dialog, screen, repoRoot, we
     addRoute('POST', '/api/restart-app', (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
-      setTimeout(() => { app.relaunch(); app.exit(0); }, 200);
+      hardRestart(app, { delayMs: 200 });
     });
 
     // ── Browse for folder (native OS dialog) ────────────────────────────
