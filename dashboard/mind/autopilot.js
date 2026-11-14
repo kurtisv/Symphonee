@@ -381,7 +381,14 @@ class MindAutopilot {
   inWindow(now = Date.now()) { return inSchedule(this.def.schedule, now); }
   // Only one task runs at a time across all pilots (CPU, provider rate limits).
   blockedByPeer() {
-    return this.peers().find(p => p !== this && p.state.enabled && p.state.active && !p.state.active.waitingStage) || null;
+    return this.peers().find(p => {
+      if (p === this || !p.state || !p.state.active) return false;
+      const a = p.state.active;
+      // A retained handoff may still own a process or a worktree even after
+      // halt disables its pilot. Never free the shared slot on that basis.
+      if (a.handoff) return true;
+      return p.state.enabled && !a.waitingStage;
+    }) || null;
   }
   // Junctions never outlive the run: a kept worktree holds no link to the
   // real node_modules, so deleting it can never reach that folder.
@@ -607,6 +614,10 @@ class MindAutopilot {
     const prev = this.state.active;
     if (!prev) { this.state.error = null; this.save(); return this.snapshot(); }
     if (this.state.enabled) throw new Error('Stop the autopilot before archiving its current task');
+    // A terminal task state is not proof that its complete process tree has
+    // stopped. Retain the handoff and the shared slot until an explicit,
+    // separately verified recovery procedure exists.
+    if (prev.handoff) throw new Error('Retained handoff requires verified process ownership before archiving');
     const current = prev.taskId && this.orch.getTask(prev.taskId);
     if (current && ['running', 'pending', 'queued'].includes(current.state)) {
       throw new Error('Previous task is still running. Stop/cancel it before acknowledging');
@@ -1297,6 +1308,9 @@ class MindAutopilot {
       } else {
         const a = this.state.active;
         if (a.waitingStage) {
+          // A parked stage is another launch, including local verification.
+          // Wait while any peer retains a potentially active handoff.
+          if (this.blockedByPeer()) return this.snapshot();
           const heldReview = ['plan-review', 'code-review'].includes(a.waitingStage) && a.reviewHold
             && this.state.budgetCalls.some(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
           if (now < this.state.nextAt || (!heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
