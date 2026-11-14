@@ -191,7 +191,8 @@ test('plan rejected twice stops the task after one revision', async () => {
     await drive(f.pilot);
     const s = f.pilot.snapshot();
     assert.deepEqual(f.spawns.map(x => x.stage), ['discover', 'plan-review', 'discover', 'plan-review']);
-    assert.match(s.error, /Plan rejected after the allowed revision/);
+    assert.equal(s.enabled, true, 'an ordinary failure never disables the loop');
+    assert.equal(s.error, null);
     assert.equal(s.history[0].outcome, 'plan-rejected');
     assert.equal(f.spawns.some(x => x.stage === 'implement'), false, 'no implementation without an approved plan');
   } finally { f.cleanup(); }
@@ -279,7 +280,9 @@ test('deep loop: verification that keeps failing stops after the allowed repairs
     f.pilot.configure({ enabled: true, goal: 'Improve correctness in depth', allowWorktreeWrites: true });
     await drive(f.pilot, 400);
     const s = f.pilot.snapshot();
-    assert.match(s.error, /Local verification still failing after max repairs: never/);
+    assert.equal(s.enabled, true, 'the loop goes on after a failed task');
+    assert.equal(s.history.at(-1).outcome, 'verify-failed');
+    assert.match(s.history.at(-1).reviewerEvidence, /Check "never" failed/);
     assert.deepEqual(f.spawns.map(x => x.stage), ['discover', 'plan-review', 'implement', 'repair', 'repair']);
     assert.equal(f.spawns.some(x => x.stage === 'code-review'), false, 'no Codex review is paid for code that does not pass its own checks');
   } finally { f.cleanup(); }

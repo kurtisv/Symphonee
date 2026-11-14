@@ -980,13 +980,10 @@ class MindAutopilot {
       }
       a.planRevisions++;
       this.learn('plan', lessons.firstFinding(raw), 'revue du plan par Codex : ' + (a.plan?.title || ''));
-      if (a.planRevisions > this.limits.planRevisions) {
-        this.state.history.push({ category: a.plan?.category || null, title: a.plan?.title || '(plan)',
-          objective: a.plan?.objective || null, key: a.plan ? taskKey(a.plan) : null,
-          outcome: 'plan-rejected', reviewerEvidence: String(raw || '').slice(0, 3000), at: new Date().toISOString() });
-        this.state.active = null;
-        throw new Error('Plan rejected after the allowed revision: ' + String(raw).slice(0, 500));
-      }
+      // An ordinary failure ends the TASK, not the loop: archived (lesson kept),
+      // the pilot stays enabled and moves on after its cooldown. Only safety
+      // violations (tampering, writes outside the worktree, protected paths) halt.
+      if (a.planRevisions > this.limits.planRevisions) return this.complete('plan-rejected', raw);
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
       return this.dispatch('discover', now);
     }
@@ -1023,7 +1020,7 @@ class MindAutopilot {
       this.learn('revue', lessons.firstFinding(raw), 'revue du code par Codex : ' + (a.plan?.title || ''));
       // Keep every rejection: the reason of each repair stays visible after restarts.
       a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 3000) }].slice(-6);
-      if (a.repairs > this.limits.repairs) throw new Error('Code review rejected after max repairs: ' + String(raw).slice(0, 500));
+      if (a.repairs > this.limits.repairs) return this.complete('review-rejected', raw);
       return this.dispatch('repair', now);
     }
   }
@@ -1095,7 +1092,7 @@ class MindAutopilot {
     this.learn('verification', v.lint.length ? 'Le diff affaiblissait la verification : ' + v.lint.join('; ')
       : 'La verification locale "' + failed.name + '" echouait apres la modification : la lancer avant de terminer.', 'verification locale : ' + (a.plan?.title || ''));
     a.review = 'LOCAL VERIFICATION FAILED (run by Symphonee, not by a reviewer).\n' + why; a.repairs++;
-    if (a.repairs > this.limits.repairs) throw new Error('Local verification still failing after max repairs: ' + (v.lint.length ? v.lint.join('; ') : failed.name));
+    if (a.repairs > this.limits.repairs) return this.complete('verify-failed', why);
     return this.dispatch('repair');
   }
   async tick(now = Date.now()) {
