@@ -51,7 +51,7 @@ const SYNTH_MODEL = process.env.SYMPHONEE_ANSWER_MODEL || process.env.SYMPHONEE_
 const MAX_SOURCES = 6;
 const BODY_CAP = 1100;     // per-source excerpt fed to the model
 const MIN_CONTENT = 60;    // drop label-only stubs (e.g. 40-char concept nodes)
-const SYNTH_TIMEOUT_MS = 45_000;
+const SYNTH_TIMEOUT_MS = 90_000; // with a grounded context the small CPU model needs more than 45 s
 
 // Question stopwords stripped before BM25 so the TOPIC drives the title match
 // ("what do you know about aurora3" -> "aurora3"), not "know"/"about".
@@ -248,7 +248,7 @@ function _buildMessages(question, sources, activity, mindText = null) {
  */
 async function localAnswer({ repoRoot, space = '_global', question, activeRepoPath, activeRepo }) {
   if (!question || typeof question !== 'string') return { grounded: false, reason: 'no-question' };
-  const mc = await mindContext.buildMindContext({ repoRoot, space, question, activeRepo: activeRepo || null, budgetTokens: 1800,
+  const mc = await mindContext.buildMindContext({ repoRoot, space, question, activeRepo: activeRepo || null, budgetTokens: 1200,
     loadSkills: () => skillCorpus.loadCorpus(repoRoot), lessonsMod });
   let graph = null;
   try { graph = store.loadGraphShared(repoRoot, space); } catch (_) {}
@@ -276,12 +276,14 @@ async function localAnswer({ repoRoot, space = '_global', question, activeRepoPa
   } catch (e) {
     return { grounded: false, reason: 'synth-error', error: e.message };
   }
-  const answer = _humanize((res && typeof res.text === 'string') ? res.text.trim() : '');
+  let answer = _humanize((res && typeof res.text === 'string') ? res.text.trim() : '');
   if (!answer) return { grounded: false, reason: 'empty-synthesis' };
   const cited = mindContext.citedRefs(answer, sources);
+  const claims = mindContext.unsupportedClaims(answer, mc.text + ' ' + JSON.stringify(activity), question);
+  answer += mindContext.groundingNotice(claims);
   const diag = { path: 'brain-ollama', provider: 'ollama', model: (res && res.model) || SYNTH_MODEL, space, activeRepo: activeRepo || null, status: mc.status,
     retrieved: mc.retrieved, transmitted: sources.map((t) => ({ ref: t.ref, id: t.id, kind: t.kind, tokens: t.tokens })), skills: mc.skills,
-    contextTokens: mc.contextTokens, retrievalMs: mc.retrievalMs, generationMs: Date.now() - tGen, citedRefs: cited, error: mc.error };
+    contextTokens: mc.contextTokens, retrievalMs: mc.retrievalMs, generationMs: Date.now() - tGen, citedRefs: cited, unsupportedClaims: claims, error: mc.error };
   mindContext.recordDiagnostic(repoRoot, diag);
   return {
     grounded: true,

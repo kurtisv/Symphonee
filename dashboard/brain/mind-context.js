@@ -216,6 +216,27 @@ async function buildMindContext({ repoRoot, space = '_global', question, activeR
   return res;
 }
 
+// Grounding check (deterministic, no model): specific claims in an answer --
+// long numbers (4+ digits) and file names -- that appear in neither the
+// transmitted Mind context nor the question are flagged as unsupported. A small
+// model does not reliably abstain; this makes an invented value visible.
+function unsupportedClaims(answer, contextText, question = '') {
+  const src = fold(String(contextText || '') + ' ' + String(question || ''));
+  const claims = new Set();
+  for (const m of String(answer || '').matchAll(/\b\d[\d .-]{2,}\d\b/g)) {
+    const digits = m[0].replace(/\D/g, '');
+    if (digits.length >= 4 && !src.replace(/\D+/g, ' ').split(' ').some((d) => d.includes(digits))) claims.add(m[0].trim());
+  }
+  for (const m of String(answer || '').matchAll(/[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|cpp|c|h|java|go|rs|sql|json|md)\b/g)) {
+    const base = fold(m[0].split('/').pop());
+    if (!src.includes(base)) claims.add(m[0]);
+  }
+  return [...claims].slice(0, 5);
+}
+function groundingNotice(claims) {
+  return claims.length ? '\n\n[Verification Symphonee : ' + claims.join(', ') + ' n apparait dans aucune source Mind transmise. Information non verifiee, probablement inventee.]' : '';
+}
+
 // Which references the answer actually cites ("effectively used").
 function citedRefs(answer, transmitted) {
   const a = String(answer || '');
@@ -238,4 +259,4 @@ function readDiagnostics(repoRoot, limit = 20) {
   } catch (_) { return []; }
 }
 
-module.exports = { buildMindContext, retrieveKnowledge, retrieveCode, retrieveSkills, retrieveLessons, identifiers, keyTerms, nodeContent, citedRefs, recordDiagnostic, readDiagnostics, estimateTokens, KNOWLEDGE_KINDS };
+module.exports = { unsupportedClaims, groundingNotice, buildMindContext, retrieveKnowledge, retrieveCode, retrieveSkills, retrieveLessons, identifiers, keyTerms, nodeContent, citedRefs, recordDiagnostic, readDiagnostics, estimateTokens, KNOWLEDGE_KINDS };

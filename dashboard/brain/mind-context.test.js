@@ -123,3 +123,13 @@ test('direct LM Studio task: a Mind failure is explicit in the prompt, never sil
   assert.match(o.sent[0].messages[1].content, /MIND CONTEXT UNAVAILABLE \(Mind exploded\)/);
   assert.equal(done.execution.mindContext.status, 'error');
 });
+
+test('grounding check flags invented numbers and file names, not supported ones', () => {
+  const ctx = '[C1] deduplicateStations() defined in src/utils/stationDeduplication.ts ... PR #123 ... 2026-11-13';
+  assert.deepEqual(mc.unsupportedClaims('Le numero de TVA de PleinSens est 750421389.', ctx, 'Quel est le numero de TVA ?'), ['750421389']);
+  assert.deepEqual(mc.unsupportedClaims('Definie dans src/utils/stationDeduplication.ts [C1].', ctx), []);
+  assert.deepEqual(mc.unsupportedClaims('Definie dans GasSaver.cpp.', ctx), ['GasSaver.cpp']);
+  assert.deepEqual(mc.unsupportedClaims('Fusionnee en 2026, PR 123.', ctx), [], 'numbers present in the context are fine');
+  assert.match(mc.groundingNotice(['750421389']), /750421389 n apparait dans aucune source Mind/);
+  assert.equal(mc.groundingNotice([]), '');
+});

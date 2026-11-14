@@ -192,7 +192,10 @@ module.exports = {
         // A cut-off answer is not a usable answer: let cloud do it properly.
         if (choice.finish_reason === 'length') throw new Error('unusable local output: completion truncated (finish_reason=length)');
         task.state = STATE.COMPLETED;
-        task.result = text;
+        // Invented specifics (numbers, file names absent from the transmitted context) are flagged.
+        const claims = task.execution.mindContext ? mindContextLib.unsupportedClaims(text, fullPrompt, prompt) : [];
+        if (task.execution.mindContext) task.execution.mindContext.unsupportedClaims = claims;
+        task.result = text + mindContextLib.groundingNotice(claims);
         task.usage = { inputTokens: resp.usage && resp.usage.prompt_tokens, outputTokens: resp.usage && resp.usage.completion_tokens };
         task.execution.servedModel = resp.model || lp.model;
         task.execution.finishReason = choice.finish_reason || null;
@@ -202,7 +205,7 @@ module.exports = {
           mcx.citedRefs = mindContextLib.citedRefs(text, mcx.transmitted);
           mindContextLib.recordDiagnostic(this.workspaceDir ? require('path').resolve(this.workspaceDir, '..', '..') : process.cwd(), { path: 'orchestrator-lmstudio', taskId: task.id, provider: cli, model: task.execution.servedModel,
             space: mcx.space, activeRepo: mcx.activeRepo, status: mcx.status, retrieved: mcx.retrieved, transmitted: mcx.transmitted.map((t) => ({ ref: t.ref, id: t.id, kind: t.kind, tokens: t.tokens })),
-            skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, generationMs: task.execution.generationMs, citedRefs: mcx.citedRefs, error: mcx.error });
+            skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, generationMs: task.execution.generationMs, citedRefs: mcx.citedRefs, unsupportedClaims: mcx.unsupportedClaims, error: mcx.error });
         }
       } catch (err) {
         if (task.state === STATE.CANCELLED) return;
