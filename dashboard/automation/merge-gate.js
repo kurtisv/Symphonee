@@ -321,6 +321,13 @@ async function step(c, repo, baseSha, state, io) {
     if (chain.lint && chain.lint.length) return refuse(c, repo, ['le diff affaiblit la verification : ' + chain.lint.slice(0, 5).join('; ')], io);
     if (!chain.ok) {
       const f = (chain.results || []).find((r) => !r.ok) || { name: '?' };
+      // A timeout says the machine was busy (memory, another loop), not that the
+      // branch is wrong: retried at later passes, refused only after 3 timeouts.
+      if (f.timedOut && (c.timeouts || 0) < 2) {
+        c.timeouts = (c.timeouts || 0) + 1;
+        io.log(c.key + ' : ' + f.name + ' a depasse son delai (machine chargee ?) : nouvel essai a un prochain passage (' + c.timeouts + '/2)');
+        return;
+      }
       return refuse(c, repo, ['chaine de verification en echec : ' + f.name + (f.timedOut ? ' (delai)' : ' (code ' + f.code + ')')
         + (f.preexisting === true ? ' -- echoue AUSSI sur ' + repo.base + ' (preexistant)' : f.preexisting === false ? ' -- introduit par la branche' : '')], io);
     }

@@ -458,3 +458,13 @@ test('regenerate without a mode that pushes the tested merge: the repository is 
   await gate.pass({ enabled: true, repos: [{ ...REPO, regenerate: [{ cmd: ['node', 'x'] }] }] }, {}, io);
   assert.equal(w.chainRuns, 0); assert.ok(w.logs.some((l) => /regenerate exige/.test(l)));
 });
+
+test('a chain timeout is retried twice before refusing (busy machine, not a branch defect)', async () => {
+  const { w, io } = world();
+  io.runChain = async () => { w.chainRuns++; return { ok: false, results: [{ name: 'jest', ok: false, timedOut: true, ms: 1, preexisting: false }] }; };
+  const state = {};
+  await gate.pass(POLICY, state, io); assert.equal(only(state).status, 'new');
+  await gate.pass(POLICY, state, io); assert.equal(only(state).status, 'new');
+  await gate.pass(POLICY, state, io); assert.equal(only(state).status, 'refused');
+  assert.equal(w.chainRuns, 3);
+});
