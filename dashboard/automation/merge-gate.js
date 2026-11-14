@@ -272,6 +272,14 @@ async function pass(policy, state, io) {
   return state;
 }
 
+// mergeMode 'push-tested': the PR head is the gate's own branch porte/<branch>
+// holding the TESTED merge commit (merge with the base + regenerated files), so
+// GitHub CI checks exactly what will land; the merge pushes that commit.
+const pushTested = (repo) => repo.mergeMode === 'push-tested';
+const pushesMerge = (repo) => repo.githubCi === false || pushTested(repo);
+const headBranch = (c, repo) => (pushTested(repo) ? 'porte/' + c.branch : c.branch);
+const expectedHead = (c, repo) => (pushTested(repo) ? c.evaluatedMerge : c.sha);
+
 function setStatus(c, status, note, io) {
   c.status = status; c.updatedAt = io.now();
   c.history = [...(c.history || []), { at: io.now(), status, note: String(note || '').slice(0, 500) }].slice(-20);
@@ -304,6 +312,7 @@ async function step(c, repo, baseSha, state, io) {
     const chain = await io.runChain(repo, baseSha, c.sha);
     c.chain = (chain.results || []).map((r) => ({ name: r.name, ok: r.ok, code: r.code, s: Math.round((r.ms || 0) / 1000), preexisting: r.preexisting }));
     if (chain.conflict) return refuse(c, repo, ['conflit de fusion avec ' + repo.base], io);
+    if (chain.regenError) return refuse(c, repo, ['regeneration des documents generes : ' + chain.regenError], io);
     if (chain.lint && chain.lint.length) return refuse(c, repo, ['le diff affaiblit la verification : ' + chain.lint.slice(0, 5).join('; ')], io);
     if (!chain.ok) {
       const f = (chain.results || []).find((r) => !r.ok) || { name: '?' };
@@ -316,15 +325,22 @@ async function step(c, repo, baseSha, state, io) {
     setStatus(c, 'ready', 'regles 3-7 vertes, chaine ' + c.chain.length + '/' + c.chain.length, io);
   }
   if (c.status === 'ready') {
+    if (pushTested(repo)) {
+      if (!c.evaluatedMerge) return setStatus(c, 'new', 'fusion testee absente : nouvelle verification complete', io);
+      // Gate-owned branch: always reset to the latest tested merge.
+      io.git(repo.path, ['push', '--force', 'origin', c.evaluatedMerge + ':refs/heads/' + headBranch(c, repo)]);
+    }
     // Re-verified after the base moved: the PR already exists, its CI is checked again.
     if (c.pr) setStatus(c, 'pr-open', 're-verifiee sur ' + repo.base + ' ' + baseSha.slice(0, 8), io);
     else {
-      try { io.git(repo.path, ['push', 'origin', c.sha + ':refs/heads/' + c.branch]); }
-      catch (e) { return refuse(c, repo, ['push refuse : ' + String(e.message).split('\n')[0]], io); }
+      if (!pushTested(repo)) {
+        try { io.git(repo.path, ['push', 'origin', c.sha + ':refs/heads/' + c.branch]); }
+        catch (e) { return refuse(c, repo, ['push refuse : ' + String(e.message).split('\n')[0]], io); }
+      }
       // GitHub may not see a just-pushed branch yet (422 "head invalid"): retry.
       let pr = null, lastErr = null;
       for (let i = 0; i < 4 && !pr; i++) {
-        try { pr = await io.api('POST', '/api/github/pulls/create', { repo: repo.github, head: c.branch, base: repo.base,
+        try { pr = await io.api('POST', '/api/github/pulls/create', { repo: repo.github, head: headBranch(c, repo), base: repo.base,
           title: prTitle(c), body: prBody(c, repo) }); }
         catch (e) {
           lastErr = e;
@@ -340,8 +356,8 @@ async function step(c, repo, baseSha, state, io) {
         // adopted; the branch was just pushed to that commit. Anything else
         // leaves the candidate ready, retried at the next pass, with one warning.
         const list = await io.api('GET', '/api/github/pulls?repo=' + encodeURIComponent(repo.github) + '&state=open');
-        const same = ((list && list.pulls) || []).filter((p) => p.headRef === c.branch && p.baseRef === repo.base);
-        const open = same.find((p) => p.headSha === c.sha);
+        const same = ((list && list.pulls) || []).filter((p) => p.headRef === headBranch(c, repo) && p.baseRef === repo.base);
+        const open = same.find((p) => p.headSha === expectedHead(c, repo));
         if (!open) throw new Error('une PR existe deja pour ' + c.branch + ' mais aucune PR ouverte visible ne porte le commit verifie ' + c.sha.slice(0, 8)
           + (same.length ? ' (tete(s) : ' + same.map((p) => '#' + p.number + ' ' + String(p.headSha).slice(0, 8)).join(', ') + ')' : ''));
         c.pr = open.number; c.prUrl = open.htmlUrl || null;
@@ -361,7 +377,11 @@ async function step(c, repo, baseSha, state, io) {
   }
   if (c.status === 'pr-open') {
     const ck = await io.api('GET', '/api/github/pulls/checks?repo=' + encodeURIComponent(repo.github) + '&number=' + c.pr);
-    if (ck.sha && ck.sha !== c.sha) return refuse(c, repo, ['la PR a change depuis la verification (tete ' + String(ck.sha).slice(0, 8) + ')'], io);
+    if (ck.sha && ck.sha !== expectedHead(c, repo)) {
+      // push-tested: GitHub may still show the previous head right after the push.
+      if (pushTested(repo) && io.now() - c.updatedAt < 10 * 60000) return;
+      return refuse(c, repo, ['la PR a change depuis la verification (tete ' + String(ck.sha).slice(0, 8) + ')'], io);
+    }
     // A repository without GitHub CI: the gate's chain on the exact merge is the CI.
     if (repo.githubCi === false) {
       if (!ck.sha) throw new Error('tete de la PR #' + c.pr + ' illisible');
@@ -395,10 +415,10 @@ async function step(c, repo, baseSha, state, io) {
       return setStatus(c, 'new', repo.base + ' a bouge (' + baseSha.slice(0, 8) + ') : nouvelle verification complete', io);
     }
     const ck = await io.api('GET', '/api/github/pulls/checks?repo=' + encodeURIComponent(repo.github) + '&number=' + c.pr);
-    if (ck.sha !== c.sha) return refuse(c, repo, ['la tete de la PR n est plus le commit verifie'], io);
+    if (ck.sha !== expectedHead(c, repo)) return refuse(c, repo, ['la tete de la PR n est plus le commit verifie'], io);
     if (repo.githubCi !== false && checksVerdict(ck.checks, repo.supersedableChecks) !== 'success') return setStatus(c, 'pr-open', 'CI a revoir avant fusion', io);
     let r;
-    if (repo.githubCi === false) {
+    if (pushesMerge(repo)) {
       // Atomic: push the very merge commit the chain tested, fast-forward only.
       // If the base moved meanwhile, git refuses and the candidate is re-verified.
       if (!c.evaluatedMerge) return setStatus(c, 'new', 'fusion testee absente : nouvelle verification complete', io);

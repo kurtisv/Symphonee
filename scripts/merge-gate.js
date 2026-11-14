@@ -98,6 +98,22 @@ async function runChain(repo, base, sha) {
     try { git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'merge', '--no-ff', '-m', 'Fusion automatique encadree (' + gate.MARK + ') : ' + sha, sha]); }
     catch (_) { try { git(dir, ['merge', '--abort']); } catch (__) {} return { ok: false, conflict: true, results: [] }; }
     // The exact tree tested: the merge GitHub makes must have this content.
+    // Generated documents (e.g. counts of test files) are recomputed ON the merge
+    // and folded into the merge commit, so they can never conflict between
+    // branches; only the listed paths may change.
+    if ((repo.regenerate || []).length) {
+      try {
+        for (const r of repo.regenerate) execFileSync(r.cmd[0], r.cmd.slice(1), { cwd: path.join(dir, r.cwd || ''), stdio: 'pipe', timeout: r.timeoutMs || 300000, windowsHide: true });
+      } catch (e) { return { ok: false, regenError: String(e.message || e).split('\n')[0].slice(0, 200), results: [] }; }
+      const changed = git(dir, ['status', '--porcelain', '--untracked-files=all']).split(/\r?\n/).filter(Boolean).map((l) => l.slice(3).trim().replace(/^"|"$/g, ''));
+      const allowed = (repo.regeneratePaths || []).map((x) => new RegExp(x));
+      const bad = changed.filter((f) => !allowed.some((rx) => rx.test(f)));
+      if (bad.length) return { ok: false, regenError: 'chemins non autorises modifies : ' + bad.slice(0, 5).join(', '), results: [] };
+      if (changed.length) {
+        git(dir, ['add', '--', ...changed]);
+        git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'commit', '--amend', '--no-edit']);
+      }
+    }
     const tree = git(dir, ['rev-parse', 'HEAD^{tree}']);
     // The tested merge commit itself (kept in the shared object store): a repo
     // without CI pushes exactly this commit, fast-forward only.

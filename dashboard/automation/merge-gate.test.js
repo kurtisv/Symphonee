@@ -415,3 +415,40 @@ test('CI verdict: a listed check is superseded only by a strictly later run (fai
   assert.equal(gate.checksVerdict([push, G(null, '2026-11-12T16:40:00Z', { status: 'in_progress' }), ok], ['governance']), 'pending', 'newer run still running');
   assert.equal(gate.checksVerdict([push, G('skipped', '2026-11-12T16:40:00Z'), ok], ['governance']), 'failure', 'a later skipped run does not replace a failure');
 });
+
+test('push-tested: PR from porte/<branch> at the tested merge; CI on that head; merged by leased push', async () => {
+  const PT = { ...REPO, mergeMode: 'push-tested', base: 'integration' };
+  const { w, io } = world(); w.marker = true;
+  const M = 'm'.repeat(40);
+  w.headSha = M; // GitHub shows the tested merge as the PR head
+  w.checks = [{ name: 'verify', status: 'completed', conclusion: 'success', startedAt: '2026-11-13T10:00:00Z' }];
+  const git = io.git;
+  io.git = (cwd, args) => {
+    const a = args.join(' ');
+    if (a === 'rev-parse origin/integration') return w.base;
+    if (a.startsWith('show origin/integration:AGENTS.md')) return '... ' + gate.MARK;
+    return git(cwd, args);
+  };
+  const state = {};
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  let c = only(state);
+  assert.equal(c.status, 'pr-open');
+  assert.ok(w.pushes.includes('push --force origin ' + M + ':refs/heads/porte/mind-autopilot/2026-11-12-abc'), 'tested merge published on the gate branch');
+  assert.ok(!w.pushes.some((p) => p.includes(':refs/heads/mind-autopilot/')), 'the autopilot branch is not touched');
+  assert.equal(w.prs[0].head, 'porte/mind-autopilot/2026-11-12-abc'); assert.equal(w.prs[0].base, 'integration');
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  c = only(state);
+  assert.equal(c.status, 'merged');
+  assert.ok(w.pushes.includes('push --force-with-lease=refs/heads/integration:' + w.base + ' origin ' + M + ':refs/heads/integration'));
+  assert.equal(w.merges.length, 0, 'no API merge');
+  // A head that is not the tested merge (after the grace period) is refused.
+  const r = world(); r.w.marker = true; r.w.headSha = 'e'.repeat(40);
+  const g2 = r.io.git;
+  r.io.git = (cwd, args) => { const a = args.join(' '); if (a === 'rev-parse origin/integration') return r.w.base;
+    if (a.startsWith('show origin/integration:AGENTS.md')) return gate.MARK; return g2(cwd, args); };
+  const st = {};
+  await gate.pass({ enabled: true, repos: [PT] }, st, r.io);
+  r.w.now += 11 * 60000;
+  await gate.pass({ enabled: true, repos: [PT] }, st, r.io);
+  assert.equal(only(st).status, 'refused');
+});
