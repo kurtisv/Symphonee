@@ -143,6 +143,11 @@ module.exports = {
     // The autopilot owns retries/handoff when process containment is required.
     if (requireProcessTreeProof) { noFallback = true; noRetry = true; }
     cli = canonicalProviderId(cli);
+    // Qwen's Windows container sandbox needs its own lifecycle and mount
+    // verification. A permission flag alone cannot enforce these guarantees.
+    if (cli === 'qwen' && (readOnly || confineWrites)) {
+      throw new Error('Qwen confinement is unavailable until a verified sandbox adapter is installed');
+    }
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
     }
