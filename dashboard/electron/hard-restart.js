@@ -9,16 +9,18 @@ const { spawn } = require('child_process');
 // Source of the helper (run with ELECTRON_RUN_AS_NODE). Pure: testable.
 // Identity of the old process = pid + creation time read when the helper
 // starts (the old process is certainly alive then): a reused pid is never killed.
-function helperSource({ pid, execPath, args, cwd, waitMs = 8000 }) {
+function helperSource({ pid, birthMs, execPath, args, cwd, waitMs = 8000 }) {
   return [
     "const cp = require('child_process');",
     'const pid = ' + JSON.stringify(pid) + ';',
-    "const created = () => { try { return cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', '(Get-Process -Id ' + pid + ' -ErrorAction Stop).StartTime.Ticks'], { encoding: 'utf8', windowsHide: true }).trim(); } catch (_) { return null; } };",
-    'const birth = created();',
+    "const created = () => { try { const v = Number(cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', '([DateTimeOffset](Get-Process -Id ' + pid + ' -ErrorAction Stop).StartTime).ToUnixTimeMilliseconds()'], { encoding: 'utf8', windowsHide: true }).trim()); return Number.isFinite(v) ? v : null; } catch (_) { return null; } };",
+    // Creation time given by the old process itself BEFORE it exits (never read after: the pid could be reused).
+    'const birth = ' + JSON.stringify(Number.isFinite(birthMs) ? birthMs : null) + ';',
+    'const match = (c) => Math.abs(c - birth) < 5000;',
     'const alive = () => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };',
     // Unknown identity (lookup failed) counts as STILL THERE: never start a second instance on a guess.
-    'const same = () => { if (!alive()) return false; const c = created(); return c === null || birth === null || c === birth; };',
-    'const sure = () => birth !== null && alive() && created() === birth;',
+    'const same = () => { if (!alive()) return false; const c = created(); return c === null || birth === null || match(c); };',
+    "const sure = () => { if (birth === null || !alive()) return false; const c = created(); return c !== null && match(c); };",
     'const start = () => {',
     '  const env = Object.assign({}, process.env); delete env.ELECTRON_RUN_AS_NODE;',
     '  cp.spawn(' + JSON.stringify(execPath) + ', ' + JSON.stringify(args) + ', { cwd: ' + JSON.stringify(cwd) + ', env, detached: true, stdio: "ignore" }).unref();',
@@ -40,7 +42,7 @@ function helperSource({ pid, execPath, args, cwd, waitMs = 8000 }) {
 }
 
 function hardRestart(app, { delayMs = 200, waitMs = 8000 } = {}) {
-  const src = helperSource({ pid: process.pid, execPath: process.execPath, args: process.argv.slice(1), cwd: process.cwd(), waitMs });
+  const src = helperSource({ pid: process.pid, birthMs: Date.now() - process.uptime() * 1000, execPath: process.execPath, args: process.argv.slice(1), cwd: process.cwd(), waitMs });
   const fallback = () => { try { app.relaunch(); } catch (_) {} app.exit(0); };
   setTimeout(() => {
     let child;

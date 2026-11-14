@@ -14,7 +14,7 @@ for (const [label, hangs] of [['an old process that exits', false], ['an old pro
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hard-restart-'));
     const marker = path.join(dir, 'started');
     const old = spawn(process.execPath, ['-e', hangs ? 'setInterval(() => {}, 1000)' : 'setTimeout(() => {}, 300)'], { stdio: 'ignore' });
-    const src = helperSource({ pid: old.pid, execPath: process.execPath, args: ['-e', "require('fs').writeFileSync(" + JSON.stringify(marker) + ", 'ok')"], cwd: dir, waitMs: 1500 });
+    const src = helperSource({ pid: old.pid, birthMs: Date.now(), execPath: process.execPath, args: ['-e', "require('fs').writeFileSync(" + JSON.stringify(marker) + ", 'ok')"], cwd: dir, waitMs: 1500 });
     const h = spawn(process.execPath, ['-e', src], { stdio: 'ignore' });
     assert.equal(await waitFor(() => fs.existsSync(marker), 10000), true, 'new instance started');
     let oldAlive = true; try { process.kill(old.pid, 0); } catch (_) { oldAlive = false; }
