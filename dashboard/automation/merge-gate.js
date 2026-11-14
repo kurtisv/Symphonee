@@ -71,21 +71,23 @@ function evaluateDiff({ numstat, status, addedLines }, repo, source) {
 }
 
 // GitHub checks of one commit -> 'success' | 'pending' | 'failure'
-// Only the LATEST run of each check counts: a check re-run (or the pull_request
-// run that follows a branch push run) supersedes the older result.
-function latestChecks(checks) {
-  const by = new Map();
-  checks.forEach((c, i) => {
-    const k = c.name ? (c.app || '') + '|' + c.name : '#' + i; // unnamed: never merged together
-    const t = Date.parse(c.startedAt || c.completedAt || '') || 0;
-    const prev = by.get(k);
-    if (!prev || t >= prev.t) by.set(k, { c, t });
+// A run is superseded only when it is SAFE to say so (fail closed): its check
+// name is listed in repo.supersedableChecks (jobs of one known workflow, e.g. a
+// branch push run followed by the pull_request run), both runs carry a valid
+// start time, and a run of the same app and name started STRICTLY later.
+// Unlisted names, unnamed checks, missing or equal times: every run counts.
+function latestChecks(checks, supersedable = []) {
+  const time = (c) => { const t = Date.parse(c.startedAt || ''); return Number.isFinite(t) ? t : null; };
+  return checks.filter((c) => {
+    if (!c.name || !supersedable.includes(c.name)) return true;
+    const t = time(c);
+    if (t === null) return true;
+    return !checks.some((o) => o !== c && o.name === c.name && (o.app || '') === (c.app || '') && time(o) !== null && time(o) > t);
   });
-  return [...by.values()].map((x) => x.c);
 }
-function checksVerdict(rawChecks) {
+function checksVerdict(rawChecks, supersedable = []) {
   if (!Array.isArray(rawChecks) || !rawChecks.length) return 'pending';
-  const checks = latestChecks(rawChecks);
+  const checks = latestChecks(rawChecks, supersedable);
   if (checks.some((c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion))) return 'failure';
   if (checks.some((c) => c.status !== 'completed')) return 'pending';
   return checks.some((c) => c.conclusion === 'success') ? 'success' : 'pending';
@@ -361,8 +363,8 @@ async function step(c, repo, baseSha, state, io) {
       if (!ck.sha) throw new Error('tete de la PR #' + c.pr + ' illisible');
       setStatus(c, 'ci-green', 'pas de CI GitHub : la chaine de la porte sur la fusion fait foi', io);
     } else {
-      const v = checksVerdict(ck.checks);
-      if (v === 'failure') return refuse(c, repo, ['CI GitHub en echec : ' + latestChecks(ck.checks).filter((x) => x.status === 'completed' && !['success', 'neutral', 'skipped'].includes(x.conclusion)).map((x) => x.name).join(', ')], io);
+      const v = checksVerdict(ck.checks, repo.supersedableChecks);
+      if (v === 'failure') return refuse(c, repo, ['CI GitHub en echec : ' + latestChecks(ck.checks, repo.supersedableChecks).filter((x) => x.status === 'completed' && !['success', 'neutral', 'skipped'].includes(x.conclusion)).map((x) => x.name).join(', ')], io);
       if (v === 'pending') {
         if (io.now() - c.updatedAt > 12 * 3600000) return refuse(c, repo, ['CI GitHub sans resultat apres 12 h'], io);
         return;
@@ -390,7 +392,7 @@ async function step(c, repo, baseSha, state, io) {
     }
     const ck = await io.api('GET', '/api/github/pulls/checks?repo=' + encodeURIComponent(repo.github) + '&number=' + c.pr);
     if (ck.sha !== c.sha) return refuse(c, repo, ['la tete de la PR n est plus le commit verifie'], io);
-    if (repo.githubCi !== false && checksVerdict(ck.checks) !== 'success') return setStatus(c, 'pr-open', 'CI a revoir avant fusion', io);
+    if (repo.githubCi !== false && checksVerdict(ck.checks, repo.supersedableChecks) !== 'success') return setStatus(c, 'pr-open', 'CI a revoir avant fusion', io);
     let r;
     if (repo.githubCi === false) {
       // Atomic: push the very merge commit the chain tested, fast-forward only.
@@ -429,7 +431,7 @@ async function watchMerge(m, repo, state, io) {
   try { parent2 = io.git(repo.path, ['rev-parse', m.sha + '^2']); } catch (_) {}
   if (parent2 && parent2 !== m.verified) return stopGate(state, m, repo, 'le commit fusionne (' + parent2.slice(0, 8) + ') n est pas le commit verifie (' + m.verified.slice(0, 8) + ')', io);
   const ck = await io.api('GET', '/api/github/pulls/checks?repo=' + encodeURIComponent(repo.github) + '&sha=' + m.sha);
-  const v = checksVerdict(ck.checks);
+  const v = checksVerdict(ck.checks, repo.supersedableChecks);
   if (v === 'success') {
     m.status = 'confirmed'; m.confirmedAt = io.now();
     const c = state.candidates[m.key]; if (c) setStatus(c, 'confirmed', 'CI verte sur ' + repo.base, io);
