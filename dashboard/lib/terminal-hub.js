@@ -25,15 +25,17 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
   const aiResume = createAiResume({ file: path.join(repoRoot, '.ai-workspace', 'terminal-ai.json') });
   // Types "claude --continue" (or the CLI's equivalent) once the new shell is
   // ready: after its first output has settled, at most ~10 s after creation.
+  const pendingResume = new Map(); // termId -> cancel(): user input or an AI state change wins
+  function cancelResume(termId) { const c = pendingResume.get(termId); if (c) c(); }
   function scheduleResume(termId, ptyProcess, cli) {
     let mode = null;
     try { mode = ((getConfig && getConfig()) || {}).Permissions?.mode || null; } catch (_) {}
     const cmd = resumeCommand(cli, mode);
     if (!cmd) return;
     let done = false, settle = null;
+    const stop = () => { done = true; pendingResume.delete(termId); clearTimeout(settle); clearTimeout(cap); try { sub && sub.dispose && sub.dispose(); } catch (_) {} };
     const fire = () => {
-      if (done) return; done = true;
-      clearTimeout(settle); clearTimeout(cap); try { sub && sub.dispose && sub.dispose(); } catch (_) {}
+      if (done) return; stop();
       const t = terminals.get(termId);
       if (!t || t.pty !== ptyProcess) return; // terminal replaced or gone meanwhile
       try { ptyProcess.write(cmd + '\r'); } catch (_) { return; }
@@ -43,6 +45,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
     };
     const sub = ptyProcess.onData(() => { clearTimeout(settle); settle = setTimeout(fire, 1500); });
     const cap = setTimeout(fire, 10000);
+    pendingResume.set(termId, stop);
   }
   let defaultCols = 120, defaultRows = 30;
 
@@ -218,6 +221,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
         const termId = msg.termId || 'main';
         switch (msg.type) {
           case 'input': {
+            cancelResume(termId); // the user typed first: never type over it
             const t = terminals.get(termId);
             if (t) t.pty.write(msg.data || '');
             break;
@@ -258,6 +262,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
             break;
           }
           case 'term-ai-state': {
+            cancelResume(termId);
             const cli = typeof msg.cli === 'string' ? msg.cli.trim() : '';
             const launched = msg.launched !== false;
             if (!cli || !launched) { termAiMeta.delete(termId); aiResume.forget(termId); }

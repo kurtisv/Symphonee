@@ -854,7 +854,7 @@ addRoute('POST', '/api/term/detect-ai', async (req, res) => {
       } else {
         const existing = termAiMeta.get(id);
         if (existing && existing.source === 'process-detect') termAiMeta.delete(id);
-        aiResume.forget(id); // no AI process under this shell any more
+        if (tree) aiResume.forget(id); // no AI process under this shell any more (unknown when the snapshot failed)
       }
     }
     return json(res, { ok: true, byTerm });
