@@ -199,13 +199,18 @@ async function pass(policy, state, io) {
   // Per repository: its own chain windows and chains per pass (a 30 s test
   // suite need not wait for the window of a 30 min one).
 
+  // 1) Post-merge watch of EVERY repository first (runs even when stopped): a
+  // failure it detects stops the gate before any new merge in this pass.
+  const bases = {};
   for (const repo of policy.repos) {
     try { io.git(repo.path, ['fetch', '--quiet', 'origin', repo.base]); } catch (e) { io.log('fetch impossible pour ' + repo.name + ' : ' + e.message); continue; }
-    const baseSha = io.git(repo.path, ['rev-parse', 'origin/' + repo.base]);
-
-    // Post-merge watch runs even when stopped.
+    bases[repo.name] = io.git(repo.path, ['rev-parse', 'origin/' + repo.base]);
     for (const m of state.merges.filter((x) => x.repo === repo.name && x.status === 'merged')) await watchMerge(m, repo, state, io);
-    if (stopped) continue;
+  }
+  // 2) Candidates, only while the gate is not stopped (re-checked before each step).
+  for (const repo of policy.repos) {
+    const baseSha = bases[repo.name];
+    if (!baseSha || stopped || state.stopped) continue;
 
     const found = await discover(repo, io);
     // A candidate never started whose branch now points elsewhere (re-committed,
@@ -226,6 +231,7 @@ async function pass(policy, state, io) {
       .sort((a, b) => a.createdAt - b.createdAt);
     let chainsLeft = inAnyWindow(repo.chainWindows !== undefined ? repo.chainWindows : policy.chainWindows, now) ? (repo.chainsPerPass || 1) : 0;
     for (const c of mine) {
+      if (state.stopped) break;
       if (c.status === 'new' && chainsLeft <= 0) continue; // chains per pass
       if (c.status === 'new') chainsLeft--;
       // A transient error (network, GitHub, Symphonee API) leaves the candidate

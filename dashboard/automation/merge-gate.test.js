@@ -365,3 +365,18 @@ test('no GitHub CI: a merge that is not exactly the tested one stops the gate; u
   r = await run(() => {});
   assert.equal(r.state.merges[0].status, 'confirmed');
 });
+
+test('a mismatch detected by the post-merge watch stops every merge in the same pass', async () => {
+  const { w, io } = world(); w.marker = true;
+  const A = { ...REPO, name: 'A', githubCi: false };
+  const B = { ...REPO, name: 'B', githubCi: false };
+  const state = {};
+  // A: one merge already done; B: a candidate ready to merge.
+  state.merges = [{ repo: 'A', key: 'k', at: w.now - 60000, sha: 'm'.repeat(40), pr: 1, verified: w.sha, base: w.base, tree: 'tree-tested', status: 'merged' }];
+  state.candidates = { ['B|mind-autopilot/2026-11-12-abc|' + w.sha]: { repo: 'B', source: 'autopilot', branch: 'mind-autopilot/2026-11-12-abc', sha: w.sha,
+    key: 'B|mind-autopilot/2026-11-12-abc|' + w.sha, status: 'ci-green', pr: 7, evaluatedBase: w.base, evaluatedTree: 'tree-tested', createdAt: 0, attempts: 0, history: [] } };
+  w.mergedTree = 'other';
+  await gate.pass({ enabled: true, repos: [A, B] }, state, io);
+  assert.ok(state.stopped);
+  assert.equal(w.merges.length, 0, 'B is not merged in the pass that stopped the gate');
+});
