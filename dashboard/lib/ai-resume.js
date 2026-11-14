@@ -25,18 +25,20 @@ function resumeCommand(cli, permissionMode, cwd) {
   return "Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + b64 + "'))); " + cmd;
 }
 
-// The folder where an AI CLI was launched: the last PowerShell prompt
-// ("PS C:\x> ...") whose typed command starts the CLI directly ("claude ...",
-// "cls; claude ..."). Anything else on that line (a cd, several commands) makes
-// the folder unknown (null): never guess.
-const LAUNCH = /^\s*(cls\s*;\s*)?(claude|codex)(\.exe)?(\s+[\w\-=.]+)*\s*$/i;
+// The folder where an AI CLI was launched, from the last PowerShell prompt
+// ("PS C:\x> command"). Returns the folder when that command starts the CLI
+// directly ("claude ...", "cls; claude ...") with long options only (no short
+// option, no separate option value, no --cd); false when the last prompt line
+// is anything else (the real folder cannot be known); null when no prompt is
+// visible any more.
+const LAUNCH = /^\s*(cls\s*;\s*)?(claude|codex)(\.exe)?(\s+--(?!cd\b)[a-z][\w-]*(=[\w.-]+)?)*\s*$/i;
 function lastPromptDir(output) {
   const text = String(output || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
   let m, last = null;
   const rx = /PS ([A-Za-z]:\\[^\r\n<>|"*?]*?)> ?([^\r\n]*)/g;
   while ((m = rx.exec(text))) last = { dir: m[1], cmd: m[2] };
-  // A flag that changes the working folder (codex -C / --cd) makes it unknown too.
-  return last && LAUNCH.test(last.cmd) && !/(^|\s)(-C|--cd)(\s|=|$)/.test(last.cmd) ? last.dir : null;
+  if (!last) return null;
+  return LAUNCH.test(last.cmd) ? last.dir : false;
 }
 
 function createAiResume({ file, now = () => Date.now(), write }) {
@@ -55,8 +57,10 @@ function createAiResume({ file, now = () => Date.now(), write }) {
     remember(termId, cli, cwd) {
       if (!termId || !CONTINUE[cli]) return this.forget(termId);
       const prev = live[termId];
-      // Folder unreadable now (prompt scrolled out, or launched with a cd on the
-      // same line): keep what was remembered for this same CLI, never invent one.
+      // Launched in a way whose folder cannot be known: nothing safe to resume.
+      if (cwd === false) return this.forget(termId);
+      // No prompt visible any more (scrolled out): keep what was remembered for
+      // this same CLI, never invent one.
       if (typeof cwd !== 'string' || !cwd) {
         if (prev && prev.cli === cli) cwd = prev.cwd; else return;
       }

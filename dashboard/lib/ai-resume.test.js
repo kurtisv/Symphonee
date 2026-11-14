@@ -47,9 +47,21 @@ test('resume command: folder as base64 (no injection), permissions flag in bypas
 
 test('lastPromptDir: only a prompt line that launches the CLI directly', () => {
   assert.equal(lastPromptDir('PS C:\\Users\\k> cd source\r\n\x1b[32mPS C:\\Users\\k\\source>\x1b[0m cls; claude --dangerously-skip-permissions\r\n...tui...'), 'C:\\Users\\k\\source');
-  assert.equal(lastPromptDir('PS C:\\RepoA> Set-Location C:\\RepoB; claude\r\n'), null, 'folder changed on the same line');
-  assert.equal(lastPromptDir('PS C:\\RepoA> npm test\r\n'), null, 'not a CLI launch');
-  assert.equal(lastPromptDir('no prompt here'), null);
-  assert.equal(lastPromptDir('PS C:\\RepoA> codex -C RepoB\r\n'), null, 'codex -C');
-  assert.equal(lastPromptDir('PS C:\\RepoA> codex --cd=RepoB\r\n'), null, 'codex --cd=');
+  assert.equal(lastPromptDir('PS C:\\RepoA> Set-Location C:\\RepoB; claude\r\n'), false, 'folder changed on the same line');
+  assert.equal(lastPromptDir('PS C:\\RepoA> npm test\r\n'), false, 'not a CLI launch');
+  assert.equal(lastPromptDir('no prompt here'), null, 'nothing visible');
+  assert.equal(lastPromptDir('PS C:\\RepoA> codex -C RepoB\r\n'), false, 'codex -C');
+  assert.equal(lastPromptDir('PS C:\\RepoA> codex -CRepoB\r\n'), false, 'attached short option');
+  assert.equal(lastPromptDir('PS C:\\RepoA> codex --cd=RepoB\r\n'), false, 'codex --cd=');
+  assert.equal(lastPromptDir('PS C:\\RepoA> claude --model opus\r\n'), false, 'separate option value: not certain');
+  assert.equal(lastPromptDir('PS C:\\RepoA> claude --model=opus --dangerously-skip-permissions\r\n'), 'C:\\RepoA');
+});
+
+test('a launch whose folder cannot be known forgets the remembered folder', () => {
+  const file = tmpFile();
+  let t = 9_000_000;
+  const a = createAiResume({ file, now: () => t });
+  a.remember('main', 'codex', 'C:\\RepoA');
+  t += 120000; a.remember('main', 'codex', false);
+  assert.deepEqual(createAiResume({ file, now: () => t }).planned(), {});
 });
