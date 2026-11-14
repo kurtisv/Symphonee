@@ -74,7 +74,8 @@ function evaluateDiff({ numstat, status, addedLines }, repo, source) {
 // A run is superseded only when it is SAFE to say so (fail closed): its check
 // name is listed in repo.supersedableChecks (jobs of one known workflow, e.g. a
 // branch push run followed by the pull_request run), both runs carry a valid
-// start time, and a run of the same app and name started STRICTLY later.
+// start time, and a run of the same app and name started STRICTLY later and
+// succeeded (or is still running).
 // Unlisted names, unnamed checks, missing or equal times: every run counts.
 function latestChecks(checks, supersedable = []) {
   const time = (c) => { const t = Date.parse(c.startedAt || ''); return Number.isFinite(t) ? t : null; };
@@ -82,7 +83,10 @@ function latestChecks(checks, supersedable = []) {
     if (!c.name || !supersedable.includes(c.name)) return true;
     const t = time(c);
     if (t === null) return true;
-    return !checks.some((o) => o !== c && o.name === c.name && (o.app || '') === (c.app || '') && time(o) !== null && time(o) > t);
+    // Replaced only by a later run that SUCCEEDED (or is still running: the
+    // verdict is then pending). A later skipped/neutral run proves nothing.
+    return !checks.some((o) => o !== c && o.name === c.name && (o.app || '') === (c.app || '') && time(o) !== null && time(o) > t
+      && (o.status !== 'completed' || o.conclusion === 'success'));
   });
 }
 function checksVerdict(rawChecks, supersedable = []) {

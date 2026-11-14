@@ -413,4 +413,5 @@ test('CI verdict: a listed check is superseded only by a strictly later run (fai
   assert.equal(gate.checksVerdict([pr, G('failure', '2026-11-12T17:00:00Z'), ok], ['governance']), 'failure', 'a newer failure fails');
   assert.equal(gate.checksVerdict([push, G('success', '2026-11-12T16:32:15Z', { app: 'Other' }), ok], ['governance']), 'failure', 'another app does not supersede');
   assert.equal(gate.checksVerdict([push, G(null, '2026-11-12T16:40:00Z', { status: 'in_progress' }), ok], ['governance']), 'pending', 'newer run still running');
+  assert.equal(gate.checksVerdict([push, G('skipped', '2026-11-12T16:40:00Z'), ok], ['governance']), 'failure', 'a later skipped run does not replace a failure');
 });
