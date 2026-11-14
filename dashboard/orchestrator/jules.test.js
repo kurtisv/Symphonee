@@ -384,6 +384,11 @@ test('POST /api/orchestrator/spawn routes cli: "jules" to Jules remote worker', 
 
     const routes = {};
     const addRoute = (m, p, h) => { routes[`${m} ${p}`] = h; };
+    // Own permission config (bypass), so the result does not depend on the
+    // developer's config/config.json (absent in a fresh worktree -> 412).
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'jules-routes-'));
+    fs.mkdirSync(path.join(repoRoot, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, 'config', 'config.json'), JSON.stringify({ Permissions: { mode: 'bypass', deny: [], ask: [], allow: [] } }));
     registerOrchestratorRoutes(addRoute, (res, data, status) => {
       res.writeHead(status || 200);
       res.end(JSON.stringify(data));
@@ -391,6 +396,7 @@ test('POST /api/orchestrator/spawn routes cli: "jules" to Jules remote worker', 
       getConfig: () => ({ OrchestrateCliList: ['claude', 'gemini', 'jules'] }),
       broadcast: () => {},
       getUiContext: () => ({}),
+      repoRoot,
     });
 
     const handler = routes['POST /api/orchestrator/spawn'];

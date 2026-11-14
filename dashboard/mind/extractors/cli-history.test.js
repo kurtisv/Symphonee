@@ -62,6 +62,7 @@ test('Codex code-mode accepts literal single commands, rejects ambiguous calls a
 });
 
 test('procedural collector finds Gemini chats, scopes repo and reports truncation', () => {
+  fs.mkdirSync(path.join(process.cwd(), '.ai-workspace'), { recursive: true }); // absent in a fresh worktree
   const tmpHome = fs.mkdtempSync(path.join(process.cwd(), '.ai-workspace', 'procedural-history-'));
   const realHomedir = os.homedir;
   os.homedir = () => tmpHome;
