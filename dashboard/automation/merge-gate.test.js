@@ -401,3 +401,13 @@ test('legacy policy: repositories without own settings still share one chain per
   await gate.pass({ enabled: true, repos: [{ ...REPO, name: 'A' }, { ...REPO, name: 'B' }] }, {}, io);
   assert.equal(w.chainRuns, 1);
 });
+
+test('CI verdict: only the latest run of each check counts (push run then pull_request run)', () => {
+  const runs = [
+    { app: 'GitHub Actions', name: 'governance', status: 'completed', conclusion: 'failure', startedAt: '2026-11-12T16:32:02Z' },
+    { app: 'GitHub Actions', name: 'governance', status: 'completed', conclusion: 'success', startedAt: '2026-11-12T16:32:15Z' },
+    { app: 'GitHub Actions', name: 'verify', status: 'completed', conclusion: 'success', startedAt: '2026-11-12T16:32:17Z' },
+  ];
+  assert.equal(gate.checksVerdict(runs), 'success');
+  assert.equal(gate.checksVerdict([...runs, { app: 'GitHub Actions', name: 'verify', status: 'completed', conclusion: 'failure', startedAt: '2026-11-12T17:00:00Z' }]), 'failure', 'a newer failure still fails');
+});

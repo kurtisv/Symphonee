@@ -71,8 +71,21 @@ function evaluateDiff({ numstat, status, addedLines }, repo, source) {
 }
 
 // GitHub checks of one commit -> 'success' | 'pending' | 'failure'
-function checksVerdict(checks) {
-  if (!Array.isArray(checks) || !checks.length) return 'pending';
+// Only the LATEST run of each check counts: a check re-run (or the pull_request
+// run that follows a branch push run) supersedes the older result.
+function latestChecks(checks) {
+  const by = new Map();
+  checks.forEach((c, i) => {
+    const k = c.name ? (c.app || '') + '|' + c.name : '#' + i; // unnamed: never merged together
+    const t = Date.parse(c.startedAt || c.completedAt || '') || 0;
+    const prev = by.get(k);
+    if (!prev || t >= prev.t) by.set(k, { c, t });
+  });
+  return [...by.values()].map((x) => x.c);
+}
+function checksVerdict(rawChecks) {
+  if (!Array.isArray(rawChecks) || !rawChecks.length) return 'pending';
+  const checks = latestChecks(rawChecks);
   if (checks.some((c) => c.status === 'completed' && !['success', 'neutral', 'skipped'].includes(c.conclusion))) return 'failure';
   if (checks.some((c) => c.status !== 'completed')) return 'pending';
   return checks.some((c) => c.conclusion === 'success') ? 'success' : 'pending';
@@ -349,7 +362,7 @@ async function step(c, repo, baseSha, state, io) {
       setStatus(c, 'ci-green', 'pas de CI GitHub : la chaine de la porte sur la fusion fait foi', io);
     } else {
       const v = checksVerdict(ck.checks);
-      if (v === 'failure') return refuse(c, repo, ['CI GitHub en echec : ' + ck.checks.filter((x) => x.status === 'completed' && !['success', 'neutral', 'skipped'].includes(x.conclusion)).map((x) => x.name).join(', ')], io);
+      if (v === 'failure') return refuse(c, repo, ['CI GitHub en echec : ' + latestChecks(ck.checks).filter((x) => x.status === 'completed' && !['success', 'neutral', 'skipped'].includes(x.conclusion)).map((x) => x.name).join(', ')], io);
       if (v === 'pending') {
         if (io.now() - c.updatedAt > 12 * 3600000) return refuse(c, repo, ['CI GitHub sans resultat apres 12 h'], io);
         return;
@@ -480,4 +493,4 @@ function prBody(c, repo) {
   return lines.join('\n');
 }
 
-module.exports = { pass, discover, step, inAnyWindow, evaluateDiff, checksVerdict, paceAllows, parseNumstat, parseNameStatus, parseAddedLines, proofReasons, MARK };
+module.exports = { latestChecks, pass, discover, step, inAnyWindow, evaluateDiff, checksVerdict, paceAllows, parseNumstat, parseNameStatus, parseAddedLines, proofReasons, MARK };
