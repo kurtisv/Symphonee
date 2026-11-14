@@ -93,11 +93,53 @@ function cleanupLeftovers(policy) {
     }
   }
 }
+// NUL-separated git output, never trimmed (paths are taken literally).
+function rawSplit(out) { return String(out || '').split('\0').filter(Boolean); }
+// Tracked changes and untracked files of a worktree (both sides of a rename).
+function changedPaths(dir) {
+  const tracked = rawSplit(execFileSync('git', ['diff', '--no-renames', '--name-only', '-z', 'HEAD'], { cwd: dir, encoding: 'utf8' }));
+  const untracked = rawSplit(execFileSync('git', ['ls-files', '-z', '--others', '--exclude-standard'], { cwd: dir, encoding: 'utf8' }));
+  return [...new Set([...tracked, ...untracked])];
+}
 async function runChain(repo, base, sha) {
   return withWorktree(repo, base, async (dir) => {
     try { git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'merge', '--no-ff', '-m', 'Fusion automatique encadree (' + gate.MARK + ') : ' + sha, sha]); }
-    catch (_) { try { git(dir, ['merge', '--abort']); } catch (__) {} return { ok: false, conflict: true, results: [] }; }
+    catch (_) {
+      const allowed = (repo.regeneratePaths || []).map((x) => new RegExp(x));
+      let conflicted = [];
+      try { conflicted = rawSplit(execFileSync('git', ['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: dir, encoding: 'utf8' })); } catch (__) {}
+      const onlyGenerated = (repo.regenerate || []).length && conflicted.length && conflicted.every((f) => allowed.some((rx) => rx.test(f)));
+      if (!onlyGenerated) { try { git(dir, ['merge', '--abort']); } catch (__) {} return { ok: false, conflict: true, results: [] }; }
+      // Only generated documents conflict: take the base side, regeneration below
+      // rebuilds them. Anything unusual (e.g. deleted on one side) is a plain conflict.
+      try {
+        git(dir, ['--literal-pathspecs', 'checkout', '--ours', '--', ...conflicted]);
+        git(dir, ['--literal-pathspecs', 'add', '--', ...conflicted]);
+        git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'commit', '--no-edit']);
+      } catch (__) { try { git(dir, ['merge', '--abort']); } catch (___) {} return { ok: false, conflict: true, results: [] }; }
+    }
     // The exact tree tested: the merge GitHub makes must have this content.
+    // Generated documents (e.g. counts of test files) are recomputed ON the merge
+    // and folded into the merge commit, so they can never conflict between
+    // branches; only the listed paths may change, and the commands may not commit.
+    if ((repo.regenerate || []).length) {
+      const allowed = (repo.regeneratePaths || []).map((x) => new RegExp(x));
+      const head = git(dir, ['rev-parse', 'HEAD']);
+      try {
+        for (const r of repo.regenerate) execFileSync(r.cmd[0], r.cmd.slice(1), { cwd: path.join(dir, r.cwd || ''), stdio: 'pipe', timeout: r.timeoutMs || 300000, windowsHide: true });
+      } catch (e) { return { ok: false, regenError: 'commande en echec : ' + String(e.message || e).split('\n')[0].slice(0, 200), results: [] }; }
+      if (git(dir, ['rev-parse', 'HEAD']) !== head) return { ok: false, regenError: 'une commande de regeneration a modifie l historique', results: [] };
+      const changed = changedPaths(dir);
+      const bad = changed.filter((f) => !allowed.some((rx) => rx.test(f)));
+      if (bad.length) return { ok: false, regenError: 'chemins non autorises modifies : ' + bad.slice(0, 5).join(', '), results: [] };
+      if (changed.length) {
+        git(dir, ['--literal-pathspecs', 'add', '--', ...changed]);
+        git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'commit', '--amend', '--no-edit']);
+        // Only the allowed paths differ from the merge as it was before regeneration.
+        const diff = rawSplit(execFileSync('git', ['diff', '--no-renames', '--name-only', '-z', head, 'HEAD'], { cwd: dir, encoding: 'utf8' }));
+        if (diff.some((f) => !allowed.some((rx) => rx.test(f)))) return { ok: false, regenError: 'le commit regenere touche des chemins non autorises', results: [] };
+      }
+    }
     const tree = git(dir, ['rev-parse', 'HEAD^{tree}']);
     // The tested merge commit itself (kept in the shared object store): a repo
     // without CI pushes exactly this commit, fast-forward only.
@@ -191,6 +233,9 @@ async function dryRun(policy) {
 // Exit explicitly once the work and the Sentry sends are done: a lingering
 // handle (a keep-alive socket, a child's pipe) otherwise kept the process
 // alive for hours, so the job stayed "running" and skipped its 30 min passes.
-main().catch((e) => { log('ERREUR ' + e.stack); process.exitCode = 1; try { fs.unlinkSync(LOCK); } catch (_) {} })
-  .then(() => Promise.allSettled(pendingSends))
-  .then(() => process.exit(process.exitCode || 0));
+if (require.main === module) {
+  main().catch((e) => { log('ERREUR ' + e.stack); process.exitCode = 1; try { fs.unlinkSync(LOCK); } catch (_) {} })
+    .then(() => Promise.allSettled(pendingSends))
+    .then(() => process.exit(process.exitCode || 0));
+}
+module.exports = { runChain, changedPaths };
