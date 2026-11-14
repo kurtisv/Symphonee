@@ -4,7 +4,15 @@
 // the old instance stayed alive without its server and the new one never came
 // (seen twice on 2026-11-13). Instead, a small detached helper waits for the
 // old process, force-stops it if it is still there, then starts the new one.
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
+
+// Creation time of a process as Windows recorded it (ms), or null.
+function osCreationMs(pid) {
+  try {
+    const v = Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', '([DateTimeOffset](Get-Process -Id ' + Number(pid) + ' -ErrorAction Stop).StartTime).ToUnixTimeMilliseconds()'], { encoding: 'utf8', windowsHide: true, timeout: 15000 }).trim());
+    return Number.isFinite(v) ? v : null;
+  } catch (_) { return null; }
+}
 
 // Source of the helper (run with ELECTRON_RUN_AS_NODE). Pure: testable.
 // Identity of the old process = pid + creation time read when the helper
@@ -16,7 +24,7 @@ function helperSource({ pid, birthMs, execPath, args, cwd, waitMs = 8000 }) {
     "const created = () => { try { const v = Number(cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', '([DateTimeOffset](Get-Process -Id ' + pid + ' -ErrorAction Stop).StartTime).ToUnixTimeMilliseconds()'], { encoding: 'utf8', windowsHide: true }).trim()); return Number.isFinite(v) ? v : null; } catch (_) { return null; } };",
     // Creation time given by the old process itself BEFORE it exits (never read after: the pid could be reused).
     'const birth = ' + JSON.stringify(Number.isFinite(birthMs) ? birthMs : null) + ';',
-    'const match = (c) => Math.abs(c - birth) < 5000;',
+    'const match = (c) => Math.abs(c - birth) < 2000;',
     'const alive = () => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };',
     // Unknown identity (lookup failed) counts as STILL THERE: never start a second instance on a guess.
     'const same = () => { if (!alive()) return false; const c = created(); return c === null || birth === null || match(c); };',
@@ -42,7 +50,9 @@ function helperSource({ pid, birthMs, execPath, args, cwd, waitMs = 8000 }) {
 }
 
 function hardRestart(app, { delayMs = 200, waitMs = 8000 } = {}) {
-  const src = helperSource({ pid: process.pid, birthMs: Date.now() - process.uptime() * 1000, execPath: process.execPath, args: process.argv.slice(1), cwd: process.cwd(), waitMs });
+  // Read from Windows by the old process itself before the helper exists (null: unknown,
+  // then the helper never force-stops and only waits for the old process to exit).
+  const src = helperSource({ pid: process.pid, birthMs: osCreationMs(process.pid), execPath: process.execPath, args: process.argv.slice(1), cwd: process.cwd(), waitMs });
   const fallback = () => { try { app.relaunch(); } catch (_) {} app.exit(0); };
   setTimeout(() => {
     let child;
@@ -54,4 +64,4 @@ function hardRestart(app, { delayMs = 200, waitMs = 8000 } = {}) {
     child.once('spawn', () => { child.unref(); app.exit(0); });
   }, delayMs);
 }
-module.exports = { hardRestart, helperSource };
+module.exports = { hardRestart, helperSource, osCreationMs };
