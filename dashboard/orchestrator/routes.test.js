@@ -105,3 +105,49 @@ test('POST /api/orchestrator/spawn persists explainable AUTO routing metadata', 
   assert.equal(task.routingPolicy, 'QUALITY');
   assert.ok(saved > 0, 'AUTO metadata should be persisted immediately');
 });
+
+
+test('GET /api/orchestrator/economy reports unknown usage instead of false savings', () => {
+  const routes = {};
+  const addRoute = (method, url, handler) => { routes[`${method} ${url}`] = handler; };
+  const orch = {
+    tasks: new Map([
+      ['1', { cli: 'claude', prompt: 'cannot measure this usage' }],
+    ]),
+    routingTelemetry: { records: [{ route: 'LOCAL_BRAIN' }] },
+  };
+  const json = (res, payload) => { res.payload = payload; };
+  registerOrchestratorRoutes(addRoute, json, orch, { getConfig: () => ({}), broadcast: () => {}, getUiContext: () => ({}) });
+  const res = {};
+  routes['GET /api/orchestrator/economy']({}, res);
+  assert.equal(res.payload.taskCount, 1);
+  assert.equal(res.payload.unknownUsageTasks, 1);
+  assert.equal(res.payload.localAnswersObserved, 1);
+  assert.equal(res.payload.monetarySavingsUsd, null);
+});
+
+test('POST /api/orchestrator/spawn counts a brain answer that never creates a task', async () => {
+  const routes = {};
+  const addRoute = (method, url, handler) => { routes[`${method} ${url}`] = handler; };
+  const recorded = [];
+  const orch = {
+    brain: { answer: async () => ({ source: 'mind-recall', answer: 'grounded', citedNodeIds: ['node1'], tookMs: 18 }) },
+    routingTelemetry: { recordBrainAnswer: result => recorded.push(result) },
+  };
+  const json = (res, payload, status = 200) => { res.payload = payload; res.status = status; };
+  registerOrchestratorRoutes(addRoute, json, orch, { getConfig: () => ({}), broadcast: () => {}, getUiContext: () => ({}) });
+  const body = JSON.stringify({ prompt: 'Recall one fact' });
+  const req = {
+    on(type, cb) {
+      if (type === 'data') cb(Buffer.from(body));
+      if (type === 'end') cb();
+      return this;
+    },
+  };
+  const res = {};
+  await routes['POST /api/orchestrator/spawn'](req, res);
+  assert.equal(res.status, 200);
+  assert.equal(res.payload.handledLocally, true);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].source, 'mind-recall');
+});
