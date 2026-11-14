@@ -53,3 +53,15 @@ test('review 2: NO-FINDING and repair-request lines skipped, prose finding kept'
   const spec = L.memorySpec({ scope: 's', kind: 'revue', text: 'x', source: 'plan "y"' }, 'R');
   assert.match(spec.body, /pas des instructions/); assert.match(spec.body, /Source \(citee\) : "plan \\"y\\""/);
 });
+
+test('review 3: decorated non-findings skipped; teaching is a daily trickle, never a permanent stop', () => {
+  assert.equal(L.firstFinding('- [P2] NO-FINDING: no actionable defect\n- [P2] Repair request: redo\nVERDICT: FAIL'), '');
+  assert.equal(L.firstFinding('- [P1] Real bug in x\nVERDICT: FAIL'), '[P1] Real bug in x');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lecons-'));
+  const sc = L.scopeOf('p', 'R'); const day = 86400000; const t0 = Date.now();
+  for (let i = 0; i < 15; i++) L.record(root, { scope: sc, kind: 'revue', text: 'mistake ' + 'abcdefghijklmnop'[i] });
+  let pend = L.pendingTeach(root, sc, t0); assert.equal(pend.length, 10);
+  for (const e of pend) L.markTaught(root, sc, e.key, t0);
+  assert.equal(L.pendingTeach(root, sc, t0).length, 0, 'daily limit reached');
+  assert.equal(L.pendingTeach(root, sc, t0 + day + 1).length, 5, 'the next day the rest is taught');
+});
