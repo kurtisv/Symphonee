@@ -89,8 +89,14 @@ function setup({ planVerdicts = ['FAIL', 'PASS'], codeVerdicts = ['FAIL', 'PASS'
   const pilot = new MindAutopilot({ repoRoot: root, orchestrator: orch,
     getUiContext: () => ({ activeRepo: 'demo', activeSpace: '_global' }),
     getRepoPath: () => repo, getRepos: () => ({ demo: repo }), autoTimer: false, id, def });
+  // Never read the developer's real subscription limits in fake-process tests.
+  pilot.readUsage = () => { const now = Date.now(); const reading = { readAt: now, source: 'hermetic fixture',
+    windows: [{ name: '5 h', usedPct: 0, resetsAt: now + 3600000 }] }; return { claude: reading, codex: reading }; };
   return { root, repo, orch, pilot, spawns,
-    cleanup() { pilot.close(); try { gitc(repo, 'worktree', 'prune'); } catch (_) {} fs.rmSync(root, { recursive: true, force: true }); } };
+    cleanup() { pilot.close();
+      // Interrupted fake workers have no OS process, but retain production watchdogs.
+      for (const t of orch.tasks.values()) { clearTimeout(t._timer); clearInterval(t._pollInterval); }
+      try { gitc(repo, 'worktree', 'prune'); } catch (_) {} fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
 async function drive(pilot, maxTicks = 60) {
