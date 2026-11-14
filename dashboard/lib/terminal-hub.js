@@ -16,7 +16,10 @@ const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
 const { atomicWriteSync } = require('../utils/atomic-write');
 const { detectPwsh } = require('./detect-cli');
-const { createAiResume, resumeCommand } = require('./ai-resume');
+const { createAiResume, resumeCommand, lastPromptDir } = require('./ai-resume');
+// Terminal protocol replies (device attributes, cursor reports, focus events)
+// sent automatically by xterm: not the user typing.
+const PROTOCOL_REPLY = /^(\x1b\[[?>]?[\d;]*[cRn]|\x1b\[[IO])+$/;
 
 function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
   const terminals = new Map();   // termId -> { pty, cols, rows, cwd, label }
@@ -27,10 +30,17 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
   // ready: after its first output has settled, at most ~10 s after creation.
   const pendingResume = new Map(); // termId -> cancel(): user input or an AI state change wins
   function cancelResume(termId) { const c = pendingResume.get(termId); if (c) c(); }
-  function scheduleResume(termId, ptyProcess, cli) {
+  // Remember an AI CLI with the folder it was launched in (from the shell prompt).
+  function rememberAi(termId, cli) {
+    const t = terminals.get(termId);
+    aiResume.remember(termId, cli, t ? lastPromptDir(t.outputBuffer) : null);
+  }
+  function scheduleResume(termId, ptyProcess, cli, cwd) {
     let mode = null;
     try { mode = ((getConfig && getConfig()) || {}).Permissions?.mode || null; } catch (_) {}
-    const cmd = resumeCommand(cli, mode);
+    let isDir = false;
+    try { isDir = fs.statSync(cwd).isDirectory(); } catch (_) {}
+    const cmd = isDir ? resumeCommand(cli, mode, cwd) : null;
     if (!cmd) return;
     let done = false, settle = null;
     const stop = () => { done = true; pendingResume.delete(termId); clearTimeout(settle); clearTimeout(cap); try { sub && sub.dispose && sub.dispose(); } catch (_) {} };
@@ -40,7 +50,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
       if (!t || t.pty !== ptyProcess) return; // terminal replaced or gone meanwhile
       try { ptyProcess.write(cmd + '\r'); } catch (_) { return; }
       termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now(), source: 'resume' });
-      aiResume.remember(termId, cli);
+      aiResume.remember(termId, cli, cwd);
       broadcast({ type: 'term-ai-resumed', termId, cli, cmd });
     };
     const sub = ptyProcess.onData(() => { clearTimeout(settle); settle = setTimeout(fire, 1500); });
@@ -172,7 +182,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
 
     broadcast({ type: 'term-started', termId, cwd, isNew: true });
     _handleTerminalCwd(termId, cwd);
-    if (resume) scheduleResume(termId, ptyProcess, resume.cli);
+    if (resume) scheduleResume(termId, ptyProcess, resume.cli, resume.cwd);
     return ptyProcess;
   }
 
@@ -221,7 +231,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
         const termId = msg.termId || 'main';
         switch (msg.type) {
           case 'input': {
-            cancelResume(termId); // the user typed first: never type over it
+            if (!PROTOCOL_REPLY.test(String(msg.data || ''))) cancelResume(termId); // the user typed first: never type over it
             const t = terminals.get(termId);
             if (t) t.pty.write(msg.data || '');
             break;
@@ -266,7 +276,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
             const cli = typeof msg.cli === 'string' ? msg.cli.trim() : '';
             const launched = msg.launched !== false;
             if (!cli || !launched) { termAiMeta.delete(termId); aiResume.forget(termId); }
-            else { termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now() }); aiResume.remember(termId, cli); }
+            else { termAiMeta.set(termId, { cli, launched: true, updatedAt: Date.now() }); rememberAi(termId, cli); }
             break;
           }
         }
@@ -274,7 +284,7 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
     });
   });
 
-  return { broadcast, terminals, termAiMeta, aiResume, createTerminal, killTerminal, wss };
+  return { broadcast, terminals, termAiMeta, aiResume, rememberAi, createTerminal, killTerminal, wss };
 }
 
 module.exports = { createTerminalHub };

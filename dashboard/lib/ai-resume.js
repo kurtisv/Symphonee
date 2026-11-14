@@ -13,10 +13,22 @@ const MAX_AGE_MS = 24 * 3600000;
 const CONTINUE = { claude: 'claude --continue', codex: 'codex resume --last' };
 const YOLO = { claude: '--dangerously-skip-permissions', codex: '--dangerously-bypass-approvals-and-sandbox' };
 
-function resumeCommand(cli, permissionMode) {
+// PowerShell: go back to the folder the CLI was launched in, then continue
+// its last conversation there ("continue" is per folder).
+function resumeCommand(cli, permissionMode, cwd) {
   const base = CONTINUE[cli];
-  if (!base) return null;
-  return permissionMode === 'bypass' && YOLO[cli] ? base + ' ' + YOLO[cli] : base;
+  if (!base || typeof cwd !== 'string' || !cwd) return null;
+  const cmd = permissionMode === 'bypass' && YOLO[cli] ? base + ' ' + YOLO[cli] : base;
+  return "Set-Location -LiteralPath '" + cwd.replace(/'/g, "''") + "'; " + cmd;
+}
+// The folder of the last PowerShell prompt shown in a terminal ("PS C:\x>"),
+// i.e. where the CLI was launched; null when none can be read.
+function lastPromptDir(output) {
+  const text = String(output || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+  let m, dir = null;
+  const rx = /PS ([A-Za-z]:\\[^\r\n<>|"*?]*?)> ?/g;
+  while ((m = rx.exec(text))) dir = m[1];
+  return dir;
 }
 
 function createAiResume({ file, now = () => Date.now(), write }) {
@@ -26,17 +38,23 @@ function createAiResume({ file, now = () => Date.now(), write }) {
   // The plan is what was running when Symphonee stopped: captured once, at start.
   const plan = {};
   for (const [id, e] of Object.entries(live)) {
-    if (e && CONTINUE[e.cli] && Number.isFinite(e.at) && now() - e.at < MAX_AGE_MS) plan[id] = { cli: e.cli, at: e.at };
+    if (e && CONTINUE[e.cli] && typeof e.cwd === 'string' && e.cwd && Number.isFinite(e.at) && now() - e.at < MAX_AGE_MS) plan[id] = { cli: e.cli, cwd: e.cwd, at: e.at };
   }
   live = { ...plan };
   const persist = () => { try { save(file, JSON.stringify(live, null, 2)); } catch (_) {} };
   return {
-    remember(termId, cli) {
+    // cwd: folder the CLI was launched in (unknown: nothing to resume safely).
+    remember(termId, cli, cwd) {
       if (!termId || !CONTINUE[cli]) return this.forget(termId);
       const prev = live[termId];
+      // Folder unreadable now (prompt scrolled out of the buffer): keep what was
+      // remembered for this same CLI, never invent one.
+      if (typeof cwd !== 'string' || !cwd) {
+        if (prev && prev.cli === cli) cwd = prev.cwd; else return;
+      }
       // Refresh the timestamp at most once a minute (detection polls often).
-      if (prev && prev.cli === cli && now() - prev.at < 60000) return;
-      live[termId] = { cli, at: now() }; persist();
+      if (prev && prev.cli === cli && prev.cwd === cwd && now() - prev.at < 60000) return;
+      live[termId] = { cli, cwd, at: now() }; persist();
     },
     forget(termId) { if (termId && live[termId]) { delete live[termId]; persist(); } },
     // One-shot: the entry for this terminal, if any, removed from the plan.
@@ -44,4 +62,4 @@ function createAiResume({ file, now = () => Date.now(), write }) {
     planned() { return { ...plan }; },
   };
 }
-module.exports = { createAiResume, resumeCommand, CONTINUE, MAX_AGE_MS };
+module.exports = { createAiResume, resumeCommand, lastPromptDir, CONTINUE, MAX_AGE_MS };

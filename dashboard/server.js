@@ -755,7 +755,7 @@ function getRepoPath(repoName) {
 const { createUiContextStore } = require('./lib/ui-context');
 const { createTerminalHub } = require('./lib/terminal-hub');
 const _termHub = createTerminalHub({ httpServer: server, repoRoot, getConfig, verifyUpgrade: isRequestAllowed });
-const { broadcast, terminals, termAiMeta, aiResume, createTerminal, killTerminal } = _termHub;
+const { broadcast, terminals, termAiMeta, aiResume, rememberAi, createTerminal, killTerminal } = _termHub;
 
 // Terminal-size ground truth for debugging renderer/PTY desync (the scroll
 // "ghosting" / misplaced-TUI investigation). Compare against `mode con` run
@@ -850,11 +850,12 @@ addRoute('POST', '/api/term/detect-ai', async (req, res) => {
       byTerm[id] = detected;
       if (detected) {
         termAiMeta.set(id, { cli: detected, launched: true, updatedAt: Date.now(), source: 'process-detect' });
-        aiResume.remember(id, detected);
+        rememberAi(id, detected);
       } else {
         const existing = termAiMeta.get(id);
         if (existing && existing.source === 'process-detect') termAiMeta.delete(id);
-        if (tree) aiResume.forget(id); // no AI process under this shell any more (unknown when the snapshot failed)
+        // No AI process under this shell any more; a failed or empty snapshot proves nothing.
+        if (tree && tree.size > 0) aiResume.forget(id);
       }
     }
     return json(res, { ok: true, byTerm });
