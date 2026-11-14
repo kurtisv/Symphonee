@@ -9,6 +9,7 @@ const { spawnSync } = require('child_process');
 const insights = require('./insights');
 const store = require('./store');
 const budget = require('./autopilot-budget');
+const fallback = require('./autopilot-fallback');
 const localBrief = require('./local-brief');
 const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
@@ -368,6 +369,7 @@ class MindAutopilot {
       // Local pre-triage model (LM Studio, loopback only): condenses the
       // backlog's P0/P1 lines before discovery. Hints only, never a verdict.
       localBrief: validLocalBrief(def.localBrief),
+      fallback: fallback.profile(def.fallback),
       // Adaptive task capacity (0..6 per work window) from the real remaining
       // subscription capacity; false turns it off (fixed daily limit again).
       capacity: def.capacity === false ? false : capacity.settings(def.capacity || {}),
@@ -379,7 +381,14 @@ class MindAutopilot {
   inWindow(now = Date.now()) { return inSchedule(this.def.schedule, now); }
   // Only one task runs at a time across all pilots (CPU, provider rate limits).
   blockedByPeer() {
-    return this.peers().find(p => p !== this && p.state.enabled && p.state.active && !p.state.active.waitingStage) || null;
+    return this.peers().find(p => {
+      if (p === this || !p.state || !p.state.active) return false;
+      const a = p.state.active;
+      // A retained handoff may still own a process or a worktree even after
+      // halt disables its pilot. Never free the shared slot on that basis.
+      if (a.handoff) return true;
+      return p.state.enabled && !a.waitingStage;
+    }) || null;
   }
   // Junctions never outlive the run: a kept worktree holds no link to the
   // real node_modules, so deleting it can never reach that folder.
@@ -395,6 +404,10 @@ class MindAutopilot {
   // - stopped by the user: stay stopped; the user archives it explicitly.
   recoverAfterRestart(now = Date.now()) {
     const a = this.state.active;
+    if (a.handoff && ['checking', 'ready', 'dispatched', 'blocked'].includes(a.handoff.status)) {
+      this.state.enabled = false; this.state.error = 'Handoff interrupted: process ownership must be checked before manual recovery';
+      a.handoff.status = 'blocked'; a.handoff.nextAction = 'verify-process-tree-and-worktree'; this.save(); return;
+    }
     if (this.state.enabled && a.waitingStage) {
       this.log('resumed', 'Restart: still waiting for quota before ' + a.waitingStage);
     } else if (this.state.enabled && this.restartStage(a) && (a.restartResumes || 0) < 2) {
@@ -564,7 +577,7 @@ class MindAutopilot {
     const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length || this.profile.deep ? ['verify'] : []), 'code-review', 'repair', 'done'];
     // The capacity shown is at most 2 minutes old (read again when older, between tasks).
     if (this.def.capacity && !a && (!s.capacity || now - s.capacity.at > 120000)) { try { this.capacityDecision(now); } catch (_) {} }
-    return { pilot: this.id, label: this.def.label, profile: this.def.profile, profileLabel: this.profile.label,
+    return { pilot: this.id, updatedAt: s.updatedAt || 0, observedAt: now, origin: 'mind-autopilot', fallbackProfile: this.def.fallback, label: this.def.label, profile: this.def.profile, profileLabel: this.profile.label,
       capacity: this.def.capacity ? (s.capacity || null) : null, capacityEnabled: !!this.def.capacity,
       capacityCosts: (s.capacityLog || []).slice(-10), manualRunUntil: s.manualRunUntil || null,
       verify: this.def.verify.map(v => v.name), protectedPaths: this.def.protectedPaths, linkDirs: this.def.linkDirs, pipeline,
@@ -572,6 +585,7 @@ class MindAutopilot {
       repoPath: s.repoPath, space: s.space, consent: s.consent,
       categories: [...WORK_CATEGORIES], stages: [...STAGES],
       active: a ? { stage: a.stage, waitingStage: a.waitingStage || null, taskId: a.taskId,
+        currentProvider: a.currentProvider || null, handoff: a.handoff || null,
         plan: a.plan, planRevisions: a.planRevisions, repairs: a.repairs, baseSha: a.baseSha,
         worktree: a.worktree, startedAt: a.startedAt || null, interruptedAt: a.interruptedAt || null,
         verify: a.verify ? { running: !!a.verify.running, startedAt: a.verify.startedAt, current: a.verify.current || null,
@@ -587,6 +601,7 @@ class MindAutopilot {
       repos: Object.keys(this.getRepos() || {}) };
   }
   save() {
+    this.state.updatedAt = Math.max(Date.now(), (this.state.updatedAt || 0) + 1);
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = this.file + '.tmp-' + process.pid;
     fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2));
@@ -599,6 +614,10 @@ class MindAutopilot {
     const prev = this.state.active;
     if (!prev) { this.state.error = null; this.save(); return this.snapshot(); }
     if (this.state.enabled) throw new Error('Stop the autopilot before archiving its current task');
+    // A terminal task state is not proof that its complete process tree has
+    // stopped. Retain the handoff and the shared slot until an explicit,
+    // separately verified recovery procedure exists.
+    if (prev.handoff) throw new Error('Retained handoff requires verified process ownership before archiving');
     const current = prev.taskId && this.orch.getTask(prev.taskId);
     if (current && ['running', 'pending', 'queued'].includes(current.state)) {
       throw new Error('Previous task is still running. Stop/cancel it before acknowledging');
@@ -616,6 +635,7 @@ class MindAutopilot {
     return this.snapshot();
   }
   configure({ enabled, goal, repoName, acknowledgeInterrupted = false, allowWorktreeWrites } = {}) {
+    if (enabled && this.state.active?.handoff) throw new Error('Retained handoff requires process ownership verification before re-enabling');
     if (typeof enabled !== 'boolean') throw new Error('enabled must be boolean');
     if (!enabled) return this.stop();
     // A parked stage (no process ran) resumes on reactivation; anything that
@@ -654,6 +674,7 @@ class MindAutopilot {
   // Repair and plan counters are kept, so the limits still hold.
   resume() {
     const a = this.state.active;
+    if (a?.handoff) throw new Error('Retained handoff requires process ownership verification; automatic resume is blocked');
     if (this.state.enabled) throw new Error('This pilot is already running');
     if (a && !a.waitingStage && a.stage === 'discover' && a.lastRaw && !a.plan) {
       // A discovery answer that failed to parse: re-read it with the current
@@ -745,6 +766,7 @@ class MindAutopilot {
     const a = this.state.active;
     if (stage === 'plan-review') return ['Codex independent adversarial PLAN review. READ-ONLY.',
       this.contextPolicy(), RULES, this.guardText(), 'Goal: ' + this.state.goal, 'Plan: ' + JSON.stringify(a.plan),
+      a.planOrigin === 'local-unverified' ? 'This is an UNVERIFIED suggestion by a tool-less local model. Mind references only identify context, not proof. Inspect the current repository and independently reproduce every factual claim; FAIL if any claim cannot be verified.' : '',
       this.qualityPolicy(),
       'Verify EACH evidence item independently. Reject speculative performance claims and cleanup without reference checks.',
       'For performance, verify a reproducible baseline and objective comparison method exist before implementation.',
@@ -833,16 +855,38 @@ class MindAutopilot {
   dispatch(stage, now = Date.now()) {
     const a = this.state.active;
     if (!STAGES.includes(stage)) throw new Error('Invalid stage');
+    const resuming = a.handoff?.status === 'ready' && a.handoff.stage === stage;
+    if (resuming) {
+      now = Date.now();
+      const p = this.def.fallback, health = this.orch.providerHealth;
+      const config = this.orch.getConfig?.() || {};
+      const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
+      const reviewer = readings.codex;
+      const local = p.provider === 'ollama-mind';
+      const u = budget.dailyUsage(this.state, now, this.limits).byProvider[local ? 'ollama-mind' : 'qwen'] || { calls: 0, measuredTokens: 0, reservedTokens: 0 };
+      const providerReady = local ? p.localConsent && stage === 'discover' && this.orch._localDiscoveryReadyAt > now - 30000 && typeof this.orch.spawnLocalDiscovery === 'function' : p.cloudConsent && p.worktreeWritesConsent && health?.isAvailable('qwen') && health?.isAvailable('codex')
+        && health.get('qwen')?.lastSuccess > now - 86400000 && !(health.get('qwen')?.lastFailure > health.get('qwen')?.lastSuccess)
+        && config.OrchestrateCliList?.includes('qwen') && this.orch.canConfineProvider?.('qwen', { readOnly: stage === 'discover' }) === true
+        && capacity.validReading(reviewer, now) && now - reviewer.readAt <= 1800000 && reviewer.windows.every(w => w.resetsAt > now && w.usedPct <= 70);
+      const ready = p.enabled && providerReady
+        && u.calls < p.maxCalls && u.measuredTokens + u.reservedTokens + this.limits.reservedTokensPerCall <= p.tokenCeiling
+        && !this.blockedByPeer() && (!this.def.schedule || this.inWindow(now) || a.manual)
+        && (stage !== 'discover' || this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now)).length < this.limits.dailyDiscoveries)
+        && (stage === 'discover' || (a.handoff.fingerprint === worktreeFingerprint(a.worktree.path)
+          && a.mainFingerprint === worktreeFingerprint(this.state.repoPath, { head: false })));
+      if (!ready) { a.handoff.status = 'blocked'; a.handoff.nextAction = 'handoff-preflight-changed'; throw new Error('Handoff preflight changed; retained worktree requires inspection'); }
+    }
     // No stage starts outside the work window, not even the next stage of a
     // task begun inside it: it waits for the next window.
     // A task started by hand ("Lancer une tache maintenant") runs to its end.
     if (this.def.schedule && !this.inWindow(now) && !(a && a.manual)) return this.parkForWindow(stage, now);
-    const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
+    const cli = resuming ? this.def.fallback.provider : ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
     // cloudTimeoutMs: without it a cloud CLI stage is cut at the task-store
     // default (15 min) whatever stepMinutes says (night profile: 120 min).
     const opts = { from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, cloudTimeoutMs: this.stepMs,
+      requireProcessTreeProof: this.def.fallback.enabled && ['discover', 'implement', 'repair'].includes(stage),
       noFallback: true, noRetry: true, compactContext: true, usageJson: true };
     // Every Claude discovery (including a replan) consumes a discovery slot.
     this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
@@ -855,18 +899,27 @@ class MindAutopilot {
     if (stage === 'discover' && this.state.discoveryTimes.length >= this.limits.dailyDiscoveries) return wait('Daily discovery limit reached');
     if (stage === 'implement' && !this.state.consent?.worktreeWrites) throw new Error('Worktree write consent missing');
     // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
-    const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
+    const held = cli === 'codex' && a.reviewHold && this.state.budgetCalls.find(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
+    const charge = held || budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
+    if (held) { held.stage = stage; held.at = now; a.reviewHold = null; }
     if (!charge) return wait('Daily call or token budget reached');
     if (stage === 'discover') this.state.discoveryTimes.push(now);
     this.save();
     let task;
-    if (stage === 'discover' || stage === 'plan-review') {
+    if (stage === 'discover' && cli === 'ollama-mind') {
+      task = this.orch.spawnLocalDiscovery({ prompt: this.discoveryPrompt(), retrievalQuestion: this.state.goal, cwd: this.state.repoPath, space: this.state.space, timeout: this.stepMs, from: 'mind-autopilot' });
+    } else if (stage === 'discover' || stage === 'plan-review') {
       // Default effort: a 'low' discovery measured 2026-11-11 looked at one
       // signal and gave up (NO_TASK) despite real untested modules.
       task = this.orch.spawnHeadless({ ...opts, cli,
         cwd: this.state.repoPath, autoPermit: false, readOnly: true,
         prompt: repoPin(this.state.repoPath, this.state.repoPath) + '\n\n'
-          + (stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage)) });
+          + (stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage))
+          + (resuming ? '\nHandoff checkpoint: ' + JSON.stringify(a.handoff.checkpoint) : '') });
+    } else if (stage === 'implement' && resuming) {
+      task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path, autoPermit: false, confineWrites: true, expectsRepoChanges: true,
+        prompt: [repoPin(a.worktree.path, this.state.repoPath), 'Resume the approved implementation in this SAME worktree. Preserve existing changes. No commit/push/merge/deploy.',
+          JSON.stringify(a.handoff.checkpoint), this.planVerdictText(), RULES, this.guardText(), this.qualityPolicy(), this.contextPolicy(), this.verifyText()].join('\n\n') });
     } else if (stage === 'implement') {
       let startPoint = null;
       if (this.def.baseRef) {
@@ -907,7 +960,8 @@ class MindAutopilot {
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path,
         autoPermit: false, confineWrites: true, expectsRepoChanges: true, prompt: [
           repoPin(a.worktree.path, this.state.repoPath),
-          'Claude corrective implementer. Only work in this isolated worktree.',
+          cli + ' corrective implementer. Only work in this isolated worktree.',
+          resuming ? 'Handoff checkpoint: ' + JSON.stringify(a.handoff.checkpoint) : '',
           'Approved plan: ' + JSON.stringify(a.plan), this.planVerdictText(), RULES, this.guardText(), this.contextPolicy(), this.verifyText(),
           'Findings to fix (from the reviewer or from the local verification): ' + String(a.review).slice(0, 8000),
           this.qualityPolicy(),
@@ -917,6 +971,9 @@ class MindAutopilot {
     if (!task?.id) throw new Error('No task ID from Orchestrator');
     charge.taskId = task.id;
     a.stage = stage; a.taskId = task.id; a.budgetRef = charge.ref;
+    a.currentProvider = cli;
+    if (resuming) { a.handoff.status = 'dispatched'; a.handoff.taskId = task.id;
+      this.log('handoff', 'claude -> ' + cli + ': quota; same ' + stage + ' stage', { taskId: task.id, cli }); }
     a.waitingStage = null; a.startedAt = now;
     this.log('dispatch', stage + ' -> ' + cli + ' (task ' + task.id + ')', { taskId: task.id, cli });
     this.save();
@@ -959,6 +1016,28 @@ class MindAutopilot {
     const a = this.state.active;
     if (a.stage === 'discover') {
       const plan = parsePlan(raw);
+      if (a.currentProvider === 'ollama-mind') {
+        // This model has no file tools: all its claims are unverified. Never
+        // spend Codex quota until the author is available again and never treat
+        // NO_TASK or malformed output as proof that no useful work exists.
+        const h = a.handoff;
+        const duplicate = plan && plan.decision === 'TASK' && this.state.history.some(item => item.key === taskKey(plan) && item.outcome === 'completed');
+        const refs = a.localContextRefs || [];
+        const projectRefs = a.localProjectRefs || [];
+        const cited = plan && plan.decision === 'TASK' && plan.evidence.every(e => {
+          const found = [...e.matchAll(/\[([A-Z]\d+)\]/g)].map(m => m[1]);
+          return found.length > 0 && found.every(ref => refs.includes(ref)) && found.some(ref => projectRefs.includes(ref));
+        });
+        const usable = plan && plan.decision === 'TASK' && !duplicate && cited;
+        a.localSuggestion = { provider: 'ollama-mind', at: now, status: usable ? 'awaiting-review' : 'inconclusive', refs, duplicate: !!duplicate };
+        a.handoff = null;
+        if (usable) { a.plan = plan; a.stage = 'plan-review'; a.planOrigin = 'local-unverified'; }
+        else { a.plan = null; a.stage = 'discover'; }
+        const snapshot = this.parkForCredit(a, 'Claude usage limit reached', now);
+        if (h && Number.isFinite(h.claudeResetAt) && h.claudeResetAt > now) this.state.nextAt = Math.max(this.state.nextAt, h.claudeResetAt + 120000);
+        this.log('local-suggestion', usable ? 'Local suggestion retained; waiting for Claude before Codex review' : 'Local discovery inconclusive; wait for Claude');
+        this.save(); return snapshot;
+      }
       if (!plan) {
         // Keep the paid answer: "Reprendre" re-parses it instead of paying a new discovery.
         a.lastRaw = String(raw || '').slice(0, 30000);
@@ -1095,6 +1174,62 @@ class MindAutopilot {
     if (a.repairs > this.limits.repairs) return this.complete('verify-failed', why);
     return this.dispatch('repair');
   }
+  async tryQwenHandoff(a, task, now = Date.now()) {
+    if (!this.def.fallback.enabled || fallback.classify(task.error || task.result) !== 'quota') return false;
+    const stage = a.stage;
+    const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
+    const reviewer = readings.codex;
+    const reviewerReady = capacity.validReading(reviewer, now) && now - reviewer.readAt <= 30 * 60000
+      && reviewer.windows.every(w => w.resetsAt > now && w.usedPct <= 70);
+    const local = this.def.fallback.provider === 'ollama-mind';
+    const usage = budget.dailyUsage(this.state, now, this.limits).byProvider[local ? 'ollama-mind' : 'qwen'] || { calls: 0, measuredTokens: 0, reservedTokens: 0 };
+    const health = this.orch.providerHealth;
+    const config = this.orch.getConfig ? this.orch.getConfig() : {};
+    const gate = fallback.eligible(this.def.fallback, { pilot: this.id, stage, provider: task.cli || a.currentProvider || 'claude',
+      error: task.error || task.result, switches: a.handoff && a.handoff.stage === stage ? 1 : 0,
+      qwenReady: local ? await this.orch.localDiscoveryReady?.() === true : !!health?.isAvailable('qwen') && health.get('qwen')?.lastSuccess > now - 86400000
+        && !(health.get('qwen')?.lastFailure > health.get('qwen')?.lastSuccess),
+      reviewerReady: reviewerReady && !!health?.isAvailable('codex'), executionAllowed: local ? typeof this.orch.spawnLocalDiscovery === 'function' : Array.isArray(config.OrchestrateCliList) && config.OrchestrateCliList.includes('qwen'),
+      calls: usage.calls, chargedTokens: usage.measuredTokens + usage.reservedTokens, reservation: this.limits.reservedTokensPerCall });
+    if (!gate.ok) { this.log('fallback-blocked', gate.reason); return false; }
+    if (!local && this.orch.canConfineProvider?.('qwen', { readOnly: stage === 'discover' }) !== true) {
+      this.log('fallback-blocked', 'qwen-confinement-not-verified'); return false;
+    }
+    const remaining = budget.dailyUsage(this.state, now, this.limits);
+    if (remaining.remainingCalls < (local ? 1 : 2) || remaining.remainingTokenBudget < (local ? 1 : 2) * this.limits.reservedTokensPerCall) {
+      this.log('fallback-blocked', 'author-and-independent-review-reservation-required'); return false;
+    }
+    if (a.handoff?.sourceTaskId === task.id) return true;
+    a.handoff = { from: 'claude', to: local ? 'ollama-mind' : 'qwen', reason: 'quota', at: now, stage, sourceTaskId: task.id, claudeResetAt: creditResetAt(String(task.error || task.result || ''), now),
+      status: 'checking', nextAction: 'prove-process-termination', quota: gate.quota };
+    this.save();
+    const stop = reason => { a.handoff.status = 'blocked'; a.handoff.nextAction = reason; this.state.enabled = false;
+      this.state.error = reason; this.log('fallback-blocked', reason); this.save(); return true; };
+    let proof;
+    try { proof = await this.orch.ensureTaskProcessTerminated?.(task.id); } catch (_) { return stop('process-tree-verification-failed'); }
+    if (!proof || proof.proven !== true) return stop('process-tree-termination-unproven');
+    if (this.state.active !== a || !this.state.enabled) return true;
+    if (this.blockedByPeer()) return stop('another-pilot-owns-intensive-slot');
+    if (stage !== 'discover') {
+      if (!a.worktree?.path || !a.baseSha || !a.plan || !a.planVerdict) return stop('missing-approved-handoff-state');
+      if (repoTopLevel(a.worktree.path) === this.state.repoPath || !repoTopLevel(a.worktree.path)) return stop('worktree-isolation-failed');
+      if (a.mainFingerprint !== worktreeFingerprint(this.state.repoPath, { head: false })) return stop('main-checkout-changed');
+      const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
+      if (hits.length || guard.diffLint(a.worktree.path, a.baseSha).length) return stop('handoff-security-or-path-violation');
+      a.handoff.fingerprint = worktreeFingerprint(a.worktree.path);
+      a.handoff.worktree = a.worktree.path; a.handoff.baseSha = a.baseSha;
+    }
+    a.handoff.checkpoint = fallback.checkpoint(a, stage === 'discover' ? [] : guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }));
+    a.handoff.termination = proof; a.handoff.status = 'ready'; a.handoff.nextAction = 'resume-same-stage';
+    if (!local) {
+      const review = budget.reserveCall(this.state, { cli: 'codex', stage: 'review-hold', at: now, ref: crypto.randomUUID() }, this.limits);
+      if (!review) return stop('reviewer-reservation-failed');
+      a.reviewHold = review.ref;
+    }
+    this.save();
+    this.dispatch(stage, now);
+    return true;
+  }
   async tick(now = Date.now()) {
     if (this.busy || !this.state.enabled) return this.snapshot();
     this.busy = true;
@@ -1173,7 +1308,19 @@ class MindAutopilot {
       } else {
         const a = this.state.active;
         if (a.waitingStage) {
-          if (now < this.state.nextAt || !budget.canDispatch(this.state, now, this.limits)) return this.snapshot();
+          // A parked stage is another launch, including local verification.
+          // Wait while any peer retains a potentially active handoff.
+          if (this.blockedByPeer()) return this.snapshot();
+          const heldReview = ['plan-review', 'code-review'].includes(a.waitingStage) && a.reviewHold
+            && this.state.budgetCalls.some(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
+          if (now < this.state.nextAt || (!heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
+          if (a.localSuggestion) {
+            const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
+            if (!fallback.localResumeReady(readings, now, a.localSuggestion.at) || !this.orch.providerHealth?.isAvailable('codex')) {
+              this.state.nextAt = now + 5 * 60000; this.save(); return this.snapshot();
+            }
+            a.localSuggestion = null;
+          }
           a.parkReason = null;
           if (a.waitingStage === 'verify') { a.waitingStage = null; this.startVerify(); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
@@ -1192,11 +1339,21 @@ class MindAutopilot {
           throw new Error('Stage timed out: ' + a.stage);
         }
         if (t.state === 'completed') {
+          if (a.currentProvider === 'ollama-mind') {
+            const transmitted = t.execution?.mindContext?.transmitted || [];
+            a.localContextRefs = transmitted.map(x => x.ref).filter(x => /^[A-Z]\d+$/.test(x));
+            a.localProjectRefs = transmitted.filter(x => x.kind && x.kind !== 'skill').map(x => x.ref).filter(x => /^[A-Z]\d+$/.test(x));
+          }
           budget.settleCall(this.state, a.budgetRef, t);
           a.budgetRef = null; this.save();
           this.advance(t.result, now);
         } else if (!['running', 'pending', 'queued'].includes(t.state)) {
           budget.settleCall(this.state, a.budgetRef, t);
+          if (a.handoff && (t.cli === 'qwen' || a.currentProvider === 'qwen' || a.currentProvider === 'ollama-mind')) {
+            a.handoff.status = 'blocked'; a.handoff.nextAction = 'inspect-qwen-failure';
+            throw new Error('Qwen fallback failed; no automatic switch back to Claude');
+          }
+          if (await this.tryQwenHandoff(a, t, now)) return this.snapshot();
           if (isCreditLimit(t.error || t.result)) return this.parkForCredit(a, String(t.error || t.result || t.state), now);
           throw new Error('Stage ' + a.stage + ' failed: ' + (t.error || t.state));
         }
@@ -1248,6 +1405,17 @@ function mountMindAutopilot(addRoute, json, deps) {
   };
   addRoute('GET', '/api/mind/autopilot', route((p) => ({ ...p.snapshot(), pilots: list() })));
   addRoute('POST', '/api/mind/autopilot/configure', route((p, body) => p.configure(body)));
+  addRoute('POST', '/api/mind/autopilot/fallback', route((p, body) => {
+    if (!['default', 'gas-saver'].includes(p.id)) throw new Error('Fallback is only available for default and gas-saver');
+    if (p.state.enabled || p.state.active) throw new Error('Stop and archive this pilot before changing fallback permissions');
+    const settings = fallback.profile(body.fallback);
+    if (settings.enabled && (!settings.maxCalls || !settings.tokenCeiling || (settings.provider === 'ollama-mind' ? !settings.localConsent : !settings.cloudConsent || !settings.worktreeWritesConsent))) throw new Error('Qwen provider consent and positive ceilings are required');
+    const all = readDefs(); all[p.id] = { ...p.def, fallback: settings };
+    fs.mkdirSync(path.dirname(defsFile), { recursive: true });
+    const tmp = defsFile + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify({ pilots: all }, null, 2)); fs.renameSync(tmp, defsFile);
+    p.applyDefinition(all[p.id]); p.save(); return p.snapshot();
+  }));
   addRoute('POST', '/api/mind/autopilot/tick', route((p) => p.tick()));
   addRoute('POST', '/api/mind/autopilot/run-now', route((p) => p.runNow()));
   addRoute('POST', '/api/mind/autopilot/stop', route((p) => p.stop()));
@@ -1263,7 +1431,7 @@ function mountMindAutopilot(addRoute, json, deps) {
       if (!PILOT_ID.test(id)) throw new Error('id must match ' + PILOT_ID);
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
-        schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null,
+        schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null, fallback: body.fallback || {},
         stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');

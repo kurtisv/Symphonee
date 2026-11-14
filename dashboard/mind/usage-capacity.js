@@ -245,7 +245,8 @@ const DEFAULT_PATHS = {
 function readAll(repoRoot, rawCfg, now = Date.now()) {
   const cfg = settings(rawCfg);
   return { claude: cfg.sources.claudeSnapshot ? readClaude(DEFAULT_PATHS.claudeSnapshot(repoRoot)) : { error: 'source desactivee' },
-    codex: cfg.sources.codexSessions ? readCodex(DEFAULT_PATHS.codexSessions(), now) : { error: 'source desactivee' } };
+    codex: cfg.sources.codexSessions ? readCodex(DEFAULT_PATHS.codexSessions(), now) : { error: 'source desactivee' },
+    qwen: { status: 'unknown', remaining: null, readAt: null, source: 'no-reliable-qwen-reader', error: 'quota Qwen inconnu' } };
 }
 
 // Percent used per live window, { name: { usedPct, resetsAt } } (before/after a task).

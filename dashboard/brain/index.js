@@ -45,6 +45,7 @@ const selfIterateModule = require('./self-iterate');
 const perfModule = require('./perf');
 const ollamaSetup = require('../lib/ollama-setup');
 const ollamaHealth = require('../lib/ollama-health');
+const { createLocalActivity } = require('./local-activity');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -59,6 +60,8 @@ function readBody(req) {
 
 function mountBrain(addRoute, json, ctx) {
   const { repoRoot, broadcast, getUiContext } = ctx;
+  const localActivity = createLocalActivity({ broadcast });
+  addRoute('GET', '/api/symphonee/activity', (_req, res) => json(res, localActivity.snapshot()));
   const brainStatusStop = ollamaHealth.health.subscribe((status) => {
     if (!broadcast) return;
     const labels = { READY: 'Brain: Ready', STARTING: 'Brain: Starting', DEGRADED: 'Brain: Degraded - fallback active', UNAVAILABLE: 'Brain: Unavailable', UNKNOWN: 'Brain: Starting' };
@@ -240,10 +243,14 @@ function mountBrain(addRoute, json, ctx) {
     // reasoning model. Symphonee's own voice; the active CLI stays one button
     // away. Escalates only when memory genuinely has nothing.
     if (body.fast === true) {
-      const local = await localAnswerModule.localAnswer({
-        repoRoot, space, question: input,
-        activeRepoPath: ui && ui.activeRepoPath, activeRepo: ui && ui.activeRepo,
-      });
+      const endActivity = localActivity.begin();
+      let local;
+      try {
+        local = await localAnswerModule.localAnswer({
+          repoRoot, space, question: input,
+          activeRepoPath: ui && ui.activeRepoPath, activeRepo: ui && ui.activeRepo,
+        });
+      } finally { endActivity(); }
       if (local.grounded) {
         if (broadcast) broadcast({ type: 'symphonee-ask', payload: { source: 'local', persona: surface.userType, fast: true } });
         return json(res, {
@@ -296,6 +303,7 @@ function mountBrain(addRoute, json, ctx) {
       'X-Accel-Buffering': 'no',
     });
     const send = (ev) => { try { res.write('data: ' + JSON.stringify(ev) + '\n\n'); } catch (_) { /* client gone */ } };
+    const endActivity = localActivity.begin();
     try {
       const result = await localAnswerModule.deepAnswer({
         repoRoot, space, question: input,
@@ -311,7 +319,7 @@ function mountBrain(addRoute, json, ctx) {
       }
     } catch (e) {
       send({ type: 'escalate', reason: 'error', error: e.message });
-    }
+    } finally { endActivity(); }
     try { res.end(); } catch (_) {}
   });
 

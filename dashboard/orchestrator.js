@@ -103,6 +103,7 @@ Object.assign(
   require('./orchestrator/spawn-jules'),    // Google Jules cloud remote worker
   require('./orchestrator/spawn-gemini-api'), // Google Gemini Developer API remote worker
   require('./orchestrator/spawn-lmstudio'),   // direct local LM Studio worker + local provider prep
+  require('./orchestrator/spawn-local-discovery'), // bounded local Qwen/Mind suggestion
 );
 
 // ── Route mounting ───────────────────────────────────────────────────────────

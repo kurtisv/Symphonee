@@ -6,6 +6,9 @@
 import { $, state } from './core.js';
 import { escapeHtml } from './helpers.js';
 import { makeLatest } from './latest.js';
+import { createSnapshotStore } from './autopilot-state.js';
+const snapshots = createSnapshotStore();
+const statusRequests = makeLatest();
 
   const STATUS = {
     disabled:    { label: 'Desactive',  color: 'var(--subtext0)', hint: 'Le pilote ne lance rien.' },
@@ -46,17 +49,40 @@ import { makeLatest } from './latest.js';
   }
 
   async function load() {
+    if (ap.loadingPilot === ap.pilot) return;
+    const current = statusRequests.start();
+    const pilot = ap.pilot;
+    ap.loadingPilot = pilot;
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 12000);
     // Overview of every unattended loop (autopilots, PleinSens loop, merge gate, watchdog).
     fetch('/api/automation/loops', { cache: 'no-store' }).then(r => r.ok ? r.json() : null)
-      .then(d => { if (d && d.loops) { ap.loops = d; paint(); } }).catch(() => {});
+      .then(d => { if (current()) { ap.loopsError = !(d && d.loops); if (!ap.loopsError) ap.loops = d; paint(); } }).catch(() => { if (current()) { ap.loopsError = true; paint(); } });
     if (ap.loopView) loadLoopDetail();
     loadClair();
-    try { ap.snap = await call('/api/mind/autopilot'); ap.pilots = ap.snap.pilots || ap.pilots; ap.message = ap.message || ''; }
+    try {
+      const results = await Promise.all(['default', 'gas-saver'].map(async id => {
+        const r = await fetch('/api/mind/autopilot?pilot=' + encodeURIComponent(id), { cache: 'no-store', signal: controller.signal });
+        if (!r.ok) { if (id === pilot) throw new Error('HTTP ' + r.status); return null; }
+        return { ...(await r.json()), pilot: id };
+      }));
+      if (!current() || pilot !== ap.pilot) return;
+      let acceptedCurrent = false;
+      for (const snapshot of results.filter(Boolean)) {
+        const accepted = snapshots.accept(snapshot);
+        if (snapshot.pilot === pilot) acceptedCurrent = accepted;
+      }
+      ap.snap = snapshots.get(pilot);
+      if (acceptedCurrent) { ap.lastRead = Date.now(); ap.readError = false; }
+      ap.pilots = ap.snap.pilots || ap.pilots;
+    }
     catch (e) {
-      // A remembered pilot that no longer exists falls back to the main loop.
-      if (ap.pilot !== 'default') { ap.pilot = 'default'; return load(); }
+      // Keep the selected pilot and its last known snapshot visible on failure.
+      if (!current() || pilot !== ap.pilot) return;
+      ap.readError = true;
       ap.message = 'Lecture impossible : ' + e.message;
     }
+    finally { clearTimeout(deadline); if (ap.loadingPilot === pilot) ap.loadingPilot = null; }
     paint();
   }
 
@@ -82,9 +108,10 @@ import { makeLatest } from './latest.js';
 
   async function act(label, fn) {
     if (ap.busy) return;
+    statusRequests.invalidate();
     ap.busy = true; ap.message = label + '...'; paint();
-    try { ap.snap = await fn(); if (ap.snap.pilots) ap.pilots = ap.snap.pilots; ap.message = label + ' : fait.'; }
-    catch (e) { if (e.state) ap.snap = e.state; ap.message = label + ' : ' + e.message; }
+    try { const result = await fn(); if (snapshots.accept({ ...result, pilot: ap.pilot })) ap.snap = result; if (ap.snap.pilots) ap.pilots = ap.snap.pilots; ap.message = label + ' : fait.'; }
+    catch (e) { if (e.state && snapshots.accept({ ...e.state, pilot: ap.pilot })) ap.snap = e.state; ap.message = label + ' : ' + e.message; }
     finally { ap.busy = false; paint(); }
   }
 
@@ -97,12 +124,24 @@ import { makeLatest } from './latest.js';
       if (consent) body.allowWorktreeWrites = true;
       return act('Activation', () => call('/api/mind/autopilot/configure', body));
     },
-    stop() { return act('Arret', () => call('/api/mind/autopilot/stop', {})); },
+    stop() { if (window.confirm('Arreter ce pilote et sa tache en cours ?')) return act('Arret', () => call('/api/mind/autopilot/stop', {})); },
     tick() { return act('Verification', () => call('/api/mind/autopilot/tick', {})); },
     runNow() { return act('Lancement manuel', () => call('/api/mind/autopilot/run-now', {})); },
     acknowledge() { return act('Archivage', () => call('/api/mind/autopilot/acknowledge', {})); },
     resume() { return act('Reprise', () => call('/api/mind/autopilot/resume', {})); },
     refresh() { return load(); },
+    filterHistory(value) { ap.historyFilter = value; paint(); },
+    advanced(open) { ap.advanced = open; },
+    rememberFallback() {
+      ap.draftFallback = { enabled: !!$('apFallbackEnabled')?.checked,
+        provider: $('apFallbackProvider')?.value || 'qwen', localConsent: !!$('apQwenLocal')?.checked,
+        cloudConsent: !!$('apQwenCloud')?.checked, worktreeWritesConsent: !!$('apQwenWrites')?.checked,
+        maxCalls: Number($('apQwenCalls')?.value), tokenCeiling: Number($('apQwenTokens')?.value) };
+    },
+    saveFallback() {
+      this.rememberFallback();
+      return act('Configuration de la releve', () => call('/api/mind/autopilot/fallback', { fallback: ap.draftFallback }));
+    },
     showLoop(id) {
       if (ap.busy) return;
       ap.loopView = id; ap.loopDetail = null; ap.message = ''; ap.clair = null;
@@ -126,6 +165,7 @@ import { makeLatest } from './latest.js';
       if (ap.loopView) { detailRequests.invalidate(); ap.loopView = null; ap.loopDetail = null; ap.clair = null; if (id === ap.pilot) { paint(); loadClair(); return; } }
       if (id === ap.pilot) return;
       ap.pilot = id; ap.snap = null; ap.message = ''; ap.clair = null; ap.draftGoal = null; ap.draftRepo = null; ap.draftConsent = false;
+      ap.draftFallback = null;
       try { localStorage.setItem('mind-autopilot-pilot', id); } catch (_) {}
       paint(); return load();
     },
@@ -136,6 +176,7 @@ import { makeLatest } from './latest.js';
     },
     onUpdate(snapshot) {
       if (!snapshot) return;
+      if (!snapshots.accept({ ...snapshot, pilot: snapshot.pilot || 'default' })) return;
       // Live updates of another loop only refresh its chip in the selector.
       if ((snapshot.pilot || 'default') !== ap.pilot) {
         const row = (ap.pilots || []).find(p => p.pilot === snapshot.pilot);
@@ -143,6 +184,8 @@ import { makeLatest } from './latest.js';
         return;
       }
       ap.snap = snapshot;
+      statusRequests.invalidate();
+      ap.lastRead = Date.now(); ap.readError = false;
       if (state.view === 'autopilot') paint();
     },
   };
@@ -150,13 +193,30 @@ import { makeLatest } from './latest.js';
 
   function pipeline(s) {
     const a = s.active;
-    const order = s.pipeline || ['discover', 'plan-review', 'implement', 'code-review', 'repair', 'done'];
-    const current = a ? (a.waitingStage || a.stage) : (s.history[0] && s.history[0].outcome === 'completed' ? 'done' : null);
+    const order = ['discover', 'plan-review', 'implement', 'verify', 'code-review', 'done'];
+    const rawStage = a ? (a.waitingStage || a.stage) : ((s.history || [])[0]?.outcome === 'completed' ? 'done' : null);
+    const current = rawStage === 'repair' ? 'implement' : rawStage;
     const idx = order.indexOf(current);
     return '<div class="ap-pipe">' + order.map((st, i) => {
       const cls = st === current ? 'ap-step ap-now' : (idx > i && current !== 'done' ? 'ap-step ap-past' : (current === 'done' ? 'ap-step ap-past' : 'ap-step'));
-      return '<span class="' + cls + '">' + esc(STAGE_LABELS[st]) + '</span>';
+      const agent = st === 'verify' ? 'verification locale' : st === current && a ? a.currentProvider || 'agent inconnu' : '';
+      return '<span class="' + cls + '"' + (st === current ? ' aria-current="step"' : '') + '>' + esc(STAGE_LABELS[st]) + (agent ? ' - ' + esc(agent) : '') + '</span>';
     }).join('<span class="ap-arrow">></span>') + '</div>';
+  }
+
+  function pilotCard(id) {
+    const p = snapshots.get(id) || (ap.pilots || []).find(x => x.pilot === id);
+    const a = p && p.active;
+    const stage = a && (a.waitingStage || a.stage);
+    const elapsed = a && a.startedAt ? Math.max(0, Math.floor((Date.now() - a.startedAt) / 60000)) + ' min' : '-';
+    return '<article class="ap-card"><h2>' + (id === 'default' ? 'Principale' : 'Gas Saver') + '</h2>'
+      + '<p>' + esc(p ? (STATUS[p.status] || {}).label || p.status : 'Etat non encore recu') + '</p>'
+      + '<dl><dt>Depot</dt><dd>' + esc(p?.repoName || 'Inconnu') + '</dd>'
+      + '<dt>Tache</dt><dd>' + esc(a?.plan?.title || (a ? 'Decouverte' : 'Aucune tache en cours')) + '</dd>'
+      + '<dt>Agent actuel / etape</dt><dd>' + esc(a?.currentProvider || 'Aucun agent rapporte') + ' / ' + esc(STAGE_LABELS[stage] || stage || '-') + '</dd>'
+      + '<dt>Duree</dt><dd>' + esc(elapsed) + '</dd><dt>Prochain passage</dt><dd>' + esc(when(p?.nextAt)) + '</dd>'
+      + '<dt>Dernier resultat local</dt><dd>' + esc(OUTCOME_LABELS[p?.history?.[0]?.outcome] || p?.history?.[0]?.outcome || 'Aucun resultat rapporte') + '</dd></dl>'
+      + '<button class="tab-bar-btn" data-pilot="' + id + '" onclick="MindAutopilot.select(this.dataset.pilot)" aria-pressed="' + (id === ap.pilot) + '">Voir ce pilote</button></article>';
   }
 
   const LOOP_COLOR = { working: 'var(--accent)', resting: 'var(--yellow)', stopped: 'var(--subtext0)', error: 'var(--red)' };
@@ -167,14 +227,14 @@ import { makeLatest } from './latest.js';
       const click = l.pilot ? ' style="cursor:pointer;" data-pilot="' + esc(l.pilot) + '" onclick="MindAutopilot.select(this.dataset.pilot)" title="Voir le detail"'
         : LOOP_DETAIL.includes(l.id) ? ' style="cursor:pointer;" data-loop="' + esc(l.id) + '" onclick="MindAutopilot.showLoop(this.dataset.loop)" title="Voir le detail"' : '';
       const shown = ap.loopView ? l.id === ap.loopView : (l.pilot && l.pilot === ap.pilot);
-      return '<tr' + click + '><td><span class="ap-dot" style="background:' + (LOOP_COLOR[l.status] || 'var(--subtext0)') + ';margin-right:6px;"></span><b>' + esc(l.label) + '</b>' + (shown ? ' <span class="ap-tag">affichee</span>' : '') + '</td>' +
+      return '<tr' + click + (click ? ' role="button" tabindex="0" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();this.click();}"' : '') + '><td><span class="ap-dot" style="background:' + (LOOP_COLOR[l.status] || 'var(--subtext0)') + ';margin-right:6px;"></span><b>' + esc(l.label) + '</b>' + (shown ? ' <span class="ap-tag">affichee</span>' : '') + '</td>' +
         '<td>' + esc(l.window) + '</td><td><b>' + esc(l.statusLabel) + '</b></td><td>' + esc(l.detail) + '</td></tr>';
     };
     return '<div class="ap-card"><div class="ap-title">Les boucles automatiques</div>' +
       '<table class="ap-table"><thead><tr><th>Boucle</th><th>Plage</th><th>Etat</th><th>Maintenant</th></tr></thead><tbody>' +
       d.loops.map(l => row(l)).join('') + '</tbody></table>' +
       '<div class="ap-title" style="margin-top:12px;">Services</div><table class="ap-table"><tbody>' + (d.services || []).map(l => row(l, true)).join('') + '</tbody></table>' +
-      '<div class="ap-note">Mis a jour ' + esc(when(d.now)) + '. Une boucle au repos attend sa plage horaire : c est normal. Cliquez sur une ligne pour voir ce qu elle a fait.</div></div>';
+      '<div class="ap-note">' + (ap.loopsError || !d.now || Date.now() - d.now > 45000 ? 'Etat des services perime ou sans horodatage' : 'Lecture des services : ' + esc(when(d.now))) + '. Une boucle au repos attend sa plage horaire. Selectionnez une ligne pour voir son detail.</div></div>';
   }
 
   const LOOP_DETAIL = ['pleinsens', 'porte-fusion', 'veille'];
@@ -328,15 +388,18 @@ import { makeLatest } from './latest.js';
     if (state.view !== 'autopilot') return;
     const main = $('mindMain'); if (!main) return;
     const s = ap.snap;
-    if (!s) { main.innerHTML = '<div class="ap-wrap">Chargement du pilote...</div>'; return; }
+    if (!s) { main.innerHTML = '<div class="ap-wrap" role="status">' + esc(ap.message || 'Chargement du pilote...') + '<button class="tab-bar-btn" onclick="MindAutopilot.refresh()">Reessayer</button></div>'; return; }
     const st = STATUS[s.status] || STATUS.disabled;
     const b = s.budget || {}; const L = s.limits || {};
     const a = s.active;
+    const interventions = ['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && (['error', 'interrupted'].includes(p.status) || p.active?.handoff?.status === 'blocked')).length;
     const goalVal = ap.draftGoal != null ? ap.draftGoal : (s.goal || '');
     const repoVal = ap.draftRepo != null ? ap.draftRepo : (s.repoName || '');
     const consentKnown = !!(s.consent && s.consent.worktreeWrites);
     const repos = (s.repos || []);
     const locked = s.enabled || ap.busy;
+    const fallback = ap.draftFallback || s.fallbackProfile || {};
+    const fallbackLocked = locked || !!s.active;
 
     const providers = Object.entries(b.byProvider || {});
     const providerRows = providers.length ? providers.map(([name, v]) =>
@@ -344,7 +407,7 @@ import { makeLatest } from './latest.js';
       '</td><td>' + (v.unmeteredCalls ? '~ ' + esc(fmt(v.reservedTokens)) + ' <span class="ap-tag">estimation</span>' : '0') + '</td><td>' + esc(fmt(v.cacheReadTokens || 0)) + '</td></tr>').join('')
       : '<tr><td colspan="5" class="ap-muted">Aucun appel aujourd\'hui.</td></tr>';
 
-    const history = (s.history || []).map(h =>
+    const history = (s.history || []).filter(h => !ap.historyFilter || h.outcome === ap.historyFilter).map(h =>
       '<tr><td>' + esc(when(h.at)) + '</td><td>' + esc(CATEGORY_LABELS[h.category] || h.category || '-') + '</td><td>' + esc(h.title || '-') +
       '</td><td>' + esc(OUTCOME_LABELS[h.outcome] || h.outcome) + '</td><td class="ap-path">' +
       (h.worktree ? esc(h.worktree.path) + '<br><span class="ap-muted">branche ' + esc(h.worktree.branch || '-') + '</span>' : '-') + '</td></tr>').join('')
@@ -356,6 +419,9 @@ import { makeLatest } from './latest.js';
     main.innerHTML = `
       <style>
         .ap-wrap { display:flex; flex-direction:column; gap:14px; }
+        .ap-wrap :focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+        .ap-wrap summary { cursor:pointer; padding:12px; }
+        .ap-card { overflow-x:auto; }
         .ap-card { background:var(--mantle); border:1px solid var(--surface1); border-radius:6px; padding:12px; }
         .ap-title { font-size:11px; font-weight:600; color:var(--subtext0); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px; }
         .ap-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; }
@@ -393,6 +459,13 @@ import { makeLatest } from './latest.js';
         .ap-err { color:var(--red); font-size:12px; white-space:pre-wrap; }
       </style>
       <div class="ap-wrap">
+        <h1 style="font-size:22px;">Centre de controle des autopilotes</h1>
+        <p>${interventions} pilote(s) a examiner : erreurs, interruptions ou releves bloquees.</p>
+        <p>${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.enabled).length} pilotes actifs | ${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.status === 'running').length} taches en cours | ${['default', 'gas-saver'].reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
+        <p role="status" aria-live="polite">${ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45000 ? 'Etat perime ou inaccessible' : 'Derniere lecture fiable : ' + esc(when(ap.lastRead))}</p>
+        <div class="ap-grid" aria-label="Pilotes">
+          ${['default', 'gas-saver'].map(pilotCard).join('')}
+        </div>
         ${overview()}
         ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ''}
         ${selector()}
@@ -410,6 +483,8 @@ import { makeLatest } from './latest.js';
           </div>
           <div class="ap-note">Depot : <b>${esc(s.repoName || '-')}</b> <span class="ap-path">${esc(s.repoPath || '')}</span> | Objectif : ${esc(s.goal || '-')}</div>
           ${pipeline(s)}
+          ${a?.handoff ? '<p role="status">Claude vers Qwen : ' + esc(({ checking: 'verification', blocked: 'bloque', ready: 'pret', dispatched: 'transmis' })[a.handoff.status] || a.handoff.status) + ' | ' + esc(a.handoff.reason) + ' | ' + esc(when(a.handoff.at)) + '. Motif initial : limite Claude. Ce transfert ne mesure pas le quota Claude actuel.</p>' : ''}
+          ${s.fallbackProfile?.enabled ? '<p>Quota fournisseur Qwen : inconnu. Le plafond de reservation interne ne mesure pas le quota cloud disponible.</p>' : ''}
           ${verifyLine(s)}
           ${a ? '<div class="ap-note">Tache : <b>' + esc(a.plan ? '[' + (CATEGORY_LABELS[a.plan.category] || a.plan.category) + '] ' + a.plan.title : '(decouverte en cours)') + '</b> | revisions du plan ' + esc(a.planRevisions || 0) + '/' + esc(L.planRevisions) + ' | reparations ' + esc(a.repairs || 0) + '/' + esc(L.repairs) + (a.worktree ? ' | worktree <span class="ap-path">' + esc(a.worktree.path) + '</span>' : '') + (a.taskId ? ' | tache Orchestrator ' + esc(a.taskId) : '') + '</div>' : ''}
           ${a && a.parkReason === 'credit' ? '<div class="ap-note" style="color:var(--yellow);">Limite de credit du fournisseur atteinte (' + esc(a.creditHits) + ' fois) : la tache est en pause, rien n\'est perdu. Reprise prevue : ' + esc(when(s.nextAt)) + '.</div>' : ''}
@@ -421,7 +496,21 @@ import { makeLatest } from './latest.js';
           <div class="ap-msg" id="apMsg">${esc(ap.message)}</div>
         </div>
 
-        <div class="ap-grid">
+        <details ${ap.advanced ? 'open' : ''} ontoggle="MindAutopilot.advanced(this.open)"><summary>Parametres avances : permissions, quotas et configuration</summary><div class="ap-grid">
+          <section class="ap-card ap-form" aria-labelledby="apFallbackTitle">
+            <h2 id="apFallbackTitle">Releve Claude vers Qwen</h2>
+            <p>Opt-in par pilote. Arretez et archivez toute tache active avant modification. Le relecteur reste Codex.</p>
+            <label><input id="apFallbackEnabled" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.enabled ? 'checked' : ''} ${fallbackLocked ? 'disabled' : ''}> Activer la releve sur quota Claude</label>
+            <label>Fournisseur <select id="apFallbackProvider" onchange="MindAutopilot.rememberFallback()" ${fallbackLocked ? 'disabled' : ''}><option value="ollama-mind" ${fallback.provider === 'ollama-mind' ? 'selected' : ''}>Qwen local + Mind : suggestions seulement</option><option value="qwen" ${fallback.provider !== 'ollama-mind' ? 'selected' : ''}>Qwen Code cloud</option></select></label>
+            <label><input id="apQwenLocal" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.localConsent ? 'checked' : ''} ${fallbackLocked ? 'disabled' : ''}> J'autorise les suggestions locales depuis Mind</label>
+            <p>Qwen local ne lit pas les fichiers et ne les modifie pas. Sa suggestion attend le retour de Claude avant la revue Codex et l'implementation.</p>
+            <label><input id="apQwenCloud" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.cloudConsent ? 'checked' : ''} ${fallbackLocked ? 'disabled' : ''}> J'autorise les appels Qwen cloud et leurs couts eventuels</label>
+            <label><input id="apQwenWrites" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.worktreeWritesConsent ? 'checked' : ''} ${fallbackLocked ? 'disabled' : ''}> J'autorise Qwen a ecrire dans le worktree isole</label>
+            <label>Plafond d'appels Qwen <input id="apQwenCalls" type="number" min="1" max="20" step="1" value="${esc(fallback.maxCalls || '')}" oninput="MindAutopilot.rememberFallback()" ${fallbackLocked ? 'disabled' : ''}></label>
+            <label>Plafond interne de tokens reserves <input id="apQwenTokens" type="number" min="1" step="1" value="${esc(fallback.tokenCeiling || '')}" oninput="MindAutopilot.rememberFallback()" ${fallbackLocked ? 'disabled' : ''}></label>
+            <p>Ce plafond interne ne mesure pas le quota du fournisseur Qwen, qui peut rester inconnu.</p>
+            <button class="tab-bar-btn" onclick="MindAutopilot.saveFallback()" ${fallbackLocked ? 'disabled' : ''}>Enregistrer la releve de ce pilote</button>
+          </section>
           <div class="ap-card">
             <div class="ap-title">Configuration - boucle ${esc(s.label || '')} (${esc(s.profileLabel || 'Standard')})</div>
             <div class="ap-form">
@@ -447,8 +536,8 @@ import { makeLatest } from './latest.js';
           <div class="ap-card">
             <div class="ap-title">Limites du jour (${esc(b.day || '')}, heure locale)</div>
             ${meter('Taches reussies', (s.today || {}).completed || 0, L.dailyCompletions)}
-            ${meter('Decouvertes Claude', (s.today || {}).discoveries || 0, L.dailyDiscoveries)}
-            ${meter('Lancements Claude/Codex', b.calls || 0, L.dailyCalls)}
+            ${meter('Decouvertes', (s.today || {}).discoveries || 0, L.dailyDiscoveries)}
+            ${meter('Lancements des fournisseurs', b.calls || 0, L.dailyCalls)}
             ${meter('Budget de reservation (tokens)', b.chargedTokens || 0, L.dailyTokenBudget,
               (b.tokenUsageExact ? 'Toutes les valeurs sont mesurees.' : '<span class="ap-tag">estimation</span> ' + esc(fmt(b.unmeteredCalls || 0)) + ' appel(s) sans mesure reelle, comptes ' + esc(fmt(L.reservedTokensPerCall)) + ' tokens chacun.') +
               ' Ce budget est une reservation appliquee AVANT chaque lancement : il ne plafonne pas la consommation a l\'interieur d\'un CLI en cours.')}
@@ -457,8 +546,10 @@ import { makeLatest } from './latest.js';
           </div>
         </div>
 
-        <div class="ap-card">
+        </details><div class="ap-card">
           <div class="ap-title">Historique des taches et worktrees (a valider par un humain)</div>
+          <label>Filtrer le resultat <select onchange="MindAutopilot.filterHistory(this.value)"><option value="">Tous</option>${Object.entries(OUTCOME_LABELS).map(([value, label]) => '<option value="' + esc(value) + '"' + (ap.historyFilter === value ? ' selected' : '') + '>' + esc(label) + '</option>').join('')}</select></label>
+          <p>Travail local termine. Une PR creee, fusionnee, sa CI et son deploiement necessitent des preuves distinctes.</p>
           <table class="ap-table"><thead><tr><th>Date</th><th>Categorie</th><th>Tache</th><th>Resultat</th><th>Worktree</th></tr></thead><tbody>${history}</tbody></table>
         </div>
         <div class="ap-card">
@@ -474,11 +565,12 @@ import { makeLatest } from './latest.js';
     if (ap.poll) clearInterval(ap.poll);
     // WebSocket 'mind-update' {kind:'autopilot'} drives live updates; the slow
     // poll only covers a dropped socket. Cleared by _autopilotTeardown().
-    ap.poll = setInterval(() => { if (state.view === 'autopilot' && !ap.busy) load(); }, 15000);
+    ap.poll = setInterval(() => { if (state.view === 'autopilot' && !ap.busy && (!ap.lastRead || Date.now() - ap.lastRead > 12000)) load(); }, 15000);
     paint();
     load();
   }
   function _autopilotTeardown() {
+    statusRequests.invalidate(); detailRequests.invalidate(); clairRequests.invalidate();
     if (ap.poll) { clearInterval(ap.poll); ap.poll = null; }
   }
 

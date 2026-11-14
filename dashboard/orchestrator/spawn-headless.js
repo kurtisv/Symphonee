@@ -4,6 +4,8 @@
 // Extracted from orchestrator.js (behavior-preserving).
 
 const { spawn } = require('child_process');
+const { trackProcess } = require('./process-termination');
+const { prepareWindowsJob } = require('./windows-job');
 const fs = require('fs');
 const path = require('path');
 const { STATE } = require('./state');
@@ -137,8 +139,15 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, requireProcessTreeProof = false, _retryAttempt = 0 }) {
+    // The autopilot owns retries/handoff when process containment is required.
+    if (requireProcessTreeProof) { noFallback = true; noRetry = true; }
     cli = canonicalProviderId(cli);
+    // Qwen's Windows container sandbox needs its own lifecycle and mount
+    // verification. A permission flag alone cannot enforce these guarantees.
+    if (cli === 'qwen' && (readOnly || confineWrites)) {
+      throw new Error('Qwen confinement is unavailable until a verified sandbox adapter is installed');
+    }
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
     }
@@ -415,14 +424,19 @@ module.exports = {
 
     // Chemin avec espace + shell Windows : voir shellSafeCommand (gemini-runtime.js).
     const spawnArgs = useShell && process.platform === 'win32' ? finalArgs.map(winQuoteArg) : finalArgs;
-    const proc = (this._spawnImpl || spawn)(useShell ? shellSafeCommand(command) : command, spawnArgs, {
+    const job = requireProcessTreeProof && process.platform === 'win32'
+      ? prepareWindowsJob({ command: useShell ? shellSafeCommand(command) : command, args: spawnArgs,
+        cwd: cwd || process.cwd(), shell: useShell, storageDir: this.workspaceDir }) : null;
+    const proc = (this._spawnImpl || spawn)(job ? job.command : useShell ? shellSafeCommand(command) : command, job ? job.args : spawnArgs, {
       cwd: cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
-      shell: useShell,
+      shell: job ? false : useShell,
+      windowsHide: !!job,
     });
 
     task._proc = proc;
+    trackProcess(task, proc, job);
     task.state = STATE.RUNNING;
     task.startedAt = Date.now();
 
@@ -619,6 +633,7 @@ module.exports = {
     });
 
     proc.on('error', (err) => {
+      if (job) { try { fs.unlinkSync(job.requestFile); } catch (_) {} }
       if (task._settled) return;
       task._settled = true;
       task._proc = null;
