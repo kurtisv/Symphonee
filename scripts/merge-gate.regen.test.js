@@ -64,3 +64,11 @@ test('regeneration may not touch other paths nor commit by itself', async () => 
   r = await runChain(policy(repo, { regenerate: [{ cmd: ['git', '-c', 'user.name=T', '-c', 'user.email=t@x', 'commit', '-q', '--allow-empty', '-m', 'sneaky'] }] }), base, sha);
   assert.match(r.regenError || '', /historique/);
 });
+
+test('a regeneration that renames code into an allowed path is refused', async () => {
+  const repo = setup();
+  g(repo, 'checkout', '-qb', 'feat'); fs.writeFileSync(path.join(repo, 'src', 'b.js'), 'b\n'); g(repo, 'add', '-A'); g(repo, 'commit', '-qm', 'feat');
+  const sha = g(repo, 'rev-parse', 'HEAD'); g(repo, 'checkout', '-q', 'main');
+  const r = await runChain(policy(repo, { regenerate: [{ cmd: ['git', 'mv', '-f', 'src/a.js', 'docs/gen.md'] }] }), g(repo, 'rev-parse', 'main'), sha);
+  assert.match(r.regenError || '', /src\/a\.js/);
+});
