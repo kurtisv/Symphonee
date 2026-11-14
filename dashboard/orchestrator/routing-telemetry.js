@@ -18,6 +18,7 @@ const { isLocalProvider, getLocalProvider } = require('./local-providers');
 const ROUTES = Object.freeze({
   LOCAL_DIRECT: 'LOCAL_DIRECT', LOCAL_CODEX: 'LOCAL_CODEX', CLOUD_DIRECT: 'CLOUD_DIRECT',
   LOCAL_TO_CLOUD_FAILOVER: 'LOCAL_TO_CLOUD_FAILOVER', LOCAL_FAILED: 'LOCAL_FAILED',
+  LOCAL_BRAIN: 'LOCAL_BRAIN',
 });
 
 function classifyRoute(attempts) {
@@ -80,6 +81,28 @@ class RoutingTelemetry {
     return rec;
   }
 
+  // Record a brain answer that returned before a worker was created.
+  // Store only provenance metadata, never the question, answer, or source text.
+  recordBrainAnswer(result) {
+    if (!result || !result.source || result.source === 'escalate') return null;
+    const rec = {
+      at: new Date(this.now()).toISOString(), taskId: null, route: ROUTES.LOCAL_BRAIN,
+      provider: 'brain', firstProvider: 'brain',
+      model: typeof result.model === 'string' ? result.model.slice(0, 128) : null,
+      role: 'answer', taskClass: 'local-answer',
+      reason: String(result.source).slice(0, 80),
+      ok: true, durationMs: Number.isFinite(result.tookMs) && result.tookMs >= 0 ? result.tookMs : null,
+      failoverReason: null, retries: 0, attempts: [],
+      estimatedPromptTokens: null, locality: 'local', cloudUsed: false,
+      citedNodeCount: Array.isArray(result.citedNodeIds) ? result.citedNodeIds.length : 0,
+    };
+    this.records.push(rec);
+    if (this.file) {
+      try { fs.mkdirSync(path.dirname(this.file), { recursive: true }); fs.appendFileSync(this.file, JSON.stringify(rec) + '\n'); } catch (_) {}
+    }
+    return rec;
+  }
+
   summary({ since } = {}) {
     const from = since ? Date.parse(since) : 0;
     const recs = this.records.filter(r => !from || Date.parse(r.at) >= from);
@@ -89,11 +112,11 @@ class RoutingTelemetry {
       counts[r.route] = (counts[r.route] || 0) + 1;
       byProvider[r.provider] = (byProvider[r.provider] || 0) + 1;
     }
-    const local = counts.LOCAL_DIRECT + counts.LOCAL_CODEX;
+    const local = counts.LOCAL_DIRECT + counts.LOCAL_CODEX + counts.LOCAL_BRAIN;
     return {
       total: recs.length, counts, byProvider,
       localCompleted: local, cloudTasks: counts.CLOUD_DIRECT + counts.LOCAL_TO_CLOUD_FAILOVER,
-      line: `${recs.length} tasks -> ${counts.LOCAL_DIRECT} local direct, ${counts.LOCAL_CODEX} Codex OSS local, ${counts.CLOUD_DIRECT} cloud direct, ${counts.LOCAL_TO_CLOUD_FAILOVER} local->cloud failover` + (counts.LOCAL_FAILED ? `, ${counts.LOCAL_FAILED} local failed (no fallback)` : ''),
+      line: `${recs.length} routes -> ${counts.LOCAL_BRAIN} local brain, ${counts.LOCAL_DIRECT} local direct, ${counts.LOCAL_CODEX} Codex OSS local, ${counts.CLOUD_DIRECT} cloud direct, ${counts.LOCAL_TO_CLOUD_FAILOVER} local->cloud failover` + (counts.LOCAL_FAILED ? `, ${counts.LOCAL_FAILED} local failed (no fallback)` : ''),
       recent: recs.slice(-20),
     };
   }
