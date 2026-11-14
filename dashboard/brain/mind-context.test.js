@@ -203,3 +203,13 @@ test('review 3: a file-backed note (no inline body) is found by its file content
   assert.deepEqual(r.transmitted.map((x) => x.id), ['note_release']);
   assert.match(r.text, /integration branch/);
 });
+
+test('review 4: accented knowledge matches accent-free queries; 300 echoes never hide the right memory', async () => {
+  const g1 = { nodes: [{ id: 'm_cle', kind: 'memory', label: 'Securite', body: body('La cl\u00e9 chiffr\u00e9e est conserv\u00e9e dans le coffre du serveur.') }] };
+  const r1 = await mc.buildMindContext(opts({ question: 'O\u00f9 est la cl\u00e9 chiffr\u00e9e ?', loadGraph: () => g1 }));
+  assert.deepEqual(r1.transmitted.map((t) => t.id), ['m_cle']);
+  const nodes = Array.from({ length: 300 }, (_, i) => ({ id: 'e' + i, kind: 'conversation', label: 'deployment notes', answer: body('echo ' + i) }));
+  nodes.push({ id: 'mem_ok', kind: 'memory', label: 'Release', body: body('deployment notes: always deploy from integration.') });
+  const r2 = await mc.buildMindContext(opts({ question: 'deployment notes', loadGraph: () => ({ nodes }) }));
+  assert.ok(r2.transmitted.some((t) => t.id === 'mem_ok'));
+});

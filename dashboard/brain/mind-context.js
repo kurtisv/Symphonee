@@ -95,7 +95,8 @@ function knowledgeIndex(graph) {
     const inline = inlineContent(n);
     const fileBacked = !!(n.source && n.source.file && /\.(md|markdown|txt|mdx)$/i.test(n.source.file));
     if (inline.length < MIN_CONTENT && !fileBacked) continue; // label-only stubs never compete
-    docs.push({ id: n.id, label: [n.label || '', ...(n.tags || []), inline ? inline.slice(0, 600) : (fileBacked ? fileHead(n.source.file) : '')].join(' ') });
+    // Accent-folded like the query terms (keyTerms), so "cle chiffree" matches "cle chiffree" written with accents.
+    docs.push({ id: n.id, label: fold([n.label || '', ...(n.tags || []), inline ? inline.slice(0, 600) : (fileBacked ? fileHead(n.source.file) : '')].join(' ')) });
   }
   ix = { byId, graph: { nodes: docs, gods: graph.gods || [] }, eligible: new Set(docs.map((d) => d.id)) };
   try { _index.set(graph, ix); } catch (_) {}
@@ -126,7 +127,8 @@ async function retrieveKnowledge(graph, { repoRoot, space, question, max = 5, bo
     return true;
   };
   const terms = keyTerms(question);
-  const bm = bestSeedsRanked(ix.graph, terms, max * 40).filter((r) => ok(r.id)).slice(0, max * 3).map((r) => ({ id: r.id, score: r.score }));
+  // Every scored candidate is filtered BEFORE the cut (BM25 scores them all anyway).
+  const bm = bestSeedsRanked(ix.graph, terms, ix.graph.nodes.length).filter((r) => ok(r.id)).slice(0, max * 3).map((r) => ({ id: r.id, score: r.score }));
   bm._label = 'bm25';
   let dn = []; let denseError = null;
   try {
