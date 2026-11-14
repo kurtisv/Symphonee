@@ -7,6 +7,7 @@ const path = require('path');
 const permissions = require('../permissions');
 const { CLI_MODELS, CLI_CONFIG } = require('./cli-config');
 const { LOCAL_PROVIDERS, isLocalProvider, isDirectLocal, canonicalProviderId, localFirstConfig, requiredContextTokens } = require('./local-providers');
+const { summarizeEconomy } = require('./economy-report');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -76,6 +77,10 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
   });
   addRoute('GET', '/api/orchestrator/provider-performance', (req, res) => {
     json(res, orch.performance ? orch.performance.publicRecords() : {});
+  });
+  // Read-only economy statistics. Never claim unknown usage or savings as zero.
+  addRoute('GET', '/api/orchestrator/economy', (req, res) => {
+    json(res, summarizeEconomy({ tasks: orch.tasks, routingTelemetry: orch.routingTelemetry }));
   });
   addRoute('POST', '/api/orchestrator/plan', async (req, res) => {
     const body = await readBody(req); const task = body.task || body; const workflow = orch.taskRouter.selectProvider(task, { role: task.role || undefined, policy: task.routingPolicy, plan: true });
@@ -209,6 +214,11 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         const result = await orch.brain.answer(prompt, { source: 'orchestrator/spawn' });
         brainDecision = result && result.decision || null;
         if (result && result.source && result.source !== 'escalate') {
+          // This path returns before creating a task. Count it in existing
+          // routing telemetry without storing the user's prompt or answer.
+          if (orch.routingTelemetry && typeof orch.routingTelemetry.recordBrainAnswer === 'function') {
+            try { orch.routingTelemetry.recordBrainAnswer(result); } catch (_) {}
+          }
           // Local handled it - return the answer directly. No worker spawn,
           // no frontier tokens spent. Shape mirrors a successful task so
           // callers can treat it uniformly.
