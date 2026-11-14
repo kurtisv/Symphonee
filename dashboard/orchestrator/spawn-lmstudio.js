@@ -181,6 +181,7 @@ module.exports = {
         }
         this.broadcast({ type: 'orchestrator-event', event: 'task-output', taskId: task.id, chunk: `[local] ${cli} -> ${cfg.baseUrl} (${lp.model}), ~${promptTokens} prompt tokens\n`, timestamp: Date.now() });
         const tGen = Date.now();
+        if (task.execution.mindContext) task.execution.mindContext.submitted = true; // the context really leaves for the model now
         const resp = await post(`${cfg.baseUrl}/v1/chat/completions`, {
           model: lp.model,
           messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: fullPrompt }],
@@ -206,7 +207,7 @@ module.exports = {
           mcx.citedRefs = mindContextLib.citedRefs(text, mcx.transmitted);
           mindContextLib.recordDiagnostic(this.workspaceDir ? require('path').resolve(this.workspaceDir, '..', '..') : process.cwd(), { path: 'orchestrator-lmstudio', taskId: task.id, provider: cli, model: task.execution.servedModel,
             space: mcx.space, activeRepo: mcx.activeRepo, status: mcx.status, retrieved: mcx.retrieved, transmitted: mcx.transmitted.map((t) => ({ ref: t.ref, id: t.id, kind: t.kind, tokens: t.tokens, truncated: !!t.truncated })),
-            skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, generationMs: task.execution.generationMs, citedRefs: mcx.citedRefs, unsupportedClaims: mcx.unsupportedClaims, error: mcx.error });
+            submitted: true, skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, generationMs: task.execution.generationMs, citedRefs: mcx.citedRefs, unsupportedClaims: mcx.unsupportedClaims, error: mcx.error });
         }
       } catch (err) {
         if (task.state === STATE.CANCELLED) return;
@@ -216,7 +217,7 @@ module.exports = {
         const mcx = task.execution && task.execution.mindContext;
         if (mcx) mindContextLib.recordDiagnostic(this.workspaceDir ? require('path').resolve(this.workspaceDir, '..', '..') : process.cwd(), { path: 'orchestrator-lmstudio', taskId: task.id, provider: cli, model: lp.model,
           space: mcx.space, activeRepo: mcx.activeRepo, status: mcx.status, retrieved: mcx.retrieved, transmitted: (mcx.transmitted || []).map((t) => ({ ref: t.ref, id: t.id, kind: t.kind, tokens: t.tokens })),
-          skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, failed: String(err.message).slice(0, 200), error: mcx.error });
+          submitted: !!mcx.submitted, skills: mcx.skills, contextTokens: mcx.contextTokens, retrievalMs: mcx.retrievalMs, failed: String(err.message).slice(0, 200), error: mcx.error });
       } finally {
         if (task.state !== STATE.CANCELLED) {
           task.completedAt = Date.now();

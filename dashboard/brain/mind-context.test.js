@@ -175,3 +175,21 @@ test('review: a date or id copied verbatim from the context is not flagged', () 
   assert.deepEqual(mc.unsupportedClaims('Fusionne le 2026-11-13, commit 450c4a5.', '... 2026-11-13 ... 450c4a5 ...'), []);
   assert.deepEqual(mc.unsupportedClaims('Numero 12 345 678.', 'le numero 12345678'), []);
 });
+
+test('review 2: echoes and stubs never empty the result; skills by trigger; plain symbol names; adjacent numbers', async () => {
+  const nodes = [
+    ...Array.from({ length: 60 }, (_, i) => ({ id: 'e' + i, kind: 'conversation', label: 'deployment notes', answer: body('old answer ' + i) })),
+    ...Array.from({ length: 20 }, (_, i) => ({ id: 'c' + i, kind: 'concept', label: 'deployment notes ' + i })),
+    { id: 'mem_ok', kind: 'memory', label: 'Release', body: body('deployment notes: deploy from integration only.') },
+  ];
+  const r = await mc.buildMindContext(opts({ question: 'deployment notes', loadGraph: () => ({ nodes }) }));
+  assert.ok(r.transmitted.some((t) => t.id === 'mem_ok'), JSON.stringify(r.transmitted));
+  const SK = [{ id: 'write-database-migration', name: 'w', description: 'Creating or altering tables, columns, indexes', when: 'schema change', valid: true, body: 'steps' }];
+  const s = await mc.buildMindContext(opts({ question: 'Add a nullable column to the users table, altering columns', loadSkills: () => SK }));
+  assert.deepEqual(s.skills, ['write-database-migration']);
+  assert.ok(mc.identifiers('Where is `recall` defined?').includes('recall'));
+  assert.ok(mc.identifiers('Ou est definie la fonction recall ?').includes('recall'));
+  assert.ok(mc.identifiers('call recall() here').includes('recall'));
+  assert.deepEqual(mc.unsupportedClaims('IDs: 1234 5678', 'The IDs are 1234 and 5678.'), []);
+  assert.deepEqual(mc.unsupportedClaims('IDs: 1234 9999', 'The IDs are 1234.'), ['9999']);
+});

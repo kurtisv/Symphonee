@@ -80,7 +80,8 @@ function knowledgeIndex(graph) {
     byId.set(n.id, n);
     if (!KNOWLEDGE_KINDS.has(n.kind) || isTaskTranscript(n)) continue;
     const inline = inlineContent(n);
-    if ((inline || n.label || '').length < 3) continue;
+    const fileBacked = !!(n.source && n.source.file && /\.(md|markdown|txt|mdx)$/i.test(n.source.file));
+    if (inline.length < MIN_CONTENT && !fileBacked) continue; // label-only stubs never compete
     docs.push({ id: n.id, label: [n.label || '', ...(n.tags || []), inline.slice(0, 600)].join(' ') });
   }
   ix = { byId, graph: { nodes: docs, gods: graph.gods || [] }, eligible: new Set(docs.map((d) => d.id)) };
@@ -112,7 +113,7 @@ async function retrieveKnowledge(graph, { repoRoot, space, question, max = 5, bo
     return true;
   };
   const terms = keyTerms(question);
-  const bm = bestSeedsRanked(ix.graph, terms, max * 8).filter((r) => ok(r.id)).slice(0, max * 3).map((r) => ({ id: r.id, score: r.score }));
+  const bm = bestSeedsRanked(ix.graph, terms, max * 40).filter((r) => ok(r.id)).slice(0, max * 3).map((r) => ({ id: r.id, score: r.score }));
   bm._label = 'bm25';
   let dn = []; let denseError = null;
   try {
@@ -136,9 +137,16 @@ async function retrieveKnowledge(graph, { repoRoot, space, question, max = 5, bo
 
 // Code: exact symbol names (identifiers) from the question, in the active repo's code index.
 const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+// Symbols: camelCase/snake_case/PascalCase words, and ordinary names the question
+// marks as code: `in backticks`, followed by "(", or after fonction/function/methode/method/classe/class.
 function identifiers(question) {
-  const ids = String(question || '').match(/[A-Za-z_$][A-Za-z0-9_$]{3,}/g) || [];
-  return [...new Set(ids.filter((w) => /[a-z][A-Z]|_|^[A-Z][a-z]+[A-Z]/.test(w)))].slice(0, 6);
+  const q = String(question || '');
+  const out = new Set();
+  for (const w of q.match(/[A-Za-z_$][A-Za-z0-9_$]{3,}/g) || []) if (/[a-z][A-Z]|_|^[A-Z][a-z]+[A-Z]/.test(w)) out.add(w);
+  for (const m of q.matchAll(/`([A-Za-z_$][\w$.]{2,})(?:\(\))?`/g)) out.add(m[1].split('.').pop());
+  for (const m of q.matchAll(/\b([A-Za-z_$][\w$]{2,})\s*\(/g)) out.add(m[1]);
+  for (const m of q.matchAll(/\b(?:fonction|function|m[eé]thode|method|classe|class|symbole|symbol)\s+([A-Za-z_$][\w$]{2,})/gi)) out.add(m[1]);
+  return [...out].slice(0, 6);
 }
 function retrieveCode(graph, { question, activeRepo, max = 5 }) {
   const want = new Set(identifiers(question).map((w) => w.toLowerCase()));
@@ -164,9 +172,10 @@ function retrieveSkills(corpus, { question, max = 1 }) {
     if (!s || !s.valid || !s.body) continue;
     const idWords = String(s.id).split('-').filter((w) => w.length >= 4);
     const idHits = idWords.filter((w) => words.has(w) || [...words].some((q) => q.startsWith(w.slice(0, 6)) && w.length >= 6)).length;
-    if (!idHits) continue; // a skill is applicable only if its own name matches the task
-    const text = fold(`${s.description} ${s.when || ''}`);
+    const text = fold(`${s.description} ${s.when || ''} ${(s.tags || []).join(' ')}`);
     const extra = [...words].filter((w) => text.includes(w)).length;
+    // Applicable when its name matches the task, or its description/trigger shares at least two task words.
+    if (!idHits && extra < 2) continue;
     scored.push({ s, score: idHits * 10 + extra });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -258,7 +267,7 @@ async function buildMindContext({ repoRoot, space = '_global', question, activeR
 // long numbers (4+ digits) and file names -- that appear in neither the
 // transmitted Mind context nor the question are flagged as unsupported. A small
 // model does not reliably abstain; this makes an invented value visible.
-const NUM = /\b\d[\d .:/-]{2,}\d\b/g;
+const NUM = /\b\d[\d.:/-]{2,}\d\b/g;
 function unsupportedClaims(answer, contextText, question = '') {
   const srcText = String(contextText || '') + ' ' + String(question || '');
   const src = fold(srcText);
