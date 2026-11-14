@@ -135,7 +135,7 @@ async function retrieveKnowledge(graph, { repoRoot, space, question, max = 5, bo
     const vs = vectors(repoRoot, space);
     if (vs) {
       const qv = await embed(terms, { provider: 'ollama', task: 'search_query' });
-      if (qv && qv.length) dn = vs.query(qv, max * 40).filter((h) => ok(h.id)).slice(0, max * 3).map((h) => ({ id: h.id, score: h.score }));
+      if (qv && qv.length) dn = vs.query(qv, vs.ids.length).filter((h) => ok(h.id)).slice(0, max * 3).map((h) => ({ id: h.id, score: h.score })); // all scored hits filtered before the cut
     }
   } catch (e) { denseError = String(e && e.message || e).slice(0, 160); }
   dn._label = 'dense';

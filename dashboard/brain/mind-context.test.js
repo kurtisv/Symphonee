@@ -213,3 +213,11 @@ test('review 4: accented knowledge matches accent-free queries; 300 echoes never
   const r2 = await mc.buildMindContext(opts({ question: 'deployment notes', loadGraph: () => ({ nodes }) }));
   assert.ok(r2.transmitted.some((t) => t.id === 'mem_ok'));
 });
+
+test('review 5: excluded nodes ranked first by the vectors never hide eligible semantic knowledge', async () => {
+  const nodes = Array.from({ length: 300 }, (_, i) => ({ id: 'e' + i, kind: 'conversation', label: 'zz question echo', answer: body('echo ' + i) }));
+  nodes.push({ id: 'mem_sem', kind: 'memory', label: 'Livraison', body: body('Toujours publier depuis la branche integration.') });
+  const fakeVs = { ids: nodes.map((n) => n.id), query: (_v, k) => nodes.map((n, i) => ({ id: n.id, score: 1 - i / 1000 })).slice(0, k) };
+  const r = await mc.buildMindContext(opts({ question: 'zz question echo', loadGraph: () => ({ nodes }), embed: async () => [1, 0], vectors: () => fakeVs }));
+  assert.ok(r.transmitted.some((t) => t.id === 'mem_sem'), JSON.stringify(r.transmitted));
+});
