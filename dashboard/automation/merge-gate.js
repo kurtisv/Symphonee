@@ -383,7 +383,9 @@ async function step(c, repo, baseSha, state, io) {
       // Atomic: push the very merge commit the chain tested, fast-forward only.
       // If the base moved meanwhile, git refuses and the candidate is re-verified.
       if (!c.evaluatedMerge) return setStatus(c, 'new', 'fusion testee absente : nouvelle verification complete', io);
-      try { io.git(repo.path, ['push', 'origin', c.evaluatedMerge + ':refs/heads/' + repo.base]); }
+      // The lease makes it atomic on the exact tested base: master must still be
+      // evaluatedBase on the remote (not moved forward, not rewound).
+      try { io.git(repo.path, ['push', '--force-with-lease=refs/heads/' + repo.base + ':' + c.evaluatedBase, 'origin', c.evaluatedMerge + ':refs/heads/' + repo.base]); }
       catch (e) {
         c.attempts = (c.attempts || 0) + 1;
         if (c.attempts > 3) return refuse(c, repo, [repo.base + ' a bouge trois fois pendant la verification'], io);

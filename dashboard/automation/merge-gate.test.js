@@ -387,7 +387,7 @@ test('no GitHub CI: merges by pushing the tested merge commit (fast-forward only
   let state = {};
   for (let i = 0; i < 2; i++) await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
   assert.equal(only(state).status, 'merged');
-  assert.ok(w.pushes.includes('push origin ' + 'm'.repeat(40) + ':refs/heads/master'), 'the tested merge commit itself');
+  assert.ok(w.pushes.includes('push --force-with-lease=refs/heads/master:' + w.base + ' origin ' + 'm'.repeat(40) + ':refs/heads/master'), 'the tested merge commit, leased on the tested base');
   assert.equal(w.merges.length, 0, 'no GitHub API merge');
   ({ w, io } = world()); w.marker = true; state = {};
   await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
