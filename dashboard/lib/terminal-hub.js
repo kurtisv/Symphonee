@@ -43,8 +43,12 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
   }
   function scheduleResume(termId, ptyProcess, cli, cwd) {
     const t0 = terminals.get(termId);
-    // A remembered folder other than this terminal's own is never trusted (forged state file).
+    // A remembered folder other than this terminal's own is never trusted (forged state file),
+    // and only Symphonee's folder or a repository declared in its configuration is resumed.
     if (!t0 || !sameDir(cwd, t0.cwd)) return;
+    let trusted = sameDir(cwd, repoRoot);
+    try { if (!trusted) trusted = Object.values(((getConfig && getConfig()) || {}).Repos || {}).some((p) => sameDir(cwd, p)); } catch (_) {}
+    if (!trusted) return;
     const buildCmd = () => {
       let mode = null;
       try { mode = ((getConfig && getConfig()) || {}).Permissions?.mode || null; } catch (_) {}

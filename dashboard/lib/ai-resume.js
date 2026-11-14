@@ -53,7 +53,7 @@ function createAiResume({ file, now = () => Date.now(), write }) {
   // The plan is what was running when Symphonee stopped: captured once, at start.
   const plan = {};
   for (const [id, e] of Object.entries(live)) {
-    const age = Number.isFinite(e && e.at) ? now() - e.at : -1;
+    const age = e && Number.isFinite(e.at) ? now() - e.at : NaN; // missing/invalid timestamp: never resumed
     if (e && CONTINUE[e.cli] && typeof e.cwd === 'string' && e.cwd && age >= -60000 && age < MAX_AGE_MS) plan[id] = { cli: e.cli, cwd: e.cwd, at: e.at };
   }
   live = { ...plan };
