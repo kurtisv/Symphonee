@@ -71,6 +71,19 @@ const TRUST = { memory: 'memory card (durable fact or decision)', note: 'note', 
 // over a few thousand entries, not 77k. File-backed bodies are read only for
 // the few winners.
 const _index = new WeakMap();
+// File-backed notes/docs carry no inline body in the graph: their first 600
+// characters are indexed too, cached per file (re-read only when it changes).
+const _fileText = new Map();
+function fileHead(file) {
+  try {
+    const st = fs.statSync(file);
+    const c = _fileText.get(file);
+    if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) return c.text;
+    const fd = fs.openSync(file, 'r');
+    try { const buf = Buffer.alloc(2400); const n = fs.readSync(fd, buf, 0, 2400, 0); const text = buf.slice(0, n).toString('utf8').replace(/\s+/g, ' ').slice(0, 600); _fileText.set(file, { mtimeMs: st.mtimeMs, size: st.size, text }); return text; }
+    finally { fs.closeSync(fd); }
+  } catch (_) { return ''; }
+}
 function knowledgeIndex(graph) {
   let ix = _index.get(graph);
   if (ix) return ix;
@@ -82,7 +95,7 @@ function knowledgeIndex(graph) {
     const inline = inlineContent(n);
     const fileBacked = !!(n.source && n.source.file && /\.(md|markdown|txt|mdx)$/i.test(n.source.file));
     if (inline.length < MIN_CONTENT && !fileBacked) continue; // label-only stubs never compete
-    docs.push({ id: n.id, label: [n.label || '', ...(n.tags || []), inline.slice(0, 600)].join(' ') });
+    docs.push({ id: n.id, label: [n.label || '', ...(n.tags || []), inline ? inline.slice(0, 600) : (fileBacked ? fileHead(n.source.file) : '')].join(' ') });
   }
   ix = { byId, graph: { nodes: docs, gods: graph.gods || [] }, eligible: new Set(docs.map((d) => d.id)) };
   try { _index.set(graph, ix); } catch (_) {}

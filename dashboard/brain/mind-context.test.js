@@ -193,3 +193,13 @@ test('review 2: echoes and stubs never empty the result; skills by trigger; plai
   assert.deepEqual(mc.unsupportedClaims('IDs: 1234 5678', 'The IDs are 1234 and 5678.'), []);
   assert.deepEqual(mc.unsupportedClaims('IDs: 1234 9999', 'The IDs are 1234.'), ['9999']);
 });
+
+test('review 3: a file-backed note (no inline body) is found by its file content without vectors', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-note-'));
+  const f = path.join(dir, 'release.md');
+  fs.writeFileSync(f, '# Release\n\nZephyrgate deployment must use the integration branch, never master.\n');
+  const g = { nodes: [{ id: 'note_release', kind: 'note', label: 'Release', source: { file: f } }] };
+  const r = await mc.buildMindContext(opts({ question: 'Which branch does Zephyrgate use?', loadGraph: () => g }));
+  assert.deepEqual(r.transmitted.map((x) => x.id), ['note_release']);
+  assert.match(r.text, /integration branch/);
+});
