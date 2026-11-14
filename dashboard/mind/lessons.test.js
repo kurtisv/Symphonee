@@ -46,3 +46,10 @@ test('firstFinding prefers a [P] finding and skips no-finding and repair-request
   assert.equal(L.firstFinding('- No blocking findings.\n- Please fix the findings below\n- [P2] Wrong rounding at 999.5 m\nVERDICT: FAIL'), '[P2] Wrong rounding at 999.5 m');
   assert.equal(L.firstFinding('No findings.\nVERDICT: PASS'), '');
 });
+
+test('review 2: NO-FINDING and repair-request lines skipped, prose finding kept', () => {
+  assert.equal(L.firstFinding('- NO-FINDING: no actionable defect\n- Repair request: redo it\nVERDICT: FAIL'), '');
+  assert.equal(L.firstFinding('The new test never asserts the rounding.\nVERDICT: FAIL'), 'The new test never asserts the rounding.');
+  const spec = L.memorySpec({ scope: 's', kind: 'revue', text: 'x', source: 'plan "y"' }, 'R');
+  assert.match(spec.body, /pas des instructions/); assert.match(spec.body, /Source \(citee\) : "plan \\"y\\""/);
+});

@@ -181,7 +181,9 @@ function discoverAutopilot(repo, source, io) {
     let sha;
     try { sha = io.git(repo.path, ['rev-parse', '--verify', h.worktree.branch + '^{commit}']); } catch (_) { continue; }
     if (sha !== h.commit) { io.log && io.log('ignoree ' + h.worktree.branch + ' : la pointe n est plus le commit revu ' + String(h.commit).slice(0, 10)); continue; }
-    out.push({ repo: repo.name, source: source.type, branch: h.worktree.branch, sha, origin: { pilot: source.pilot, title: h.title, at: h.at },
+    // The repository the pilot worked on, captured now (the pilot may be reconfigured later).
+    const repoName = st.repoPath && path.resolve(st.repoPath).toLowerCase() === path.resolve(repo.path).toLowerCase() ? st.repoName || null : null;
+    out.push({ repo: repo.name, source: source.type, branch: h.worktree.branch, sha, origin: { pilot: source.pilot, repoName, title: h.title, at: h.at },
       proof: { review: /^\s*VERDICT:\s*PASS\b/.test(String(h.reviewerEvidence || '')), verified: Array.isArray(h.verified) && h.verified.length > 0, verifiedList: h.verified || [] } });
   }
   return out;

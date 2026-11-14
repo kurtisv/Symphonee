@@ -177,8 +177,9 @@ const NOT_A_MISTAKE = /conflit de fusion|a bouge|la PR a change|tete de la PR|Gi
 async function lesson(c, repo, reasons) {
   const pilot = c.origin && c.origin.pilot;
   if (!pilot || ESSAI) return;
-  const st = readPilot(pilot) || {};
-  const scope = lessons.scopeOf(pilot, st.repoName);
+  // Repository captured when the candidate was discovered (never the pilot's current one).
+  if (!c.origin.repoName) return;
+  const scope = lessons.scopeOf(pilot, c.origin.repoName);
   for (const reason of reasons) {
     if (NOT_A_MISTAKE.test(reason)) continue;
     const m = /chaine de verification en echec : ([\w.-]+)/.exec(reason);
