@@ -44,7 +44,11 @@ module.exports = {
         task.state = STATE.COMPLETED;
       } catch (err) {
         if (task.state !== STATE.RUNNING) return;
-        task.state = STATE.FAILED; task.error = 'Local Mind discovery failed: ' + String(err.message || err).slice(0, 300);
+        // Provider errors may include generated text or retrieved context.
+        // Persist only bounded categories, never source/model output.
+        const msg = String(err && err.message || '');
+        const reason = /Mind context unavailable/.test(msg) ? 'Mind context unavailable' : /timeout/i.test(msg) ? 'local timeout' : 'local generation or context error';
+        task.state = STATE.FAILED; task.error = 'Local Mind discovery failed: ' + reason;
       } finally {
         if (task.state === STATE.RUNNING || task.state === STATE.CANCELLED) return;
         finish();

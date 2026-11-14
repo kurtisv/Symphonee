@@ -82,3 +82,11 @@ test('missing Mind context cannot fabricate a suggestion', async () => {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(t.state, 'failed'); assert.match(t.error, /Mind context unavailable/);
 });
+test('provider errors do not persist model text or credentials', async () => {
+  const worker = require('../orchestrator/spawn-local-discovery');
+  const o = { heartbeats:new Map(), _createTask(x){return {id:'redaction', ...x, state:'pending'};}, _broadcastTaskUpdate(){}, _persistResult(){},
+    async getLocalMindContext(){return {status:'ok', text:'[S1] data', transmitted:[{id:'x', ref:'S1'}]};},
+    async localDiscoveryChat(){throw Error('bad json: secret-project-content');} };
+  const t=worker.spawnLocalDiscovery.call(o,{prompt:'find task'}); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(t.state,'failed'); assert.ok(!t.error.includes('secret-project-content'));
+});
