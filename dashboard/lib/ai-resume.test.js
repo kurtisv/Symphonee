@@ -55,6 +55,8 @@ test('lastPromptDir: only a prompt line that launches the CLI directly', () => {
   assert.equal(lastPromptDir('PS C:\\RepoA> codex --cd=RepoB\r\n'), false, 'codex --cd=');
   assert.equal(lastPromptDir('PS C:\\RepoA> claude --model opus\r\n'), false, 'separate option value: not certain');
   assert.equal(lastPromptDir('PS C:\\RepoA> claude --model=opus --dangerously-skip-permissions\r\n'), 'C:\\RepoA');
+  // The line Symphonee itself typed on resume keeps the session resumable.
+  assert.equal(lastPromptDir('PS C:\\Other> ' + resumeCommand('claude', 'bypass', 'C:\\d\u00e9p\u00f4t') + '\r\n'), 'C:\\d\u00e9p\u00f4t');
 });
 
 test('a launch whose folder cannot be known forgets the remembered folder', () => {

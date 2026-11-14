@@ -32,12 +32,16 @@ function resumeCommand(cli, permissionMode, cwd) {
 // is anything else (the real folder cannot be known); null when no prompt is
 // visible any more.
 const LAUNCH = /^\s*(cls\s*;\s*)?(claude|codex)(\.exe)?(\s+--(?!cd\b)[a-z][\w-]*(=[\w.-]+)?)*\s*$/i;
+const RESUME_LINE = /^\s*Set-Location -LiteralPath \(\[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\('([A-Za-z0-9+/=]+)'\)\)\); (claude --continue|codex resume --last)( --dangerously-skip-permissions| --dangerously-bypass-approvals-and-sandbox)?\s*$/;
 function lastPromptDir(output) {
   const text = String(output || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
   let m, last = null;
   const rx = /PS ([A-Za-z]:\\[^\r\n<>|"*?]*?)> ?([^\r\n]*)/g;
   while ((m = rx.exec(text))) last = { dir: m[1], cmd: m[2] };
   if (!last) return null;
+  // Our own resume line: the folder is the one it encodes.
+  const r = RESUME_LINE.exec(last.cmd);
+  if (r) { try { return Buffer.from(r[1], 'base64').toString('utf8') || false; } catch (_) { return false; } }
   return LAUNCH.test(last.cmd) ? last.dir : false;
 }
 
