@@ -249,9 +249,10 @@ function _buildMessages(question, sources, activity, mindText = null) {
 // Does the question ask about recent ACTIVITY (git, checkpoints, tasks, "what
 // did I do / where are we")? Only then is the live activity worth its tokens:
 // for a knowledge question it dilutes the Mind context and slows a small model.
-const ACTIVITY_RX = /\b(what did i|what have i|what changed|where are we|where was i|just did|recent(ly)?|lately|latest|last (commit|change|task)|commits?|checkpoints?|my tasks?|task (failed|finished)|failed|next step|today|yesterday|this (week|morning)|qu.?est-ce que j.?ai|qu.?ai-je|on en est|ou en (est|suis)|derni[eè]re?s?|r[eé]cemment|aujourd.?hui|hier|cette semaine|ce matin|t[aâ]ches?|[eé]chou[eé]|termin[eé]|prochaine [eé]tape|fait r[eé]cemment)\b/i;
+const ACTIVITY_RX = /\b(what did i|what have i|what changed|what (just )?happened|what went wrong|went wrong|where are we|where was i|just did|recent(ly)?|lately|latest|last (commit|change|task|run|codex|claude)|commits?|checkpoints?|my (last )?tasks?|tasks? (failed|finished)|fail(ed|s|ure|ing)?|broke|crash(ed)?|next step|today|yesterday|this (week|morning)|qu.?est-ce que j.?ai|qu.?ai-je|qu.?est-ce qui (s.?est passe|a (echoue|plante|casse))|on en est|ou en (est|suis|sommes)|dernier(e|s|es)?|recemment|aujourd.?hui|hier|cette semaine|ce matin|taches?|echou\w*|plant\w*|termine\w*|prochaine etape|pourquoi .{0,40}(echou|plant|marche pas))\b/i;
+const _foldQ = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 function _needsActivity(question) {
-  return !!_timeHintFromQuestion(question) || ACTIVITY_RX.test(String(question || ''));
+  return !!_timeHintFromQuestion(question) || ACTIVITY_RX.test(_foldQ(question));
 }
 
 // Focused prompt for knowledge questions: the same strict grounding that makes

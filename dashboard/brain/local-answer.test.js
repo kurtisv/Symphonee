@@ -282,6 +282,10 @@ test('brain: activity only for activity questions; knowledge questions get the f
   assert.equal(la._needsActivity('Qu est-ce que j ai fait aujourd hui ?'), true);
   assert.equal(la._needsActivity('On en est ou sur Gas Saver ?'), true);
   assert.equal(la._needsActivity('Dans quelle branche la porte fusionne Gas Saver ?'), false);
+  for (const q of ['What just happened?', 'Why did it fail?', 'what went wrong with my last codex task and how do i fix it', 'Où en suis-je ?', 'Où en est le projet ?', 'Pourquoi le build a échoué ?'])
+    assert.equal(la._needsActivity(q), true, q);
+  for (const q of ['Dans quel fichier est definie deduplicateStations ?', 'Quelles etapes pour une migration de base de donnees ?', 'Quel est le numero de TVA de PleinSens ?'])
+    assert.equal(la._needsActivity(q), false, q);
   const store = require('../mind/store'); const llm = require('../lib/llm');
   const graph = { nodes: [{ id: 'mem_a', kind: 'memory', label: 'Porte de fusion integration', body: 'La porte fusionne Gas Saver dans integration car master est deploye par Vercel. '.repeat(2) }], edges: [] };
   const o1 = store.loadGraph, o2 = store.loadGraphShared, oc = llm.chatOllama; let sent = null, opts = null;
