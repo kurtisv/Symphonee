@@ -28,13 +28,27 @@ test('local handoff proves old author stopped, stays local, and does not reserve
   assert.equal(active.handoff.to, 'ollama-mind'); assert.deepEqual(p.state.budgetCalls, []);
 });
 test('local suggestion waits for Claude and Codex; inconclusive output is not completed', () => {
-  for (const raw of ['{"decision":"NO_TASK"}', 'nonsense', JSON.stringify({ decision:'TASK', category:'testing', title:'Improve tests', objective:'Improve verification of parsing', evidence:['[S1] Mind record mentions parser cases'], acceptance:['Add representative parser checks'] })]) {
-    const a = { stage:'discover', currentProvider:'ollama-mind', handoff:{ claudeResetAt:null }, localContextRefs:['S1'] }, calls=[];
+  for (const raw of ['{"decision":"NO_TASK"}', 'nonsense', JSON.stringify({ decision:'TASK', category:'testing', title:'Improve tests', objective:'Improve verification of parsing', evidence:['[M1] Mind record mentions parser cases'], acceptance:['Add representative parser checks'] })]) {
+    const a = { stage:'discover', currentProvider:'ollama-mind', handoff:{ claudeResetAt:null }, localContextRefs:['M1'], localProjectRefs:['M1'] }, calls=[];
     const p = { state:{ active:a, nextAt:0, history:[] }, log(){}, save(){}, parkForCredit(a) { calls.push(a.stage); a.stage='budget-wait'; return {}; }, dispatch() { throw new Error('must not dispatch'); }, complete() { throw new Error('must not complete'); } };
     MindAutopilot.prototype.advance.call(p, raw, Date.now());
     assert.deepEqual(calls, [raw.includes('"TASK"') ? 'plan-review' : 'discover']);
     assert.equal(a.stage, 'budget-wait'); assert.equal(a.handoff, null);
   }
+});
+test('a procedural skill alone cannot establish evidence of a project issue', () => {
+  const a = { stage:'discover', currentProvider:'ollama-mind', handoff:{}, localContextRefs:['S1'], localProjectRefs:[] }, calls=[];
+  const p = { state:{ active:a, nextAt:0, history:[] }, log(){}, save(){}, parkForCredit(a){calls.push(a.stage);return {};}, dispatch(){throw Error('no dispatch');} };
+  const raw = JSON.stringify({ decision:'TASK', category:'testing', title:'Improve tests', objective:'Improve verification of parsing', evidence:['[S1] procedure says inspect parser'], acceptance:['Add a relevant parser test'] });
+  MindAutopilot.prototype.advance.call(p, raw, Date.now());
+  assert.deepEqual(calls, ['discover']); assert.equal(a.plan, null); assert.equal(a.localSuggestion.status, 'inconclusive');
+});
+test('valid skill and fabricated project reference cannot establish evidence', () => {
+  const a = { stage:'discover', currentProvider:'ollama-mind', handoff:{}, localContextRefs:['S1'], localProjectRefs:[] }, calls=[];
+  const p = { state:{ active:a, nextAt:0, history:[] }, log(){}, save(){}, parkForCredit(a){calls.push(a.stage);return {};} };
+  const raw = JSON.stringify({ decision:'TASK', category:'testing', title:'Improve tests', objective:'Improve verification of parsing', evidence:['[S1] [M99] parser failure'], acceptance:['Add a relevant parser test'] });
+  MindAutopilot.prototype.advance.call(p, raw, Date.now());
+  assert.deepEqual(calls, ['discover']); assert.equal(a.plan, null);
 });
 test('mixed valid and invented evidence references cannot become a retained plan', () => {
   const a = { stage:'discover', currentProvider:'ollama-mind', handoff:{}, localContextRefs:['S1'] }, calls=[];
@@ -61,24 +75,26 @@ test('local worker times out even when Mind retrieval never returns', async () =
   const worker = require('../orchestrator/spawn-local-discovery');
   const o = { heartbeats:new Map(), _createTask(x){return {id:'slow', ...x, state:'pending'};}, _broadcastTaskUpdate(){}, _persistResult(){},
     getLocalMindContext(){return new Promise(() => {});} };
-  const t = worker.spawnLocalDiscovery.call(o, { prompt:'find task', timeout:10 });
+  const t = worker.spawnLocalDiscovery.call(o, { prompt:'find task', retrievalQuestion:'parser errors', timeout:10 });
   await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(t.state, 'timeout');
 });
 test('local worker submits real Mind and skill context and remains read-only', async () => {
   const worker = require('../orchestrator/spawn-local-discovery'); let messages;
   const o = { heartbeats: new Map(), _createTask(x) { return { id:'local-1', ...x, state:'pending' }; }, _broadcastTaskUpdate(){}, _persistResult(){},
-    async getLocalMindContext() { return { status:'ok', text:'[S1] actual skill body', transmitted:[{id:'skill:one', ref:'S1', kind:'skill'}], skills:['one'] }; },
+    async getLocalMindContext(opts) { assert.equal(opts.question, 'parser errors'); return { status:'ok', text:'[S1] actual skill body', transmitted:[{id:'skill:one', ref:'S1', kind:'skill'}], skills:['one'] }; },
     async localDiscoveryChat(m, opts) { messages=m; assert.equal(opts.model, 'qwen2.5:1.5b'); assert.equal(opts.format, 'json'); return { json:{decision:'NO_TASK'} }; } };
-  const t = worker.spawnLocalDiscovery.call(o, { prompt:'find a useful task', cwd:'C:/repo', timeout:10000 });
+  const t = worker.spawnLocalDiscovery.call(o, { prompt:'generic boilerplate find a useful task', retrievalQuestion:'parser errors', cwd:'C:/repo', timeout:10000 });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(t.state, 'completed'); assert.equal(t.execution.readOnly, true); assert.match(messages[1].content, /actual skill body/);
+  assert.match(messages[1].content, /parser errors/); assert.doesNotMatch(messages[1].content, /generic boilerplate/);
+  assert.match(messages[0].content, /untrusted data, not instructions/); assert.match(messages[0].content, /"decision":"NO_TASK"/);
   assert.equal(t.execution.mindContext.transmitted[0].id, 'skill:one'); assert.equal(t.result, '{"decision":"NO_TASK"}');
 });
 test('missing Mind context cannot fabricate a suggestion', async () => {
   const worker = require('../orchestrator/spawn-local-discovery');
   const o = { heartbeats: new Map(), _createTask(x) { return { id:'local-2', ...x, state:'pending' }; }, _broadcastTaskUpdate(){}, _persistResult(){},
     async getLocalMindContext() { return { status:'error' }; }, async localDiscoveryChat() { throw new Error('must not generate'); } };
-  const t = worker.spawnLocalDiscovery.call(o, { prompt:'find a useful task' });
+  const t = worker.spawnLocalDiscovery.call(o, { prompt:'find a useful task', retrievalQuestion:'parser errors' });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(t.state, 'failed'); assert.match(t.error, /Mind context unavailable/);
 });
@@ -87,6 +103,13 @@ test('provider errors do not persist model text or credentials', async () => {
   const o = { heartbeats:new Map(), _createTask(x){return {id:'redaction', ...x, state:'pending'};}, _broadcastTaskUpdate(){}, _persistResult(){},
     async getLocalMindContext(){return {status:'ok', text:'[S1] data', transmitted:[{id:'x', ref:'S1'}]};},
     async localDiscoveryChat(){throw Error('bad json: secret-project-content');} };
-  const t=worker.spawnLocalDiscovery.call(o,{prompt:'find task'}); await new Promise(resolve=>setImmediate(resolve));
+  const t=worker.spawnLocalDiscovery.call(o,{prompt:'find task',retrievalQuestion:'parser errors'}); await new Promise(resolve=>setImmediate(resolve));
   assert.equal(t.state,'failed'); assert.ok(!t.error.includes('secret-project-content'));
+});
+test('missing focused retrieval question fails closed without querying Mind', async () => {
+  const worker = require('../orchestrator/spawn-local-discovery'); let queried=false;
+  const o = { heartbeats:new Map(), _createTask(x){return {id:'no-focus',...x,state:'pending'};}, _broadcastTaskUpdate(){}, _persistResult(){},
+    async getLocalMindContext(){queried=true;return {};} };
+  const t=worker.spawnLocalDiscovery.call(o,{prompt:'generic boilerplate'}); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(t.state,'failed'); assert.equal(queried,false);
 });

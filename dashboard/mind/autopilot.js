@@ -896,7 +896,7 @@ class MindAutopilot {
     this.save();
     let task;
     if (stage === 'discover' && cli === 'ollama-mind') {
-      task = this.orch.spawnLocalDiscovery({ prompt: this.discoveryPrompt(), cwd: this.state.repoPath, space: this.state.space, timeout: this.stepMs, from: 'mind-autopilot' });
+      task = this.orch.spawnLocalDiscovery({ prompt: this.discoveryPrompt(), retrievalQuestion: this.state.goal, cwd: this.state.repoPath, space: this.state.space, timeout: this.stepMs, from: 'mind-autopilot' });
     } else if (stage === 'discover' || stage === 'plan-review') {
       // Default effort: a 'low' discovery measured 2026-11-11 looked at one
       // signal and gave up (NO_TASK) despite real untested modules.
@@ -1012,9 +1012,10 @@ class MindAutopilot {
         const h = a.handoff;
         const duplicate = plan && plan.decision === 'TASK' && this.state.history.some(item => item.key === taskKey(plan) && item.outcome === 'completed');
         const refs = a.localContextRefs || [];
+        const projectRefs = a.localProjectRefs || [];
         const cited = plan && plan.decision === 'TASK' && plan.evidence.every(e => {
           const found = [...e.matchAll(/\[([A-Z]\d+)\]/g)].map(m => m[1]);
-          return found.length > 0 && found.every(ref => refs.includes(ref));
+          return found.length > 0 && found.every(ref => refs.includes(ref)) && found.some(ref => projectRefs.includes(ref));
         });
         const usable = plan && plan.decision === 'TASK' && !duplicate && cited;
         a.localSuggestion = { provider: 'ollama-mind', at: now, status: usable ? 'awaiting-review' : 'inconclusive', refs, duplicate: !!duplicate };
@@ -1324,7 +1325,11 @@ class MindAutopilot {
           throw new Error('Stage timed out: ' + a.stage);
         }
         if (t.state === 'completed') {
-          if (a.currentProvider === 'ollama-mind') a.localContextRefs = (t.execution?.mindContext?.transmitted || []).map(x => x.ref).filter(x => /^[A-Z]\d+$/.test(x));
+          if (a.currentProvider === 'ollama-mind') {
+            const transmitted = t.execution?.mindContext?.transmitted || [];
+            a.localContextRefs = transmitted.map(x => x.ref).filter(x => /^[A-Z]\d+$/.test(x));
+            a.localProjectRefs = transmitted.filter(x => x.kind && x.kind !== 'skill').map(x => x.ref).filter(x => /^[A-Z]\d+$/.test(x));
+          }
           budget.settleCall(this.state, a.budgetRef, t);
           a.budgetRef = null; this.save();
           this.advance(t.result, now);

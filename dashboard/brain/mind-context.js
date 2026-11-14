@@ -181,17 +181,23 @@ function retrieveCode(graph, { question, activeRepo, max = 5 }) {
 
 // Skills: the applicable procedure, by overlap with the skill's id and trigger (whole body; the budget trims and marks it).
 function retrieveSkills(corpus, { question, max = 1 }) {
-  const words = new Set(keyTerms(question).split(' ').filter((w) => w.length >= 4));
+  // Generic verbs appear in many procedures and can make unrelated,
+  // project-specific skills look applicable (e.g. "avant modif").
+  const generic = new Set(['change', 'changes', 'changing', 'changement', 'chose', 'systeme', 'system', 'avant', 'apres', 'modif', 'modifier', 'modification', 'modify', 'modified', 'modifying', 'code']);
+  const words = new Set(keyTerms(question).split(' ').filter((w) => w.length >= 4 && !generic.has(w)));
   const scored = [];
-  for (const s of corpus || []) {
-    if (!s || !s.valid || !s.body) continue;
-    const idWords = String(s.id).split('-').filter((w) => w.length >= 4);
+  const eligible = (corpus || []).filter(s => s && s.valid && s.runnable !== false && s.body);
+  const metadata = s => fold(`${s.id} ${s.description || ''} ${s.when || ''} ${(s.tags || []).join(' ')}`);
+  const specificity = new Map([...words].map(w => [w, eligible.filter(s => metadata(s).split(/[^a-z0-9]+/).includes(w)).length]));
+  for (const s of eligible) {
+    const idWords = String(s.id).split('-').filter((w) => w.length >= 4 && !generic.has(w));
     const idHits = idWords.filter((w) => words.has(w) || [...words].some((q) => q.startsWith(w.slice(0, 6)) && w.length >= 6)).length;
     const text = fold(`${s.description} ${s.when || ''} ${(s.tags || []).join(' ')}`);
     const extra = [...words].filter((w) => text.includes(w)).length;
     // Applicable when its name matches the task, or its description/trigger shares at least two task words.
-    if (!idHits && extra < 2) continue;
-    scored.push({ s, score: idHits * 10 + extra });
+    const distinctive = [...words].filter(w => w.length >= 6 && specificity.get(w) === 1 && metadata(s).split(/[^a-z0-9]+/).includes(w)).length;
+    if (!idHits && extra < 2 && !distinctive) continue;
+    scored.push({ s, score: idHits * 10 + extra + distinctive * 12 });
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, max).map(({ s }) => ({ id: s.id, label: s.name || s.id, content: String(s.body).replace(/\n{3,}/g, '\n\n') }));
@@ -213,9 +219,16 @@ function retrieveLessons(lessonsMod, repoRoot, activeRepo, max = 3, question = '
 // Fit blocks into the budget in priority order (each block costs its text + a separator).
 function fit(blocks, budgetTokens) {
   const kept = []; let used = 0;
-  for (const b of blocks) {
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
     let text = b.text; let t = estimateTokens(text) + 1;
-    const room = budgetTokens - used;
+    let room = budgetTokens - used;
+    // A long procedure can otherwise use the entire budget before the model
+    // receives any project evidence. Reserve room for one substantive source.
+    if (b.kind === 'skill') {
+      const evidence = blocks.slice(i + 1).find(x => x.kind !== 'code' && x.kind !== 'skill');
+      if (evidence) room -= Math.min(160, Math.max(80, estimateTokens(evidence.text) + 1));
+    }
     let truncated = false;
     if (t > room) {
       if (room < 80) continue; // too little room to say anything useful
