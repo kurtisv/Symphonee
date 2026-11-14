@@ -95,13 +95,16 @@ function cleanupLeftovers(policy) {
 }
 async function runChain(repo, base, sha) {
   return withWorktree(repo, base, async (dir) => {
-    try { git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'merge', '--no-ff', '--no-edit', sha]); }
+    try { git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'merge', '--no-ff', '-m', 'Fusion automatique encadree (' + gate.MARK + ') : ' + sha, sha]); }
     catch (_) { try { git(dir, ['merge', '--abort']); } catch (__) {} return { ok: false, conflict: true, results: [] }; }
     // The exact tree tested: the merge GitHub makes must have this content.
     const tree = git(dir, ['rev-parse', 'HEAD^{tree}']);
+    // The tested merge commit itself (kept in the shared object store): a repo
+    // without CI pushes exactly this commit, fast-forward only.
+    const merge = git(dir, ['rev-parse', 'HEAD']);
     const lint = guard.diffLint(dir, base);
-    if (lint.length) return { ok: false, lint, results: [], tree };
-    const r = { ...(await guard.runVerify(dir, repo.chain)), tree };
+    if (lint.length) return { ok: false, lint, results: [], tree, merge };
+    const r = { ...(await guard.runVerify(dir, repo.chain)), tree, merge };
     if (!r.ok) {
       // Was this check already red on the base? (stated in the message; still refused)
       const failed = r.results.find((x) => !x.ok);

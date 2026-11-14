@@ -94,7 +94,7 @@ function world() {
       if (a.startsWith('diff --name-status')) return 'M\tsrc/utils/distance.ts\nA\tsrc/__tests__/distance.test.ts';
       if (a.startsWith('diff --unified=0')) return '+++ b/src/utils/distance.ts\n+return km;';
       if (a.startsWith('show origin/master:AGENTS.md')) return w.marker ? '... ' + gate.MARK + ' ...' : 'regles';
-      if (a.startsWith('push')) { w.pushes.push(a); return ''; }
+      if (a.startsWith('push')) { if (w.pushRefused && a.includes('refs/heads/master')) throw new Error('non-fast-forward'); w.pushes.push(a); return ''; }
       if (a.endsWith('^2')) return w.mergedParent || SHA;
       if (a.endsWith('^1')) { if (w.unreadable) throw new Error('objet absent'); return w.mergedBase || w.base; }
       if (a.endsWith('^{tree}')) return w.mergedTree || 'tree-tested';
@@ -109,7 +109,7 @@ function world() {
       if (p === '/api/github/pulls/comment') { w.comments.push(body); return { ok: true }; }
       throw new Error('api inattendue : ' + p);
     },
-    runChain: async () => { w.chainRuns++; return w.chainOk ? { ok: true, tree: 'tree-tested', results: [{ name: 'jest', ok: true, code: 0, ms: 1000 }] }
+    runChain: async () => { w.chainRuns++; return w.chainOk ? { ok: true, tree: 'tree-tested', merge: 'm'.repeat(40), results: [{ name: 'jest', ok: true, code: 0, ms: 1000 }] }
       : { ok: false, results: [{ name: 'jest', ok: false, code: 1, ms: 1000, preexisting: false }] }; },
     openRevert: async () => { w.reverts++; return 'https://github.com/x/y/pull/8'; },
     notify: (level, message) => w.notes.push(level + ' ' + message),
@@ -324,7 +324,7 @@ test('repository without GitHub CI: the gate chain stands for CI, merge confirme
   await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
   c = only(state);
   assert.equal(c.status, 'merged', 'no CI to wait for: governance ok, merged');
-  assert.equal(w.merges.length, 1);
+  assert.equal(w.pushes.filter((x) => x.endsWith(':refs/heads/master')).length, 1, 'merged by pushing the tested merge');
   await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
   c = only(state);
   assert.equal(c.status, 'confirmed'); assert.match(c.history.at(-1).note, /pas de CI GitHub/);
@@ -376,7 +376,28 @@ test('a mismatch detected by the post-merge watch stops every merge in the same 
   state.candidates = { ['B|mind-autopilot/2026-11-12-abc|' + w.sha]: { repo: 'B', source: 'autopilot', branch: 'mind-autopilot/2026-11-12-abc', sha: w.sha,
     key: 'B|mind-autopilot/2026-11-12-abc|' + w.sha, status: 'ci-green', pr: 7, evaluatedBase: w.base, evaluatedTree: 'tree-tested', createdAt: 0, attempts: 0, history: [] } };
   w.mergedTree = 'other';
-  await gate.pass({ enabled: true, repos: [A, B] }, state, io);
+  await gate.pass({ enabled: true, repos: [B, A] }, state, io); // the failing repository comes last
   assert.ok(state.stopped);
   assert.equal(w.merges.length, 0, 'B is not merged in the pass that stopped the gate');
+});
+
+test('no GitHub CI: merges by pushing the tested merge commit (fast-forward only); a moved base re-verifies', async () => {
+  const NOCI = { ...REPO, githubCi: false };
+  let { w, io } = world(); w.marker = true;
+  let state = {};
+  for (let i = 0; i < 2; i++) await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  assert.equal(only(state).status, 'merged');
+  assert.ok(w.pushes.includes('push origin ' + 'm'.repeat(40) + ':refs/heads/master'), 'the tested merge commit itself');
+  assert.equal(w.merges.length, 0, 'no GitHub API merge');
+  ({ w, io } = world()); w.marker = true; state = {};
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  w.pushRefused = true;
+  await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+  assert.equal(only(state).status, 'new', 'push refused: verified again, nothing merged');
+});
+
+test('legacy policy: repositories without own settings still share one chain per pass', async () => {
+  const { w, io } = world();
+  await gate.pass({ enabled: true, repos: [{ ...REPO, name: 'A' }, { ...REPO, name: 'B' }] }, {}, io);
+  assert.equal(w.chainRuns, 1);
 });
