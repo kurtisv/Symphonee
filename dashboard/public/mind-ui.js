@@ -3214,6 +3214,9 @@
     tick() {
       return act("Verification", () => call("/api/mind/autopilot/tick", {}));
     },
+    runNow() {
+      return act("Lancement manuel", () => call("/api/mind/autopilot/run-now", {}));
+    },
     acknowledge() {
       return act("Archivage", () => call("/api/mind/autopilot/acknowledge", {}));
     },
@@ -3349,6 +3352,19 @@
     }).join("");
     return '<div class="ap-card"><div class="ap-title">En clair : ce qui a ete fait</div>' + (items || '<div class="ap-muted">Rien a resumer pour l instant.</div>') + "</div>";
   }
+  function capacityHtml(s) {
+    if (!s || !s.capacityEnabled) return "";
+    const c = s.capacity;
+    const btn = '<button class="tab-bar-btn ap-primary" onclick="MindAutopilot.runNow()" ' + (ap.busy || !s.enabled || s.active ? "disabled" : "") + ' title="Une tache peut demarrer maintenant, meme hors plage, si la capacite le permet. L horaire ne change pas.">Lancer une tache maintenant</button>';
+    if (!c) return '<div class="ap-card"><div class="ap-title">Capacite</div><div class="ap-muted">Pas encore calculee.</div>' + btn + "</div>";
+    const prov = (p) => {
+      const v = c.providers[p];
+      const name = p === "claude" ? "Claude (auteur)" : "Codex (revue)";
+      const wins = (v.windows || []).map((w) => esc(w.name) + " : " + esc(w.usedPct.toFixed(0)) + " % utilise" + (w.resetsAt ? ", reinitialisation " + esc(when(w.resetsAt)) : "") + (w.expired ? " (deja reinitialisee)" : "")).join(" ; ");
+      return "<tr><td><b>" + name + "</b></td><td>" + (v.status === "known" ? esc(String(v.tasks)) : '<span style="color:var(--yellow);">inconnu</span>') + "</td><td>" + (wins || "-") + "</td><td>" + (v.costPct != null ? esc(v.costPct.toFixed(1)) + ' % par tache<div class="ap-muted">' + esc(v.costBasis) + "</div>" : "-") + "</td><td>" + esc(v.source || "-") + (v.readAt ? '<div class="ap-muted">lu ' + esc(when(v.readAt)) + "</div>" : "") + (v.status !== "known" ? '<div class="ap-muted">' + esc(v.why || "") + "</div>" : "") + "</td></tr>";
+    };
+    return '<div class="ap-card"><div class="ap-title">Capacite de cette plage</div><div class="ap-big" style="margin:4px 0;">' + esc(c.admissible) + " tache(s) admissible(s) sur " + esc(c.maxTasks) + " | " + esc(c.launched) + " deja lancee(s)" + (c.mode === "fallback" ? ' <span class="ap-tag" style="background:var(--yellow);color:var(--base);">repli : usage inconnu</span>' : ' <span class="ap-tag">mesuree</span>') + '</div><div style="margin-bottom:6px;">' + esc(c.reason) + '</div><table class="ap-table"><thead><tr><th>Abonnement</th><th>Taches possibles</th><th>Fenetres</th><th>Cout estime</th><th>Source</th></tr></thead><tbody>' + prov("claude") + prov("codex") + '</tbody></table><div class="ap-note">Marge de securite gardee libre : ' + esc(c.marginPct) + " % de chaque fenetre. Les abonnements donnent un pourcentage de fenetre, jamais un nombre de tokens restants. Une tache n est comptee que si Claude ET la revue Codex peuvent la faire. Calcule " + esc(when(c.at)) + '.</div><div class="ap-btns" style="margin-top:8px;">' + btn + (s.manualRunUntil && s.manualRunUntil > Date.now() ? '<span class="ap-muted">Lancement manuel en attente jusqu a ' + esc(when(s.manualRunUntil)) + ".</span>" : "") + "</div></div>";
+  }
   function loopDetailHtml() {
     const d = ap.loopDetail;
     const id = ap.loopView;
@@ -3464,6 +3480,7 @@
         ${overview()}
         ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ""}
         ${selector()}
+        ${ap.loopView ? "" : capacityHtml(s)}
         ${ap.loopView ? "" : clairHtml()}
         <div class="ap-card">
           <div class="ap-status">

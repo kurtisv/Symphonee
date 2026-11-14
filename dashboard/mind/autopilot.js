@@ -10,6 +10,7 @@ const insights = require('./insights');
 const store = require('./store');
 const budget = require('./autopilot-budget');
 const localBrief = require('./local-brief');
+const capacity = require('./usage-capacity');
 const guard = require('./autopilot-verify');
 // Optional Sentry reporting (window check-ins, completions, halts). Never throws.
 let sentry = null;
@@ -68,6 +69,14 @@ function inSchedule(sched, now = Date.now()) {
   const d = new Date(now), cur = d.getHours() * 60 + d.getMinutes();
   const a = minutesOf(sched.start), b = minutesOf(sched.end);
   return a < b ? (cur >= a && cur < b) : (cur >= a || cur < b);
+}
+// Start of the work window containing now (local midnight without a schedule).
+function windowStartOf(sched, now = Date.now()) {
+  const d = new Date(now);
+  if (!sched) return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const [h, m] = sched.start.split(':').map(Number);
+  const t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime();
+  return t <= now ? t : new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1, h, m, 0, 0).getTime();
 }
 function nextWindowStart(sched, now = Date.now()) {
   const d = new Date(now);
@@ -358,6 +367,9 @@ class MindAutopilot {
       // Local pre-triage model (LM Studio, loopback only): condenses the
       // backlog's P0/P1 lines before discovery. Hints only, never a verdict.
       localBrief: validLocalBrief(def.localBrief),
+      // Adaptive task capacity (0..6 per work window) from the real remaining
+      // subscription capacity; false turns it off (fixed daily limit again).
+      capacity: def.capacity === false ? false : capacity.settings(def.capacity || {}),
       limits: def.limits && typeof def.limits === 'object' ? def.limits : null };
     this.profile = PROFILES[profile];
     this.limits = mergeLimits(this.profile.limits, this.def.limits);
@@ -469,6 +481,58 @@ class MindAutopilot {
       stage: this.state.active?.stage || null, ...extra });
     this.state.events = this.state.events.slice(-80);
   }
+  // Tasks started (discoveries) in the current work window.
+  windowLaunches(now = Date.now()) {
+    const from = windowStartOf(this.def.schedule, now);
+    this.state.windowLaunches = (this.state.windowLaunches || []).filter(t => t > now - 3 * 86400000);
+    return this.state.windowLaunches.filter(t => t >= from).length;
+  }
+  // Measures the cost of finished tasks once a reading covers their end.
+  settleCosts(readings, checkedAt) {
+    const left = [];
+    const MAX_LATE = 2 * 3600000; // a reading later than this mixes in too much other usage
+    for (const pc of this.state.pendingCosts || []) {
+      if (checkedAt - pc.endedAt > MAX_LATE) continue; // expired BEFORE any measure: dropped
+      for (const p of ['claude', 'codex']) {
+        if (pc.done[p]) continue;
+        const b = pc.before && pc.before[p], r = readings[p];
+        if (!b || !b.used || !b.valid) { pc.done[p] = true; continue; }          // no usable "before": never measurable
+        if (!capacity.validReading(r, checkedAt) || !(r.readAt >= pc.endedAt + 60000) || r.readAt > pc.endedAt + MAX_LATE) continue; // wait for a reading in [end+60 s, end+2 h]
+        const windows = capacity.taskCostByWindow(b.used, capacity.allWindows(r));
+        if (windows) this.state.capacityLog = capacity.trimCostLog([...(this.state.capacityLog || []), { provider: p, pct: Math.max(...Object.values(windows)), windows, at: new Date(checkedAt).toISOString() }], 50, capacity.settings(this.def.capacity).costSamples);
+        pc.done[p] = true;
+      }
+      // Kept until both providers are settled; expiry is checked first, above.
+      if (!(pc.done.claude && pc.done.codex)) left.push(pc);
+    }
+    this.state.pendingCosts = left;
+  }
+  // Fresh reading of both subscriptions, then the 0..6 decision (kept for the UI).
+  capacityDecision(now = Date.now()) {
+    const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity, now);
+    try { this.settleCosts(readings, Math.max(now, Date.now())); } catch (_) {}
+    // Every pilot spends the same two subscriptions: tasks any of them started
+    // after a reading are reserved against it (see usage-capacity decide()).
+    const all = [this, ...this.peers().filter(p => p !== this)];
+    // Every task of every pilot, with its end (null while unfinished). A span
+    // left open by a task that ended another way (archived, cleared) is closed
+    // when noticed, so a reservation can never leak forever.
+    for (const p of all) {
+      const act = p.state && p.state.active;
+      // An active task from an older state (no launchedAt / no span) is reserved too.
+      if (act && !act.launchedAt) act.launchedAt = act.startedAt || Date.now();
+      const cur = act && act.launchedAt;
+      if (p.state) p.state.taskSpans = p.state.taskSpans || [];
+      for (const t of (p.state && p.state.taskSpans) || []) if (t.endedAt == null && t.launchedAt !== cur) t.endedAt = Date.now();
+      if (cur && !p.state.taskSpans.some(t => t.launchedAt === cur)) p.state.taskSpans.push({ launchedAt: cur, endedAt: null });
+    }
+    const spans = all.flatMap(p => (p.state && p.state.taskSpans) || []);
+    const d = capacity.decide({ ...readings, costLog: this.state.capacityLog || [], launched: this.windowLaunches(now), spans,
+      // Validated against the time AFTER reading: a reading is never "from the future" of its own check.
+      fallbackTasks: this.limits.dailyCompletions, cfg: this.def.capacity, now: Math.max(now, Date.now()) });
+    this.state.capacity = d;
+    return { decision: d, readings };
+  }
   todayCompleted(now = Date.now()) {
     const day = budget.dayOf(now);
     return this.state.history.filter(x => x.outcome === 'completed' && x.at
@@ -487,7 +551,8 @@ class MindAutopilot {
       return s.error ? 'error' : 'disabled';
     }
     if (s.active) return s.active.waitingStage ? 'quota' : 'running';
-    if (this.todayCompleted(now) >= this.limits.dailyCompletions || this.todayDiscoveries(now) >= this.limits.dailyDiscoveries
+    const capped = this.def.capacity ? (s.capacity && s.capacity.admissible === 0) : this.todayCompleted(now) >= this.limits.dailyCompletions;
+    if (capped || this.todayDiscoveries(now) >= this.limits.dailyDiscoveries
       || !budget.canDispatch(s, now, this.limits)) return 'quota';
     if (now < s.nextAt) return 'waiting';
     return 'active';
@@ -496,7 +561,11 @@ class MindAutopilot {
     const s = this.state;
     const a = s.active;
     const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length || this.profile.deep ? ['verify'] : []), 'code-review', 'repair', 'done'];
+    // The capacity shown is at most 2 minutes old (read again when older, between tasks).
+    if (this.def.capacity && !a && (!s.capacity || now - s.capacity.at > 120000)) { try { this.capacityDecision(now); } catch (_) {} }
     return { pilot: this.id, label: this.def.label, profile: this.def.profile, profileLabel: this.profile.label,
+      capacity: this.def.capacity ? (s.capacity || null) : null, capacityEnabled: !!this.def.capacity,
+      capacityCosts: (s.capacityLog || []).slice(-10), manualRunUntil: s.manualRunUntil || null,
       verify: this.def.verify.map(v => v.name), protectedPaths: this.def.protectedPaths, linkDirs: this.def.linkDirs, pipeline,
       enabled: s.enabled, status: this.status(now), goal: s.goal, repoName: s.repoName,
       repoPath: s.repoPath, space: s.space, consent: s.consent,
@@ -613,6 +682,15 @@ class MindAutopilot {
     this.startVerify();
     return this.snapshot();
   }
+  runNow(now = Date.now()) {
+    if (!this.state.enabled) throw new Error('Activez d abord ce pilote');
+    if (this.state.active) throw new Error('Une tache est deja en cours ou en attente');
+    this.state.manualRunUntil = now + 30 * 60000;
+    this.state.nextAt = now;
+    this.log('manual', 'Lancement manuel demande : une tache peut demarrer hors plage dans les 30 minutes, si la capacite le permet.');
+    this.save();
+    return this.tick(now);
+  }
   stop() {
     const wasEnabled = this.state.enabled;
     this.state.enabled = false;
@@ -725,7 +803,8 @@ class MindAutopilot {
     if (!STAGES.includes(stage)) throw new Error('Invalid stage');
     // No stage starts outside the work window, not even the next stage of a
     // task begun inside it: it waits for the next window.
-    if (this.def.schedule && !this.inWindow(now)) return this.parkForWindow(stage, now);
+    // A task started by hand ("Lancer une tache maintenant") runs to its end.
+    if (this.def.schedule && !this.inWindow(now) && !(a && a.manual)) return this.parkForWindow(stage, now);
     const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
@@ -812,6 +891,19 @@ class MindAutopilot {
   }
   complete(outcome, reviewerEvidence = null) {
     const a = this.state.active;
+    // The task's span ends now: it stays reserved until a reading taken after this.
+    if (a && a.launchedAt) {
+      const sp = (this.state.taskSpans || []).find(t => t.launchedAt === a.launchedAt && t.endedAt == null);
+      if (sp) sp.endedAt = Date.now();
+    }
+    // Calibration is DEFERRED: a completed task's cost is measured later, on
+    // the first valid reading taken at least 60 s after the task ended (see
+    // settleCosts). A reading taken earlier could miss the end of its usage.
+    if (this.def.capacity && a && a.usageBefore && outcome === 'completed') {
+      const last = a.taskId && this.orch && typeof this.orch.getTask === 'function' ? this.orch.getTask(a.taskId) : null;
+      const endedAt = Math.max((last && last.completedAt) || 0, Date.now());
+      this.state.pendingCosts = [...(this.state.pendingCosts || []), { before: a.usageBefore, launchedAt: a.launchedAt || null, endedAt, done: {} }].slice(-20);
+    }
     this.state.history.push({ category: a.plan?.category || null,
       title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
       evidence: a.plan?.evidence || [],
@@ -977,11 +1069,13 @@ class MindAutopilot {
       this.windowCheckIn(now);
       if (!this.state.active) {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
-        if (now < this.state.nextAt || this.todayCompleted(now) >= this.limits.dailyCompletions
+        if (now < this.state.nextAt || (!this.def.capacity && this.todayCompleted(now) >= this.limits.dailyCompletions)
           || this.state.discoveryTimes.length >= this.limits.dailyDiscoveries) return this.snapshot();
         if (this.blockedByPeer()) return this.snapshot();
-        // Night window: no NEW task outside it (a running task may finish).
-        if (!this.inWindow(now)) {
+        // Night window: no NEW task outside it (a running task may finish),
+        // except one task started by hand ("Lancer une tache maintenant").
+        const manual = this.state.manualRunUntil && this.state.manualRunUntil > now;
+        if (!manual && !this.inWindow(now)) {
           const next = nextWindowStart(this.def.schedule, now);
           if (this.state.nextAt !== next) {
             this.state.nextAt = next;
@@ -990,6 +1084,23 @@ class MindAutopilot {
           }
           return this.snapshot();
         }
+        // Adaptive capacity: read both subscriptions NOW, just before starting.
+        let usageBefore = null;
+        if (this.def.capacity) {
+          const { decision, readings } = this.capacityDecision(now);
+          if (decision.admissible < 1) {
+            const resume = Math.max(...['claude', 'codex'].flatMap(p => (decision.providers[p].windows || [])
+              .filter(w => w.resetsAt && w.resetsAt > now && w.usablePct <= 0).map(w => w.resetsAt)), 0);
+            this.state.nextAt = resume || now + 30 * 60000;
+            this.state.manualRunUntil = null;
+            this.log('capacity', '0 tache admissible : ' + decision.reason + ' Nouvelle verification ' + new Date(this.state.nextAt).toLocaleString('fr-CA') + '.');
+            this.save(); return this.snapshot();
+          }
+          // Kept for calibration only when that provider was measured fresh, with ALL its windows.
+          const snap = (p) => ({ readAt: readings[p].readAt, valid: decision.providers[p].status === 'known', used: capacity.allWindows(readings[p]) });
+          usageBefore = { claude: snap('claude'), codex: snap('codex') };
+          this.log('capacity', decision.admissible + ' tache(s) admissible(s), lancement de la suivante (' + (decision.launched + 1) + 'e de la plage). ' + decision.reason);
+        }
         const signals = localTriage(this.state.repoPath, { exclude: this.def.protectedPaths });
         if (!signals.useful || !budget.canDispatch(this.state, now, this.limits)) {
           this.state.nextAt = budget.startOfNextDay(now);
@@ -997,9 +1108,15 @@ class MindAutopilot {
             : 'No local signal worth an AI call; next check tomorrow');
           this.save(); return this.snapshot();
         }
+        // The launch is stamped AFTER the readings used to decide it (never before
+        // them), so a later decision on the same reading still reserves this task.
+        const launchAt = Math.max(now, Date.now(), usageBefore ? (usageBefore.claude.readAt || 0) : 0, usageBefore ? (usageBefore.codex.readAt || 0) : 0);
         this.state.active = { stage: 'discover', taskId: null, plan: null, review: '',
           planRevisions: 0, repairs: 0, baseSha: null, worktree: null,
-          localSignals: signals, budgetRef: null, waitingStage: null };
+          localSignals: signals, budgetRef: null, waitingStage: null, usageBefore, launchedAt: launchAt, manual: !!manual && !this.inWindow(now) };
+        this.state.windowLaunches = [...(this.state.windowLaunches || []), launchAt];
+        this.state.taskSpans = [...(this.state.taskSpans || []).filter(t => t.endedAt == null || t.endedAt > launchAt - 3 * 86400000), { launchedAt: launchAt, endedAt: null }];
+        this.state.manualRunUntil = null;
         if (this.def.sources.sentry) {
           const text = await (this.fetchSentry || fetchSentrySummary)();
           // Only real data goes to discovery: an unconfigured plugin, a token
@@ -1097,6 +1214,7 @@ function mountMindAutopilot(addRoute, json, deps) {
   addRoute('GET', '/api/mind/autopilot', route((p) => ({ ...p.snapshot(), pilots: list() })));
   addRoute('POST', '/api/mind/autopilot/configure', route((p, body) => p.configure(body)));
   addRoute('POST', '/api/mind/autopilot/tick', route((p) => p.tick()));
+  addRoute('POST', '/api/mind/autopilot/run-now', route((p) => p.runNow()));
   addRoute('POST', '/api/mind/autopilot/stop', route((p) => p.stop()));
   addRoute('POST', '/api/mind/autopilot/acknowledge', route((p) => p.acknowledge()));
   addRoute('POST', '/api/mind/autopilot/resume', route((p) => p.resume()));
@@ -1111,7 +1229,7 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null,
-        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, limits: body.limits || null };
+        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
