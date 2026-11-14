@@ -40,7 +40,7 @@ function helperSource({ pid, birthMs, execPath, args, cwd, waitMs = 8000 }) {
     // Only the main process (not /T: this helper may still count as its child).
     "    if (sure()) { try { cp.execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore' }); } catch (_) {} }",
     // Start only once the old process is really gone (it holds the single-instance lock).
-    '    let n = 0; const after = () => { if (!same()) return setTimeout(start, 1000); if (++n < 40) setTimeout(after, 500); };',
+    '    let n = 0; const after = () => { if (!same()) return setTimeout(start, 1000); if (++n < 1200) setTimeout(after, 500); };', // up to 10 min: the old process may take long to exit
     '    return setTimeout(after, 500);',
     '  }',
     '  waited += 500; setTimeout(tick, 500);',
