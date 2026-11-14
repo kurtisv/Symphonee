@@ -10,7 +10,7 @@ function classify(error) {
   return 'task';
 }
 function profile(raw = {}) {
-  return { enabled: raw.enabled === true, primary: 'claude', fallback: 'qwen', reviewer: 'codex',
+  return { enabled: raw.enabled === true, primary: 'claude', fallback: raw.provider === 'ollama-mind' ? 'ollama-mind' : 'qwen', provider: raw.provider === 'ollama-mind' ? 'ollama-mind' : 'qwen', reviewer: 'codex', localConsent: raw.localConsent === true,
     cloudConsent: raw.cloudConsent === true, worktreeWritesConsent: raw.worktreeWritesConsent === true,
     maxCalls: Number.isSafeInteger(raw.maxCalls) && raw.maxCalls > 0 ? Math.min(raw.maxCalls, 20) : 0,
     tokenCeiling: Number.isSafeInteger(raw.tokenCeiling) && raw.tokenCeiling > 0 ? raw.tokenCeiling : 0 };
@@ -20,15 +20,18 @@ function eligible(raw, x) {
   const deny = reason => ({ ok: false, reason });
   if (!p.enabled) return deny('fallback-disabled');
   if (!['default', 'gas-saver'].includes(x.pilot)) return deny('pilot-not-eligible');
-  if (!p.cloudConsent || !p.worktreeWritesConsent) return deny('separate-qwen-consents-required');
+  if (p.provider === 'ollama-mind') {
+    if (!p.localConsent) return deny('local-consent-required');
+    if (x.stage !== 'discover') return deny('local-discovery-only');
+  } else if (!p.cloudConsent || !p.worktreeWritesConsent) return deny('separate-qwen-consents-required');
   if (x.provider !== 'claude' || !['discover', 'implement', 'repair'].includes(x.stage)) return deny('role-not-eligible');
   if (classify(x.error) !== 'quota') return deny('not-provider-quota');
   if (x.switches !== 0) return deny('switch-already-used');
   if (x.qwenReady !== true || x.executionAllowed !== true) return deny('qwen-unavailable-or-not-authorized');
-  if (x.reviewerReady !== true) return deny('codex-review-capacity-unavailable');
+  if (p.provider !== 'ollama-mind' && x.reviewerReady !== true) return deny('codex-review-capacity-unavailable');
   if (!p.maxCalls || !p.tokenCeiling || !Number.isFinite(x.calls) || !Number.isFinite(x.chargedTokens)
     || !Number.isFinite(x.reservation) || x.reservation <= 0 || x.calls >= p.maxCalls || x.chargedTokens + x.reservation > p.tokenCeiling) return deny('qwen-budget-ceiling');
-  return { ok: true, reason: 'claude-quota', quota: { status: 'unknown', remaining: null, source: 'no-reliable-qwen-reader' } };
+  return { ok: true, reason: 'claude-quota', quota: p.provider === 'ollama-mind' ? { status: 'not-applicable', remaining: null, source: 'local-ollama' } : { status: 'unknown', remaining: null, source: 'no-reliable-qwen-reader' } };
 }
 function checkpoint(a, changedFiles = []) {
   const clean = value => String(value || '').replace(/\b(?:Bearer\s+\S+|(?:sk-|ghp_|github_pat_)[A-Za-z0-9_-]+)\b/gi, '[redacted]')
@@ -40,4 +43,11 @@ function checkpoint(a, changedFiles = []) {
     findings: clean(a.review), attempts: { repairs: a.repairs || 0, planRevisions: a.planRevisions || 0 },
     nextAction: 'Resume the same stage in the existing worktree. Inspect partial changes and run checks. Preserve Codex review; never commit, push, merge or deploy.' };
 }
-module.exports = { classify, profile, eligible, checkpoint };
+function localResumeReady(readings, now, since) {
+  return ['claude', 'codex'].every(name => {
+    const r = readings && readings[name];
+    return !!r && Number.isFinite(r.readAt) && r.readAt > since && r.readAt <= now && now - r.readAt <= 1800000
+      && Array.isArray(r.windows) && r.windows.length > 0 && r.windows.every(w => Number.isFinite(w.usedPct) && w.usedPct >= 0 && w.usedPct <= 70 && Number.isFinite(w.resetsAt) && w.resetsAt > now);
+  });
+}
+module.exports = { classify, profile, eligible, checkpoint, localResumeReady };

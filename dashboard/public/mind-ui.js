@@ -3285,6 +3285,8 @@
     rememberFallback() {
       ap.draftFallback = {
         enabled: !!$("apFallbackEnabled")?.checked,
+        provider: $("apFallbackProvider")?.value || "qwen",
+        localConsent: !!$("apQwenLocal")?.checked,
         cloudConsent: !!$("apQwenCloud")?.checked,
         worktreeWritesConsent: !!$("apQwenWrites")?.checked,
         maxCalls: Number($("apQwenCalls")?.value),
@@ -3605,9 +3607,12 @@
 
         <details ${ap.advanced ? "open" : ""} ontoggle="MindAutopilot.advanced(this.open)"><summary>Parametres avances : permissions, quotas et configuration</summary><div class="ap-grid">
           <section class="ap-card ap-form" aria-labelledby="apFallbackTitle">
-            <h2 id="apFallbackTitle">Releve Claude vers Qwen Code cloud</h2>
+            <h2 id="apFallbackTitle">Releve Claude vers Qwen</h2>
             <p>Opt-in par pilote. Arretez et archivez toute tache active avant modification. Le relecteur reste Codex.</p>
             <label><input id="apFallbackEnabled" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.enabled ? "checked" : ""} ${fallbackLocked ? "disabled" : ""}> Activer la releve sur quota Claude</label>
+            <label>Fournisseur <select id="apFallbackProvider" onchange="MindAutopilot.rememberFallback()" ${fallbackLocked ? "disabled" : ""}><option value="ollama-mind" ${fallback.provider === "ollama-mind" ? "selected" : ""}>Qwen local + Mind : suggestions seulement</option><option value="qwen" ${fallback.provider !== "ollama-mind" ? "selected" : ""}>Qwen Code cloud</option></select></label>
+            <label><input id="apQwenLocal" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.localConsent ? "checked" : ""} ${fallbackLocked ? "disabled" : ""}> J'autorise les suggestions locales depuis Mind</label>
+            <p>Qwen local ne lit pas les fichiers et ne les modifie pas. Sa suggestion attend le retour de Claude avant la revue Codex et l'implementation.</p>
             <label><input id="apQwenCloud" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.cloudConsent ? "checked" : ""} ${fallbackLocked ? "disabled" : ""}> J'autorise les appels Qwen cloud et leurs couts eventuels</label>
             <label><input id="apQwenWrites" type="checkbox" onchange="MindAutopilot.rememberFallback()" ${fallback.worktreeWritesConsent ? "checked" : ""} ${fallbackLocked ? "disabled" : ""}> J'autorise Qwen a ecrire dans le worktree isole</label>
             <label>Plafond d'appels Qwen <input id="apQwenCalls" type="number" min="1" max="20" step="1" value="${esc(fallback.maxCalls || "")}" oninput="MindAutopilot.rememberFallback()" ${fallbackLocked ? "disabled" : ""}></label>

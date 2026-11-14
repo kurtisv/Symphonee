@@ -755,6 +755,7 @@ class MindAutopilot {
     const a = this.state.active;
     if (stage === 'plan-review') return ['Codex independent adversarial PLAN review. READ-ONLY.',
       this.contextPolicy(), RULES, this.guardText(), 'Goal: ' + this.state.goal, 'Plan: ' + JSON.stringify(a.plan),
+      a.planOrigin === 'local-unverified' ? 'This is an UNVERIFIED suggestion by a tool-less local model. Mind references only identify context, not proof. Inspect the current repository and independently reproduce every factual claim; FAIL if any claim cannot be verified.' : '',
       this.qualityPolicy(),
       'Verify EACH evidence item independently. Reject speculative performance claims and cleanup without reference checks.',
       'For performance, verify a reproducible baseline and objective comparison method exist before implementation.',
@@ -850,11 +851,13 @@ class MindAutopilot {
       const config = this.orch.getConfig?.() || {};
       const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
       const reviewer = readings.codex;
-      const u = budget.dailyUsage(this.state, now, this.limits).byProvider.qwen || { calls: 0, measuredTokens: 0, reservedTokens: 0 };
-      const ready = p.enabled && p.cloudConsent && p.worktreeWritesConsent && health?.isAvailable('qwen') && health?.isAvailable('codex')
+      const local = p.provider === 'ollama-mind';
+      const u = budget.dailyUsage(this.state, now, this.limits).byProvider[local ? 'ollama-mind' : 'qwen'] || { calls: 0, measuredTokens: 0, reservedTokens: 0 };
+      const providerReady = local ? p.localConsent && stage === 'discover' && this.orch._localDiscoveryReadyAt > now - 30000 && typeof this.orch.spawnLocalDiscovery === 'function' : p.cloudConsent && p.worktreeWritesConsent && health?.isAvailable('qwen') && health?.isAvailable('codex')
         && health.get('qwen')?.lastSuccess > now - 86400000 && !(health.get('qwen')?.lastFailure > health.get('qwen')?.lastSuccess)
         && config.OrchestrateCliList?.includes('qwen') && this.orch.canConfineProvider?.('qwen', { readOnly: stage === 'discover' }) === true
-        && capacity.validReading(reviewer, now) && now - reviewer.readAt <= 1800000 && reviewer.windows.every(w => w.resetsAt > now && w.usedPct <= 70)
+        && capacity.validReading(reviewer, now) && now - reviewer.readAt <= 1800000 && reviewer.windows.every(w => w.resetsAt > now && w.usedPct <= 70);
+      const ready = p.enabled && providerReady
         && u.calls < p.maxCalls && u.measuredTokens + u.reservedTokens + this.limits.reservedTokensPerCall <= p.tokenCeiling
         && !this.blockedByPeer() && (!this.def.schedule || this.inWindow(now) || a.manual)
         && (stage !== 'discover' || this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now)).length < this.limits.dailyDiscoveries)
@@ -866,7 +869,7 @@ class MindAutopilot {
     // task begun inside it: it waits for the next window.
     // A task started by hand ("Lancer une tache maintenant") runs to its end.
     if (this.def.schedule && !this.inWindow(now) && !(a && a.manual)) return this.parkForWindow(stage, now);
-    const cli = resuming ? 'qwen' : ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
+    const cli = resuming ? this.def.fallback.provider : ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
     // cloudTimeoutMs: without it a cloud CLI stage is cut at the task-store
@@ -892,7 +895,9 @@ class MindAutopilot {
     if (stage === 'discover') this.state.discoveryTimes.push(now);
     this.save();
     let task;
-    if (stage === 'discover' || stage === 'plan-review') {
+    if (stage === 'discover' && cli === 'ollama-mind') {
+      task = this.orch.spawnLocalDiscovery({ prompt: this.discoveryPrompt(), cwd: this.state.repoPath, space: this.state.space, timeout: this.stepMs, from: 'mind-autopilot' });
+    } else if (stage === 'discover' || stage === 'plan-review') {
       // Default effort: a 'low' discovery measured 2026-11-11 looked at one
       // signal and gave up (NO_TASK) despite real untested modules.
       task = this.orch.spawnHeadless({ ...opts, cli,
@@ -957,7 +962,7 @@ class MindAutopilot {
     a.stage = stage; a.taskId = task.id; a.budgetRef = charge.ref;
     a.currentProvider = cli;
     if (resuming) { a.handoff.status = 'dispatched'; a.handoff.taskId = task.id;
-      this.log('handoff', 'claude -> qwen: quota; same ' + stage + ' stage; Codex review reserved', { taskId: task.id, cli }); }
+      this.log('handoff', 'claude -> ' + cli + ': quota; same ' + stage + ' stage', { taskId: task.id, cli }); }
     a.waitingStage = null; a.startedAt = now;
     this.log('dispatch', stage + ' -> ' + cli + ' (task ' + task.id + ')', { taskId: task.id, cli });
     this.save();
@@ -1000,6 +1005,27 @@ class MindAutopilot {
     const a = this.state.active;
     if (a.stage === 'discover') {
       const plan = parsePlan(raw);
+      if (a.currentProvider === 'ollama-mind') {
+        // This model has no file tools: all its claims are unverified. Never
+        // spend Codex quota until the author is available again and never treat
+        // NO_TASK or malformed output as proof that no useful work exists.
+        const h = a.handoff;
+        const duplicate = plan && plan.decision === 'TASK' && this.state.history.some(item => item.key === taskKey(plan) && item.outcome === 'completed');
+        const refs = a.localContextRefs || [];
+        const cited = plan && plan.decision === 'TASK' && plan.evidence.every(e => {
+          const found = [...e.matchAll(/\[([A-Z]\d+)\]/g)].map(m => m[1]);
+          return found.length > 0 && found.every(ref => refs.includes(ref));
+        });
+        const usable = plan && plan.decision === 'TASK' && !duplicate && cited;
+        a.localSuggestion = { provider: 'ollama-mind', at: now, status: usable ? 'awaiting-review' : 'inconclusive', refs, duplicate: !!duplicate };
+        a.handoff = null;
+        if (usable) { a.plan = plan; a.stage = 'plan-review'; a.planOrigin = 'local-unverified'; }
+        else { a.plan = null; a.stage = 'discover'; }
+        const snapshot = this.parkForCredit(a, 'Claude usage limit reached', now);
+        if (h && Number.isFinite(h.claudeResetAt) && h.claudeResetAt > now) this.state.nextAt = Math.max(this.state.nextAt, h.claudeResetAt + 120000);
+        this.log('local-suggestion', usable ? 'Local suggestion retained; waiting for Claude before Codex review' : 'Local discovery inconclusive; wait for Claude');
+        this.save(); return snapshot;
+      }
       if (!plan) {
         // Keep the paid answer: "Reprendre" re-parses it instead of paying a new discovery.
         a.lastRaw = String(raw || '').slice(0, 30000);
@@ -1143,25 +1169,26 @@ class MindAutopilot {
     const reviewer = readings.codex;
     const reviewerReady = capacity.validReading(reviewer, now) && now - reviewer.readAt <= 30 * 60000
       && reviewer.windows.every(w => w.resetsAt > now && w.usedPct <= 70);
-    const usage = budget.dailyUsage(this.state, now, this.limits).byProvider.qwen || { calls: 0, measuredTokens: 0, reservedTokens: 0 };
+    const local = this.def.fallback.provider === 'ollama-mind';
+    const usage = budget.dailyUsage(this.state, now, this.limits).byProvider[local ? 'ollama-mind' : 'qwen'] || { calls: 0, measuredTokens: 0, reservedTokens: 0 };
     const health = this.orch.providerHealth;
     const config = this.orch.getConfig ? this.orch.getConfig() : {};
     const gate = fallback.eligible(this.def.fallback, { pilot: this.id, stage, provider: task.cli || a.currentProvider || 'claude',
       error: task.error || task.result, switches: a.handoff && a.handoff.stage === stage ? 1 : 0,
-      qwenReady: !!health?.isAvailable('qwen') && health.get('qwen')?.lastSuccess > now - 86400000
+      qwenReady: local ? await this.orch.localDiscoveryReady?.() === true : !!health?.isAvailable('qwen') && health.get('qwen')?.lastSuccess > now - 86400000
         && !(health.get('qwen')?.lastFailure > health.get('qwen')?.lastSuccess),
-      reviewerReady: reviewerReady && !!health?.isAvailable('codex'), executionAllowed: Array.isArray(config.OrchestrateCliList) && config.OrchestrateCliList.includes('qwen'),
+      reviewerReady: reviewerReady && !!health?.isAvailable('codex'), executionAllowed: local ? typeof this.orch.spawnLocalDiscovery === 'function' : Array.isArray(config.OrchestrateCliList) && config.OrchestrateCliList.includes('qwen'),
       calls: usage.calls, chargedTokens: usage.measuredTokens + usage.reservedTokens, reservation: this.limits.reservedTokensPerCall });
     if (!gate.ok) { this.log('fallback-blocked', gate.reason); return false; }
-    if (this.orch.canConfineProvider?.('qwen', { readOnly: stage === 'discover' }) !== true) {
+    if (!local && this.orch.canConfineProvider?.('qwen', { readOnly: stage === 'discover' }) !== true) {
       this.log('fallback-blocked', 'qwen-confinement-not-verified'); return false;
     }
     const remaining = budget.dailyUsage(this.state, now, this.limits);
-    if (remaining.remainingCalls < 2 || remaining.remainingTokenBudget < 2 * this.limits.reservedTokensPerCall) {
+    if (remaining.remainingCalls < (local ? 1 : 2) || remaining.remainingTokenBudget < (local ? 1 : 2) * this.limits.reservedTokensPerCall) {
       this.log('fallback-blocked', 'author-and-independent-review-reservation-required'); return false;
     }
     if (a.handoff?.sourceTaskId === task.id) return true;
-    a.handoff = { from: 'claude', to: 'qwen', reason: 'quota', at: now, stage, sourceTaskId: task.id,
+    a.handoff = { from: 'claude', to: local ? 'ollama-mind' : 'qwen', reason: 'quota', at: now, stage, sourceTaskId: task.id, claudeResetAt: creditResetAt(String(task.error || task.result || ''), now),
       status: 'checking', nextAction: 'prove-process-termination', quota: gate.quota };
     this.save();
     const stop = reason => { a.handoff.status = 'blocked'; a.handoff.nextAction = reason; this.state.enabled = false;
@@ -1182,9 +1209,11 @@ class MindAutopilot {
     }
     a.handoff.checkpoint = fallback.checkpoint(a, stage === 'discover' ? [] : guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }));
     a.handoff.termination = proof; a.handoff.status = 'ready'; a.handoff.nextAction = 'resume-same-stage';
-    const review = budget.reserveCall(this.state, { cli: 'codex', stage: 'review-hold', at: now, ref: crypto.randomUUID() }, this.limits);
-    if (!review) return stop('reviewer-reservation-failed');
-    a.reviewHold = review.ref;
+    if (!local) {
+      const review = budget.reserveCall(this.state, { cli: 'codex', stage: 'review-hold', at: now, ref: crypto.randomUUID() }, this.limits);
+      if (!review) return stop('reviewer-reservation-failed');
+      a.reviewHold = review.ref;
+    }
     this.save();
     this.dispatch(stage, now);
     return true;
@@ -1270,6 +1299,13 @@ class MindAutopilot {
           const heldReview = ['plan-review', 'code-review'].includes(a.waitingStage) && a.reviewHold
             && this.state.budgetCalls.some(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
           if (now < this.state.nextAt || (!heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
+          if (a.localSuggestion) {
+            const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
+            if (!fallback.localResumeReady(readings, now, a.localSuggestion.at) || !this.orch.providerHealth?.isAvailable('codex')) {
+              this.state.nextAt = now + 5 * 60000; this.save(); return this.snapshot();
+            }
+            a.localSuggestion = null;
+          }
           a.parkReason = null;
           if (a.waitingStage === 'verify') { a.waitingStage = null; this.startVerify(); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
@@ -1288,12 +1324,13 @@ class MindAutopilot {
           throw new Error('Stage timed out: ' + a.stage);
         }
         if (t.state === 'completed') {
+          if (a.currentProvider === 'ollama-mind') a.localContextRefs = (t.execution?.mindContext?.transmitted || []).map(x => x.ref).filter(x => /^[A-Z]\d+$/.test(x));
           budget.settleCall(this.state, a.budgetRef, t);
           a.budgetRef = null; this.save();
           this.advance(t.result, now);
         } else if (!['running', 'pending', 'queued'].includes(t.state)) {
           budget.settleCall(this.state, a.budgetRef, t);
-          if (a.handoff && (t.cli === 'qwen' || a.currentProvider === 'qwen')) {
+          if (a.handoff && (t.cli === 'qwen' || a.currentProvider === 'qwen' || a.currentProvider === 'ollama-mind')) {
             a.handoff.status = 'blocked'; a.handoff.nextAction = 'inspect-qwen-failure';
             throw new Error('Qwen fallback failed; no automatic switch back to Claude');
           }
@@ -1353,7 +1390,7 @@ function mountMindAutopilot(addRoute, json, deps) {
     if (!['default', 'gas-saver'].includes(p.id)) throw new Error('Fallback is only available for default and gas-saver');
     if (p.state.enabled || p.state.active) throw new Error('Stop and archive this pilot before changing fallback permissions');
     const settings = fallback.profile(body.fallback);
-    if (settings.enabled && (!settings.cloudConsent || !settings.worktreeWritesConsent || !settings.maxCalls || !settings.tokenCeiling)) throw new Error('Separate Qwen cloud/write consents and positive ceilings are required');
+    if (settings.enabled && (!settings.maxCalls || !settings.tokenCeiling || (settings.provider === 'ollama-mind' ? !settings.localConsent : !settings.cloudConsent || !settings.worktreeWritesConsent))) throw new Error('Qwen provider consent and positive ceilings are required');
     const all = readDefs(); all[p.id] = { ...p.def, fallback: settings };
     fs.mkdirSync(path.dirname(defsFile), { recursive: true });
     const tmp = defsFile + '.tmp-' + process.pid;

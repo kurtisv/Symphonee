@@ -2,6 +2,12 @@
 
 This branch is based on master edf4c7b. It is not deployed. Existing application configuration and live pilots were not changed.
 
+## Local Ollama and Mind discovery (additional opt-in)
+
+Each pilot can separately opt into `ollama-mind` discovery-only suggestions when Claude hits a quota limit. The worker uses the existing Ollama Qwen answer-model selection and passes relevant Mind records and skills; it cannot run commands, inspect files, edit the repository, perform review, complete development work, or fall back to a cloud model. The author must first be proven stopped. All evidence items must cite transmitted references; citations are not verification. Plans are labeled unverified and Codex must inspect/reproduce claims independently. Inconclusive or malformed output never means no work exists. Codex is not called until fresh post-suggestion Claude and Codex quota readings indicate availability. The existing Claude/Codex implementation and review steps remain mandatory; write-stage local fallback is unavailable. Default remains off and no active pilot configuration is changed.
+
+Real local smoke: the actual worker called Ollama `qwen2.5:1.5b` with a synthetic Mind record, without cloud calls or touching a live pilot. It completed in 5.36 seconds but returned contradictory `NO_TASK` plus a task title and non-contract fields (`evidence_array`, `acceptance_array`). This is treated as inconclusive. It does not establish that this model can reliably produce useful plans or safely implement changes. Readiness and quality for autonomous development are not demonstrated.
+
 ## Implemented
 
 - Only default and gas-saver accept the opt-in fallback profile. Separate Qwen cloud and worktree-write consent, explicit daily calls and estimated-token ceilings are mandatory. Defaults remain disabled.

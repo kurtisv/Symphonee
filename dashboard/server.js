@@ -1091,11 +1091,13 @@ if (orchestrator) {
       }
       return null;
     };
-    orchestrator.getLocalMindContext = ({ question, budgetTokens, space, cwd } = {}) => {
+    orchestrator.getLocalMindContext = ({ question, budgetTokens, space, cwd, requireRepo = false } = {}) => {
       const ui = getUiContextWithPath() || {};
+      const resolvedRepo = cwd && repoOfPath(cwd);
+      if (requireRepo && !resolvedRepo) throw new Error('Local Mind: task repository is not registered');
       return mindContext.buildMindContext({ repoRoot, question, budgetTokens,
         space: space || ui.activeSpace || ui.notesNamespace || '_global',
-        activeRepo: (cwd && repoOfPath(cwd)) || ui.activeRepo || null,
+        activeRepo: resolvedRepo || ui.activeRepo || null,
         loadSkills: () => skills.loadCorpus(), lessonsMod });
     };
     addRoute('GET', '/api/mind/local-diagnostics', (req, res) => {
