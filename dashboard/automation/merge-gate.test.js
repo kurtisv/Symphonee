@@ -401,3 +401,17 @@ test('legacy policy: repositories without own settings still share one chain per
   await gate.pass({ enabled: true, repos: [{ ...REPO, name: 'A' }, { ...REPO, name: 'B' }] }, {}, io);
   assert.equal(w.chainRuns, 1);
 });
+
+test('CI verdict: a listed check is superseded only by a strictly later run (fail closed otherwise)', () => {
+  const G = (conclusion, startedAt, extra = {}) => ({ app: 'GitHub Actions', name: 'governance', status: 'completed', conclusion, startedAt, ...extra });
+  const ok = { app: 'GitHub Actions', name: 'verify', status: 'completed', conclusion: 'success', startedAt: '2026-11-12T16:32:17Z' };
+  const push = G('failure', '2026-11-12T16:32:02Z'), pr = G('success', '2026-11-12T16:32:15Z');
+  assert.equal(gate.checksVerdict([push, pr, ok], ['governance']), 'success', 'push run superseded by the later PR run');
+  assert.equal(gate.checksVerdict([push, pr, ok]), 'failure', 'not listed: every run counts');
+  assert.equal(gate.checksVerdict([G('failure', undefined), pr, ok], ['governance']), 'failure', 'undated failure is kept');
+  assert.equal(gate.checksVerdict([G('failure', '2026-11-12T16:32:15Z'), pr, ok], ['governance']), 'failure', 'equal times: kept');
+  assert.equal(gate.checksVerdict([pr, G('failure', '2026-11-12T17:00:00Z'), ok], ['governance']), 'failure', 'a newer failure fails');
+  assert.equal(gate.checksVerdict([push, G('success', '2026-11-12T16:32:15Z', { app: 'Other' }), ok], ['governance']), 'failure', 'another app does not supersede');
+  assert.equal(gate.checksVerdict([push, G(null, '2026-11-12T16:40:00Z', { status: 'in_progress' }), ok], ['governance']), 'pending', 'newer run still running');
+  assert.equal(gate.checksVerdict([push, G('skipped', '2026-11-12T16:40:00Z'), ok], ['governance']), 'failure', 'a later skipped run does not replace a failure');
+});
