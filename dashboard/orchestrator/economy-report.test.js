@@ -50,3 +50,16 @@ test('empty report exposes known absence of tasks, not invented savings', () => 
   assert.equal(report.usageCoveragePercent, 0);
   assert.equal(report.monetarySavingsUsd, null);
 });
+
+test('Gemini zero placeholders are unknown, not evidence of free requests', () => {
+  const report = summarizeEconomy({ tasks: [
+    { cli: 'gemini-api', state: 'running', geminiUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0, thoughtTokens: 0 } },
+    { cli: 'gemini-api', state: 'completed', geminiUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0, thoughtTokens: 0 } },
+    { cli: 'gemini-api', state: 'completed', geminiUsage: { inputTokens: 6, outputTokens: 4, totalTokens: 10, cachedTokens: 2, thoughtTokens: 0 } },
+  ] });
+  assert.equal(report.taskCount, 3);
+  assert.equal(report.unknownUsageTasks, 2);
+  assert.equal(report.measuredUsageTasks, 1);
+  assert.equal(report.measuredInputTokens, 6);
+  assert.equal(report.measuredOutputTokens, 4);
+});
