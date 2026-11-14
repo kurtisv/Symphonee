@@ -3080,7 +3080,7 @@
     active: { label: "Actif", color: "var(--green)", hint: "Pret : la prochaine verification peut lancer une decouverte." },
     running: { label: "En cours", color: "var(--accent)", hint: "Une etape est en cours d'execution." },
     waiting: { label: "En attente", color: "var(--yellow)", hint: "Pause entre deux taches avant la prochaine verification." },
-    quota: { label: "Quota atteint", color: "var(--yellow)", hint: "Limite quotidienne atteinte : reprise le jour suivant (heure locale)." },
+    quota: { label: "Etape en attente", color: "var(--yellow)", hint: "Verifier le motif ci-dessous : budget interne, limite fournisseur, horaire ou reprise. Le budget interne ne mesure pas les tokens restants chez le fournisseur." },
     error: { label: "Erreur", color: "var(--red)", hint: "Le pilote s'est arrete sur une erreur." },
     interrupted: { label: "Interrompu", color: "var(--red)", hint: "Une tache a ete interrompue : inspectez son worktree puis archivez-la avant de relancer." }
   };
@@ -3092,7 +3092,7 @@
     "code-review": "Revue Codex",
     repair: "Reparation",
     done: "Termine",
-    "budget-wait": "En attente de quota"
+    "budget-wait": "Etape en attente"
   };
   var OUTCOME_LABELS = {
     completed: "Reussie",
@@ -3597,6 +3597,8 @@
           ${verifyLine(s)}
           ${a ? '<div class="ap-note">Tache : <b>' + esc(a.plan ? "[" + (CATEGORY_LABELS[a.plan.category] || a.plan.category) + "] " + a.plan.title : "(decouverte en cours)") + "</b> | revisions du plan " + esc(a.planRevisions || 0) + "/" + esc(L.planRevisions) + " | reparations " + esc(a.repairs || 0) + "/" + esc(L.repairs) + (a.worktree ? ' | worktree <span class="ap-path">' + esc(a.worktree.path) + "</span>" : "") + (a.taskId ? " | tache Orchestrator " + esc(a.taskId) : "") + "</div>" : ""}
           ${a && a.parkReason === "credit" ? '<div class="ap-note" style="color:var(--yellow);">Limite de credit du fournisseur atteinte (' + esc(a.creditHits) + " fois) : la tache est en pause, rien n'est perdu. Reprise prevue : " + esc(when(s.nextAt)) + ".</div>" : ""}
+          ${a && (a.parkReason === "quota" || s.status === "quota" && ["restart", "window"].includes(a.parkReason)) ? '<div class="ap-note">Budget interne quotidien de Symphonee atteint : il inclut les reservations et les lectures en cache. Il ne represente pas le quota restant chez Claude ou Codex.</div>' : ""}
+          ${a && a.parkReason === "restart" && s.status !== "quota" ? '<div class="ap-note">Reprise apres redemarrage : ' + esc(STAGE_LABELS[a.waitingStage] || a.waitingStage) + " attend son prochain passage. La verification ne reserve pas de budget de modele dans Symphonee.</div>" : ""}
           ${s.nextAt && s.nextAt > Date.now() ? '<div class="ap-note">Prochaine verification possible : ' + esc(when(s.nextAt)) + "</div>" : ""}
           ${s.error ? '<div class="ap-err">' + esc(s.error) + "</div>" : ""}
           ${!s.enabled && a && a.waitingStage ? `<div class="ap-note">Plan approuve en attente de quota : il reprendra a l'etape ` + esc(STAGE_LABELS[a.waitingStage] || a.waitingStage) + ' quand vous reactiverez le pilote.</div><div class="ap-btns" style="margin-top:8px;"><button class="tab-bar-btn" onclick="MindAutopilot.acknowledge()" ' + (ap.busy ? "disabled" : "") + ">Abandonner ce plan</button></div>" : ""}

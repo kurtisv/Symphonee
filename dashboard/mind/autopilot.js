@@ -564,7 +564,18 @@ class MindAutopilot {
       if (s.active && !s.active.waitingStage) return 'interrupted';
       return s.error ? 'error' : 'disabled';
     }
-    if (s.active) return s.active.waitingStage ? 'quota' : 'running';
+    if (s.active) {
+      if (!s.active.waitingStage) return 'running';
+      if (['restart', 'window'].includes(s.active.parkReason)) {
+        const localVerify = s.active.waitingStage === 'verify';
+        const outsideWindow = this.def.schedule && !this.inWindow(now) && !s.active.manual;
+        const heldReview = ['plan-review', 'code-review'].includes(s.active.waitingStage) && s.active.reviewHold
+          && (s.budgetCalls || []).some(c => c.ref === s.active.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
+        if (!outsideWindow && !localVerify && !heldReview && now >= s.nextAt && !budget.canDispatch(s, now, this.limits)) return 'quota';
+        return 'waiting';
+      }
+      return 'quota';
+    }
     const capped = this.def.capacity ? (s.capacity && s.capacity.admissible === 0) : this.todayCompleted(now) >= this.limits.dailyCompletions;
     if (capped || this.todayDiscoveries(now) >= this.limits.dailyDiscoveries
       || !budget.canDispatch(s, now, this.limits)) return 'quota';
@@ -1313,7 +1324,11 @@ class MindAutopilot {
           if (this.blockedByPeer()) return this.snapshot();
           const heldReview = ['plan-review', 'code-review'].includes(a.waitingStage) && a.reviewHold
             && this.state.budgetCalls.some(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
-          if (now < this.state.nextAt || (!heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
+          // Local verification does not dispatch a model or consume a token
+          // reservation. The internal token cap only gates provider calls.
+          const localVerify = a.waitingStage === 'verify';
+          if (now < this.state.nextAt || (!localVerify && !heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
+          if (localVerify && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow('verify', now);
           if (a.localSuggestion) {
             const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
             if (!fallback.localResumeReady(readings, now, a.localSuggestion.at) || !this.orch.providerHealth?.isAvailable('codex')) {
