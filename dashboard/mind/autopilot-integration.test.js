@@ -300,6 +300,9 @@ test('only one pilot runs a task at a time', async () => {
     const second = new MindAutopilot({ repoRoot: f.root, orchestrator: f.orch, id: 'second', def: {},
       getUiContext: () => ({ activeRepo: 'demo' }), getRepoPath: () => f.repo, getRepos: () => ({ demo: f.repo }), autoTimer: false,
       peers: () => [f.pilot, second] });
+    // Both pilots must use the same hermetic quota fixture, never the host's
+    // real Claude and Codex subscription snapshots.
+    second.readUsage = f.pilot.readUsage;
     f.pilot.peers = () => [f.pilot, second];
     f.pilot.configure({ enabled: true, goal: 'Improve test coverage', allowWorktreeWrites: true });
     assert.equal(f.pilot.state.active.stage, 'discover');
