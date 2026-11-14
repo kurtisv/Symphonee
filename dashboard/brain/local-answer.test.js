@@ -282,7 +282,7 @@ test('brain: activity only for activity questions; knowledge questions get the f
   assert.equal(la._needsActivity('Qu est-ce que j ai fait aujourd hui ?'), true);
   assert.equal(la._needsActivity('On en est ou sur Gas Saver ?'), true);
   assert.equal(la._needsActivity('Dans quelle branche la porte fusionne Gas Saver ?'), false);
-  for (const q of ['What just happened?', 'Why did it fail?', 'what went wrong with my last codex task and how do i fix it', 'Où en suis-je ?', 'Où en est le projet ?', 'Pourquoi le build a échoué ?'])
+  for (const q of ['What just happened?', 'Why did it fail?', 'what went wrong with my last codex task and how do i fix it', 'Où en suis-je ?', 'Où en est le projet ?', 'Pourquoi le build a échoué ?', 'What has changed?', 'What was the result of the Codex task?'])
     assert.equal(la._needsActivity(q), true, q);
   for (const q of ['Dans quel fichier est definie deduplicateStations ?', 'Quelles etapes pour une migration de base de donnees ?', 'Quel est le numero de TVA de PleinSens ?'])
     assert.equal(la._needsActivity(q), false, q);

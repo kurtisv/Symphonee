@@ -249,7 +249,7 @@ function _buildMessages(question, sources, activity, mindText = null) {
 // Does the question ask about recent ACTIVITY (git, checkpoints, tasks, "what
 // did I do / where are we")? Only then is the live activity worth its tokens:
 // for a knowledge question it dilutes the Mind context and slows a small model.
-const ACTIVITY_RX = /\b(what did i|what have i|what changed|what (just )?happened|what went wrong|went wrong|where are we|where was i|just did|recent(ly)?|lately|latest|last (commit|change|task|run|codex|claude)|commits?|checkpoints?|my (last )?tasks?|tasks? (failed|finished)|fail(ed|s|ure|ing)?|broke|crash(ed)?|next step|today|yesterday|this (week|morning)|qu.?est-ce que j.?ai|qu.?ai-je|qu.?est-ce qui (s.?est passe|a (echoue|plante|casse))|on en est|ou en (est|suis|sommes)|dernier(e|s|es)?|recemment|aujourd.?hui|hier|cette semaine|ce matin|taches?|echou\w*|plant\w*|termine\w*|prochaine etape|pourquoi .{0,40}(echou|plant|marche pas))\b/i;
+const ACTIVITY_RX = /\b(what did i|what have i|(what|has|have|anything) changed|what (just )?happened|results? of (the|my|that|this)|resultats? de (la|ma|cette)|what went wrong|went wrong|where are we|where was i|just did|recent(ly)?|lately|latest|last (commit|change|task|run|codex|claude)|commits?|checkpoints?|my (last )?tasks?|tasks? (failed|finished)|fail(ed|s|ure|ing)?|broke|crash(ed)?|next step|today|yesterday|this (week|morning)|qu.?est-ce que j.?ai|qu.?ai-je|qu.?est-ce qui (s.?est passe|a (echoue|plante|casse))|on en est|ou en (est|suis|sommes)|dernier(e|s|es)?|recemment|aujourd.?hui|hier|cette semaine|ce matin|taches?|echou\w*|plant\w*|termine\w*|prochaine etape|pourquoi .{0,40}(echou|plant|marche pas))\b/i;
 const _foldQ = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 function _needsActivity(question) {
   return !!_timeHintFromQuestion(question) || ACTIVITY_RX.test(_foldQ(question));
@@ -278,7 +278,8 @@ async function localAnswer({ repoRoot, space = '_global', question, activeRepoPa
   try { graph = store.loadGraphShared(repoRoot, space); } catch (_) {}
   const sources = mc.transmitted;
   // Live activity only when the question is about it (see _needsActivity).
-  const wantsActivity = _needsActivity(question);
+  // ...or when Mind has nothing for it: the live activity is then the only material.
+  const wantsActivity = _needsActivity(question) || mc.status !== 'ok';
   const activity = wantsActivity ? {
     git: await _gitLog(activeRepoPath || repoRoot, 6),
     checkpoints: _recentCheckpoints(activeRepo, 3),
