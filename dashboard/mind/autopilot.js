@@ -11,6 +11,7 @@ const store = require('./store');
 const budget = require('./autopilot-budget');
 const localBrief = require('./local-brief');
 const capacity = require('./usage-capacity');
+const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
 // Optional Sentry reporting (window check-ins, completions, halts). Never throws.
 let sentry = null;
@@ -781,8 +782,39 @@ class MindAutopilot {
       : CODE_QUALITY_POLICY;
   }
   contextPolicy() { return this.def.ambition === 'big' ? BIG_CONTEXT_POLICY : (this.profile.deep ? DEEP_CONTEXT_POLICY : CONTEXT_POLICY); }
+  // Records a mistake once (repeats are counted) for this pilot AND repository,
+  // then teaches Mind what is not taught yet (gate lessons included). Never throws.
+  lessonScope() { return lessons.scopeOf(this.id, this.state.repoName); }
+  learn(kind, text, source) {
+    try {
+      const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source });
+      if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon repetee (' + r.entry.count + ') ') + '[' + kind + '] ' + r.entry.text.slice(0, 160));
+    } catch (_) {}
+    this.teachLessons();
+  }
+  // Mind memory cards for lessons not taught yet; a failure is retried next time.
+  teachLessons() {
+    if (this._teaching) return;
+    let todo = [];
+    try { todo = lessons.pendingTeach(this.repoRoot, this.lessonScope()); } catch (_) { return; }
+    if (!todo.length) return;
+    this._teaching = true;
+    const scope = this.lessonScope();
+    (async () => {
+      const memory = require('./memory');
+      for (const e of todo) {
+        try {
+          await memory.addMemoryCard({ repoRoot: this.repoRoot, space: this.state.space || '_global', spec: lessons.memorySpec(e, this.state.repoName) });
+          lessons.markTaught(this.repoRoot, scope, e.key);
+        } catch (_) { break; } // locked graph or other error: retried at the next lesson or discovery
+      }
+    })().catch(() => {}).finally(() => { this._teaching = false; });
+  }
+  lessonsText() {
+    try { return lessons.promptText(lessons.top(this.repoRoot, this.lessonScope(), 8)); } catch (_) { return ''; }
+  }
   guardText() {
-    return [this.def.protectedPaths.length ? 'PROTECTED PATHS (never create, modify or delete a file whose path matches one of these case-insensitive patterns; a task that needs one must be rejected): ' + JSON.stringify(this.def.protectedPaths) : '',
+    return [this.lessonsText(), this.def.protectedPaths.length ? 'PROTECTED PATHS (never create, modify or delete a file whose path matches one of these case-insensitive patterns; a task that needs one must be rejected): ' + JSON.stringify(this.def.protectedPaths) : '',
       this.def.governance ? 'REPOSITORY GOVERNANCE (follow it; it takes precedence over generic advice above):\n' + this.def.governance : ''].filter(Boolean).join('\n\n');
   }
   // The Codex plan-review text travels with the plan: repositories whose
@@ -947,6 +979,7 @@ class MindAutopilot {
         return this.dispatch('implement', now);
       }
       a.planRevisions++;
+      this.learn('plan', lessons.firstFinding(raw), 'revue du plan par Codex : ' + (a.plan?.title || ''));
       if (a.planRevisions > this.limits.planRevisions) {
         this.state.history.push({ category: a.plan?.category || null, title: a.plan?.title || '(plan)',
           objective: a.plan?.objective || null, key: a.plan ? taskKey(a.plan) : null,
@@ -987,6 +1020,7 @@ class MindAutopilot {
         return this.complete('completed', raw);
       }
       a.review = raw; a.repairs++;
+      this.learn('revue', lessons.firstFinding(raw), 'revue du code par Codex : ' + (a.plan?.title || ''));
       // Keep every rejection: the reason of each repair stays visible after restarts.
       a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 3000) }].slice(-6);
       if (a.repairs > this.limits.repairs) throw new Error('Code review rejected after max repairs: ' + String(raw).slice(0, 500));
@@ -1058,6 +1092,8 @@ class MindAutopilot {
     const why = v.lint.length ? 'The diff weakens verification:\n- ' + v.lint.join('\n- ')
       : 'Check "' + failed.name + '" failed' + (failed.timedOut ? ' (timed out)' : ' (exit ' + failed.code + ')') + '. Output tail:\n' + failed.tail;
     this.log('verify', 'Local verification FAILED: ' + (v.lint.length ? v.lint.join('; ') : failed.name));
+    this.learn('verification', v.lint.length ? 'Le diff affaiblissait la verification : ' + v.lint.join('; ')
+      : 'La verification locale "' + failed.name + '" echouait apres la modification : la lancer avant de terminer.', 'verification locale : ' + (a.plan?.title || ''));
     a.review = 'LOCAL VERIFICATION FAILED (run by Symphonee, not by a reviewer).\n' + why; a.repairs++;
     if (a.repairs > this.limits.repairs) throw new Error('Local verification still failing after max repairs: ' + (v.lint.length ? v.lint.join('; ') : failed.name));
     return this.dispatch('repair');
@@ -1127,9 +1163,11 @@ class MindAutopilot {
           else this.log('sentry', !text ? 'Sentry unreachable: discovery uses the backlog only'
             : 'Sentry not usable (' + String(text).replace(/\s+/g, ' ').slice(0, 80) + '): discovery uses the backlog only');
         }
+        this.teachLessons();
         if (this.def.sources.files.length) {
           const b = await (this.buildBrief || localBrief.buildBrief)({ repoPath: this.state.repoPath, files: this.def.sources.files,
             exclude: this.def.briefExclude || ['pleinsens'], attempted: this.state.history.slice(-20).map(h => h.title),
+            lessons: (() => { try { return lessons.top(this.repoRoot, this.lessonScope(), 6).map(x => x.text); } catch (_) { return []; } })(),
             sentry: this.state.active.sentry || '', local: this.def.localBrief });
           this.state.active.localBrief = b;
           this.log('triage', 'Pre-tri local : ' + b.lines + ' ligne(s) P0/P1' + (b.hints ? ', ' + b.hints.length + ' piste(s) par ' + b.model + ' en ' + Math.round(b.ms / 1000) + ' s' : '') + (b.skipped ? ' (' + b.skipped + ')' : ''));
