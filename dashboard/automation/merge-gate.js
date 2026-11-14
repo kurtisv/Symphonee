@@ -282,6 +282,7 @@ async function step(c, repo, baseSha, state, io) {
         + (f.preexisting === true ? ' -- echoue AUSSI sur ' + repo.base + ' (preexistant)' : f.preexisting === false ? ' -- introduit par la branche' : '')], io);
     }
     c.evaluatedBase = baseSha;
+    c.evaluatedTree = chain.tree || null;
     setStatus(c, 'ready', 'regles 3-7 vertes, chaine ' + c.chain.length + '/' + c.chain.length, io);
   }
   if (c.status === 'ready') {
@@ -372,23 +373,23 @@ async function step(c, repo, baseSha, state, io) {
     if (!r || !r.merged) return refuse(c, repo, ['GitHub a refuse la fusion : ' + String((r && (r.message || r.error)) || '').slice(0, 200)], io);
     c.mergeSha = r.sha;
     setStatus(c, 'merged', 'fusionnee : ' + r.sha, io);
-    state.merges.push({ repo: repo.name, key: c.key, at: io.now(), sha: r.sha, pr: c.pr, prUrl: c.prUrl, verified: c.sha, status: 'merged' });
+    state.merges.push({ repo: repo.name, key: c.key, at: io.now(), sha: r.sha, pr: c.pr, prUrl: c.prUrl, verified: c.sha,
+      base: c.evaluatedBase || null, tree: c.evaluatedTree || null, status: 'merged' });
     io.notify('info', 'Fusion automatique faite (' + repo.name + ') : PR #' + c.pr + ' ' + prTitle(c) + '. Annulation : git revert -m 1 ' + r.sha,
       ['porte-fusion', 'fusion', c.key], { pr: c.prUrl, commit: r.sha, regles: 'toutes vertes', chaine: c.chain });
   }
 }
 
 async function watchMerge(m, repo, state, io) {
+  if (repo.githubCi === false) return watchMergeNoCi(m, repo, state, io);
   let parent2 = '';
   try { parent2 = io.git(repo.path, ['rev-parse', m.sha + '^2']); } catch (_) {}
   if (parent2 && parent2 !== m.verified) return stopGate(state, m, repo, 'le commit fusionne (' + parent2.slice(0, 8) + ') n est pas le commit verifie (' + m.verified.slice(0, 8) + ')', io);
-  // No GitHub CI: the chain already passed on this exact merge (same base, same
-  // verified commit, checked just above), so the merge is confirmed at once.
-  const ck = repo.githubCi === false ? null : await io.api('GET', '/api/github/pulls/checks?repo=' + encodeURIComponent(repo.github) + '&sha=' + m.sha);
-  const v = ck ? checksVerdict(ck.checks) : 'success';
+  const ck = await io.api('GET', '/api/github/pulls/checks?repo=' + encodeURIComponent(repo.github) + '&sha=' + m.sha);
+  const v = checksVerdict(ck.checks);
   if (v === 'success') {
     m.status = 'confirmed'; m.confirmedAt = io.now();
-    const c = state.candidates[m.key]; if (c) setStatus(c, 'confirmed', ck ? 'CI verte sur ' + repo.base : 'pas de CI GitHub : chaine de la porte verte sur cette fusion', io);
+    const c = state.candidates[m.key]; if (c) setStatus(c, 'confirmed', 'CI verte sur ' + repo.base, io);
     io.notify('info', 'Fusion confirmee : CI verte sur ' + repo.base + ' (' + repo.name + ', PR #' + m.pr + ')', ['porte-fusion', 'confirmee', m.key], { commit: m.sha });
   } else if (v === 'failure') {
     await stopGate(state, m, repo, 'CI rouge sur ' + repo.base + ' apres la fusion de la PR #' + m.pr, io);
@@ -396,6 +397,30 @@ async function watchMerge(m, repo, state, io) {
     m.slowWarned = true;
     io.notify('warning', 'CI de ' + repo.base + ' toujours sans resultat 24 h apres la fusion de la PR #' + m.pr, ['porte-fusion', 'lente', m.key]);
   }
+}
+// Without CI the merge is confirmed only if it IS what the chain tested: first
+// parent = the base tested, second parent = the verified commit, same tree.
+// Anything unreadable stays pending (never confirmed by default).
+async function watchMergeNoCi(m, repo, state, io) {
+  let p1, p2, tree;
+  try {
+    p1 = io.git(repo.path, ['rev-parse', m.sha + '^1']);
+    p2 = io.git(repo.path, ['rev-parse', m.sha + '^2']);
+    tree = io.git(repo.path, ['rev-parse', m.sha + '^{tree}']);
+  } catch (e) {
+    if (io.now() - m.at > 24 * 3600000 && !m.slowWarned) {
+      m.slowWarned = true;
+      io.notify('warning', 'Fusion #' + m.pr + ' (' + repo.name + ') illisible localement depuis 24 h : non confirmee', ['porte-fusion', 'lente', m.key]);
+    }
+    return;
+  }
+  if (!m.base || !m.tree) return stopGate(state, m, repo, 'fusion sans reference testee (base ou contenu) : impossible de la confirmer sans CI', io);
+  if (p2 !== m.verified) return stopGate(state, m, repo, 'le commit fusionne (' + p2.slice(0, 8) + ') n est pas le commit verifie (' + m.verified.slice(0, 8) + ')', io);
+  if (p1 !== m.base) return stopGate(state, m, repo, repo.base + ' a bouge avant la fusion (' + p1.slice(0, 8) + ' au lieu de ' + m.base.slice(0, 8) + ') : la fusion n a pas ete testee', io);
+  if (tree !== m.tree) return stopGate(state, m, repo, 'le contenu fusionne par GitHub differe de celui teste', io);
+  m.status = 'confirmed'; m.confirmedAt = io.now();
+  const c = state.candidates[m.key]; if (c) setStatus(c, 'confirmed', 'pas de CI GitHub : fusion identique a celle testee (base, commit, contenu)', io);
+  io.notify('info', 'Fusion confirmee (' + repo.name + ', PR #' + m.pr + ') : identique a la fusion testee', ['porte-fusion', 'confirmee', m.key], { commit: m.sha });
 }
 async function stopGate(state, m, repo, why, io) {
   m.status = 'failed-after-merge';

@@ -97,9 +97,11 @@ async function runChain(repo, base, sha) {
   return withWorktree(repo, base, async (dir) => {
     try { git(dir, ['-c', 'user.name=Porte de fusion', '-c', 'user.email=porte-fusion@symphonee.invalid', 'merge', '--no-ff', '--no-edit', sha]); }
     catch (_) { try { git(dir, ['merge', '--abort']); } catch (__) {} return { ok: false, conflict: true, results: [] }; }
+    // The exact tree tested: the merge GitHub makes must have this content.
+    const tree = git(dir, ['rev-parse', 'HEAD^{tree}']);
     const lint = guard.diffLint(dir, base);
-    if (lint.length) return { ok: false, lint, results: [] };
-    const r = await guard.runVerify(dir, repo.chain);
+    if (lint.length) return { ok: false, lint, results: [], tree };
+    const r = { ...(await guard.runVerify(dir, repo.chain)), tree };
     if (!r.ok) {
       // Was this check already red on the base? (stated in the message; still refused)
       const failed = r.results.find((x) => !x.ok);
@@ -176,7 +178,7 @@ async function dryRun(policy) {
       const ev = gate.evaluateDiff({ numstat: gate.parseNumstat(git(repo.path, ['diff', '--numstat', mb, c.sha])),
         status: gate.parseNameStatus(git(repo.path, ['diff', '--name-status', mb, c.sha])),
         addedLines: gate.parseAddedLines(git(repo.path, ['diff', '--unified=0', mb, c.sha])) }, repo, source);
-      const reasons = [...gate.proofReasons(c, repo, { git }), ...ev.reasons];
+      const reasons = [...gate.proofReasons(c, repo, { git }, source), ...ev.reasons];
       log(c.branch + ' ' + c.sha.slice(0, 8) + ' [' + c.source + '] code ' + ev.stats.codeLines + ' lignes / ' + ev.stats.codeFiles + ' fichiers : '
         + (reasons.length ? 'REFUSERAIT : ' + reasons.join(' ; ') : 'passerait aux regles 3-6, puis chaine complete, PR, CI'));
     }

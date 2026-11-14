@@ -96,6 +96,8 @@ function world() {
       if (a.startsWith('show origin/master:AGENTS.md')) return w.marker ? '... ' + gate.MARK + ' ...' : 'regles';
       if (a.startsWith('push')) { w.pushes.push(a); return ''; }
       if (a.endsWith('^2')) return w.mergedParent || SHA;
+      if (a.endsWith('^1')) { if (w.unreadable) throw new Error('objet absent'); return w.mergedBase || w.base; }
+      if (a.endsWith('^{tree}')) return w.mergedTree || 'tree-tested';
       throw new Error('git inattendu : ' + a);
     },
     api: async (method, p, body) => {
@@ -107,7 +109,7 @@ function world() {
       if (p === '/api/github/pulls/comment') { w.comments.push(body); return { ok: true }; }
       throw new Error('api inattendue : ' + p);
     },
-    runChain: async () => { w.chainRuns++; return w.chainOk ? { ok: true, results: [{ name: 'jest', ok: true, code: 0, ms: 1000 }] }
+    runChain: async () => { w.chainRuns++; return w.chainOk ? { ok: true, tree: 'tree-tested', results: [{ name: 'jest', ok: true, code: 0, ms: 1000 }] }
       : { ok: false, results: [{ name: 'jest', ok: false, code: 1, ms: 1000, preexisting: false }] }; },
     openRevert: async () => { w.reverts++; return 'https://github.com/x/y/pull/8'; },
     notify: (level, message) => w.notes.push(level + ' ' + message),
@@ -341,4 +343,25 @@ test('chains per pass and chain windows are per repository', async () => {
   const policy = { enabled: true, chainWindows: [{ start: '19:00', end: '22:00' }], repos: [{ ...REPO, chainWindows: null, chainsPerPass: 2 }] };
   await gate.pass(policy, {}, io);
   assert.equal(w.chainRuns, 2);
+});
+
+test('no GitHub CI: a merge that is not exactly the tested one stops the gate; unreadable stays pending', async () => {
+  const NOCI = { ...REPO, githubCi: false };
+  const run = async (tweak) => {
+    const { w, io } = world(); w.marker = true;
+    const state = {};
+    for (let i = 0; i < 2; i++) await gate.pass({ enabled: true, repos: [NOCI] }, state, io); // -> merged
+    assert.equal(only(state).status, 'merged');
+    tweak(w);
+    await gate.pass({ enabled: true, repos: [NOCI] }, state, io);
+    return { w, state };
+  };
+  let r = await run((w) => { w.mergedBase = 'f'.repeat(40); });
+  assert.ok(r.state.stopped, 'base moved: stopped'); assert.match(r.state.stopped.reason, /a bouge avant la fusion/); assert.equal(r.w.reverts, 1);
+  r = await run((w) => { w.mergedTree = 'other-tree'; });
+  assert.match(r.state.stopped.reason, /contenu fusionne par GitHub differe/);
+  r = await run((w) => { w.unreadable = true; });
+  assert.equal(r.state.stopped, undefined); assert.equal(r.state.merges[0].status, 'merged', 'not confirmed by default');
+  r = await run(() => {});
+  assert.equal(r.state.merges[0].status, 'confirmed');
 });
