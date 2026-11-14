@@ -21,6 +21,9 @@ function helperSource({ pid, execPath, args, cwd, waitMs = 8000 }) {
     '  if (!alive()) return start();',
     '  if (waited >= ' + JSON.stringify(waitMs) + ') {',
     // Only the main process (not /T: this helper may still count as its child).
+    // PID reuse guard: force-stop only if that pid is still the same program.
+    "    let same = false; try { same = cp.execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8' }).toLowerCase().includes(" + JSON.stringify(require('path').basename(execPath).toLowerCase()) + "); } catch (_) {}",
+    "    if (!same) return start();",
     "    try { cp.execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore' }); } catch (_) {}",
     // Start only once the old process is really gone (it holds the single-instance lock).
     '    let n = 0; const after = () => { if (!alive()) return setTimeout(start, 1000); if (++n < 20) setTimeout(after, 500); };',
