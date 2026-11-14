@@ -276,3 +276,21 @@ test('review: task transcripts never reach the brain prompt; citedNodeIds are wh
     assert.ok(r.transmittedNodeIds.length >= r.citedNodeIds.length);
   } finally { store.loadGraph = o1; store.loadGraphShared = o2; llm.chatOllama = oc; }
 });
+
+test('brain: activity only for activity questions; knowledge questions get the focused grounded prompt', async () => {
+  assert.equal(la._needsActivity('What did I do yesterday?'), true);
+  assert.equal(la._needsActivity('Qu est-ce que j ai fait aujourd hui ?'), true);
+  assert.equal(la._needsActivity('On en est ou sur Gas Saver ?'), true);
+  assert.equal(la._needsActivity('Dans quelle branche la porte fusionne Gas Saver ?'), false);
+  const store = require('../mind/store'); const llm = require('../lib/llm');
+  const graph = { nodes: [{ id: 'mem_a', kind: 'memory', label: 'Porte de fusion integration', body: 'La porte fusionne Gas Saver dans integration car master est deploye par Vercel. '.repeat(2) }], edges: [] };
+  const o1 = store.loadGraph, o2 = store.loadGraphShared, oc = llm.chatOllama; let sent = null, opts = null;
+  store.loadGraph = store.loadGraphShared = () => graph;
+  llm.chatOllama = async (m, o) => { sent = m; opts = o; return { text: 'Dans integration [M1].', model: 'fake' }; };
+  try {
+    await la.localAnswer({ repoRoot: require('os').tmpdir(), question: 'Dans quelle branche la porte fusionne Gas Saver ?' });
+    assert.match(sent[0].content, /Use ONLY the MIND CONTEXT/);
+    assert.ok(!/Recent commits|Recent activity/.test(sent.map((x) => x.content).join('\n')), 'no activity noise');
+    assert.equal(opts.temperature, 0.2);
+  } finally { store.loadGraph = o1; store.loadGraphShared = o2; llm.chatOllama = oc; }
+});
