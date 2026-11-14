@@ -46,8 +46,8 @@ test('retrieveSources (BM25 leg, offline) finds content-bearing knowledge and dr
   };
   // monkeypatch store.loadGraph to return our synthetic graph
   const store = require('../mind/store');
-  const orig = store.loadGraph;
-  store.loadGraph = () => graph;
+  const orig = store.loadGraph; const origShared = store.loadGraphShared; // the code reads the shared graph
+  store.loadGraph = store.loadGraphShared = () => graph;
   try {
     const r = await la.retrieveSources('/tmp', '_global', 'what do you know about aurora3', 6);
     const ids = r.sources.map(s => s.id);
@@ -55,7 +55,7 @@ test('retrieveSources (BM25 leg, offline) finds content-bearing knowledge and dr
     assert.ok(!ids.includes('concept_stub'), 'label-only stub is dropped');
     assert.ok(!ids.includes('drawer_noise'), 'raw drawer is excluded (not a knowledge kind)');
   } finally {
-    store.loadGraph = orig;
+    store.loadGraph = orig; store.loadGraphShared = origShared;
   }
 });
 
@@ -216,8 +216,8 @@ test('_recallLeg groups drawer turns by which AI was driving', () => {
 test('deepAnswer reports ungrounded when there is genuinely nothing', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-deep-'));
   const store = require('../mind/store');
-  const orig = store.loadGraph;
-  store.loadGraph = () => ({ nodes: [], edges: [] });
+  const orig = store.loadGraph; const origShared = store.loadGraphShared; // the code reads the shared graph
+  store.loadGraph = store.loadGraphShared = () => ({ nodes: [], edges: [] });
   try {
     const events = [];
     const r = await la.deepAnswer({ repoRoot: root, question: 'what do you know about anything' }, (e) => events.push(e));
@@ -225,7 +225,7 @@ test('deepAnswer reports ungrounded when there is genuinely nothing', async () =
     assert.equal(r.reason, 'no-context');
     assert.ok(events.some(e => e.type === 'status'), 'status milestones emitted');
   } finally {
-    store.loadGraph = orig;
+    store.loadGraph = orig; store.loadGraphShared = origShared;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -236,8 +236,8 @@ test('gatherContext carries the full bus: successes, mindNew, notesEdited', asyn
     { id: 's1', state: 'completed', cli: 'gemini', result: 'r', completedAt: now - 1000 },
   ], (root) => {
     const store = require('../mind/store');
-    const orig = store.loadGraph;
-    store.loadGraph = () => ({ nodes: [
+    const orig = store.loadGraph; const origShared = store.loadGraphShared; // the code reads the shared graph
+    store.loadGraph = store.loadGraphShared = () => ({ nodes: [
       { id: 'm1', kind: 'memory', label: 'fresh', createdAt: new Date(now).toISOString() },
     ] });
     return (async () => {
@@ -248,7 +248,7 @@ test('gatherContext carries the full bus: successes, mindNew, notesEdited', asyn
         assert.ok(Array.isArray(ctx.notesEdited));
         assert.ok(Array.isArray(ctx.failures));
       } finally {
-        store.loadGraph = orig;
+        store.loadGraph = orig; store.loadGraphShared = origShared;
       }
     })();
   });

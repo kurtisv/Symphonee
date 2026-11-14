@@ -1073,6 +1073,21 @@ const skills = mountSkills(addRoute, json, { repoRoot, broadcast, permGate });
 console.log(`  Skill corpus mounted (/api/skills/*) -- ${skills.catalog().length} skill(s)`);
 if (orchestrator) {
   orchestrator.getSkillsHint = (question) => skills.catalogText({ question });
+  // Local (tool-less) models get the retrieved Mind context inline (brain/mind-context.js).
+  {
+    const mindContext = require('./brain/mind-context');
+    const lessonsMod = require('./mind/lessons');
+    orchestrator.getLocalMindContext = (o = {}) => {
+      const ui = getUiContextWithPath() || {};
+      return mindContext.buildMindContext({ repoRoot, space: ui.activeSpace || ui.notesNamespace || '_global', activeRepo: ui.activeRepo || null,
+        loadSkills: () => skills.loadCorpus(), lessonsMod, ...o });
+    };
+    addRoute('GET', '/api/mind/local-diagnostics', (req, res) => {
+      const u = new URL(req.url, 'http://x');
+      json(res, { entries: mindContext.readDiagnostics(repoRoot, Number(u.searchParams.get('limit')) || 20),
+        note: 'retrieved = found in Mind; transmitted = put in the model prompt; citedRefs = references the answer actually cites.' });
+    });
+  }
 }
 // Skill Reflection: existing REFLECT->LEARN arc with compact incremental CLI
 // evidence, conservative attribution and high-confidence canonical updates.
