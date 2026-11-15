@@ -139,6 +139,14 @@ module.exports = {
    */
   spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, _retryAttempt = 0 }) {
     cli = canonicalProviderId(cli);
+    if (cli === 'qwen3-4b-docker') {
+      throw new Error('Qwen3 Docker agent is disabled until its sandbox adapter is verified');
+    }
+    // Path normalization alone does not confine Qwen's native tools or child
+    // processes. Keep these runs blocked until an OS sandbox is verified.
+    if (cli === 'qwen' && (readOnly || confineWrites)) {
+      throw new Error('Qwen confinement is unavailable until a verified sandbox adapter is installed');
+    }
     if (isDirectLocal(cli) && typeof this.spawnLmStudio === 'function') {
       return this.spawnLmStudio({ cli, prompt, cwd, timeout, from, taskId, space, requiresRepoContent, noFallback });
     }

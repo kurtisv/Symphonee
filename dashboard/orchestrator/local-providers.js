@@ -26,6 +26,14 @@ const path = require('path');
 const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_URL || 'http://127.0.0.1:1234';
 
 const LOCAL_PROVIDERS = Object.freeze({
+  // Registered as local for visibility only. No automatic routing is allowed;
+  // spawn-headless fails closed until a verified Docker adapter exists.
+  'qwen3-4b-docker': Object.freeze({
+    id: 'qwen3-4b-docker', kind: 'docker-agent', backend: 'lmstudio',
+    model: 'qwen3-4b-instruct-2507', label: 'Qwen3 4B (local, Docker opt-in)',
+    contextTokens: 12288, promptOverheadTokens: 7000, outputReserveTokens: 1024,
+    loadRamMB: 3000, large: false, taskClasses: [], timeoutMs: 150000,
+  }),
   'lmstudio-qwen-small': Object.freeze({
     id: 'lmstudio-qwen-small', kind: 'lmstudio-direct', backend: 'lmstudio',
     model: 'qwen2.5-coder-1.5b-instruct', label: 'Qwen 1.5B (Local - LM Studio)',

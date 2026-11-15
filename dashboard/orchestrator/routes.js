@@ -152,9 +152,16 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
 
   // ── POST /api/orchestrator/spawn ──────────────────────────────────────
   addRoute('POST', '/api/orchestrator/spawn', async (req, res) => {
-    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, task: taskHints, workerTimeoutMs } = await readBody(req);
+    let { cli, prompt, cwd, timeout, from, taskId, visible, model, effort, autoPermit, space, files, editable, task: taskHints, workerTimeoutMs } = await readBody(req);
     if (!prompt) return json(res, { error: 'prompt required' }, 400);
     cli = canonicalProviderId(cli);
+    // Explicit opt-in only. Never enter the generic local-to-cloud fallback.
+    if (cli === 'qwen3-4b-docker') {
+      if (!getConfig || getConfig()?.QwenDocker?.enabled !== true) return json(res, { error: 'Qwen3 Docker agent is disabled' }, 503);
+      if (!await gateSpawn(res, { cli, cwd, label: 'Spawn Qwen3 Docker worker', wait: !autoPermit })) return;
+      try { return json(res, orch._serializeTask(orch.spawnQwenDocker({ prompt, cwd, files, editable, from, taskId, space }))); }
+      catch (error) { return json(res, { error: error.message }, 400); }
+    }
     const requestedCli = cli;
     let routing = null;
     let localPrepFailure = null;
