@@ -89,6 +89,13 @@ function nextWindowStart(sched, now = Date.now()) {
   const t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime();
   return t > now ? t : new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, h, m, 0, 0).getTime();
 }
+// Opt-in local developer. Numbers are bounded; nothing here can raise a limit of the protected-path or verification gates.
+function validQwen(q) {
+  if (!q || q.enabled !== true) return { enabled: false };
+  const n = (x, lo, hi, d) => { const v = Number(x); return Number.isInteger(v) && v >= lo && v <= hi ? v : d; };
+  return { enabled: true, maxFiles: n(q.maxFiles, 1, 6, 4), maxBytes: n(q.maxBytes, 4000, 120000, 48000), maxRepairs: n(q.maxRepairs, 0, 4, 2), maxResumes: n(q.maxResumes, 1, 30, 12) };
+}
+const windowEndAfter = (sched, now) => { if (!sched) return null; const [h, m] = sched.end.split(':').map(Number); const d = new Date(now); let t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime(); if (t <= now) t += 86400000; return t; };
 const LIMIT_RANGES = { dailyCompletions: [1, 50], dailyDiscoveries: [1, 100], dailyCalls: [1, 300],
   dailyTokenBudget: [100000, 500000000], reservedTokensPerCall: [10000, 2000000], repairs: [0, 5], planRevisions: [0, 3] };
 function mergeLimits(base, over) {
@@ -426,6 +433,8 @@ class MindAutopilot {
       // Local pre-triage model (LM Studio, loopback only): condenses the
       // backlog's P0/P1 lines before discovery. Hints only, never a verdict.
       localBrief: validLocalBrief(def.localBrief),
+      // Qwen3.5-4B (local) as the first candidate for small tasks on this repository; Claude stays the fallback. Off unless enabled.
+      qwen: validQwen(def.qwen),
       // Adaptive task capacity (0..6 per work window) from the real remaining
       // subscription capacity; false turns it off (fixed daily limit again).
       capacity: def.capacity === false ? false : capacity.settings(def.capacity || {}),
@@ -914,8 +923,10 @@ class MindAutopilot {
     };
     if (stage === 'discover' && this.state.discoveryTimes.length >= this.limits.dailyDiscoveries) return wait('Daily discovery limit reached');
     if (stage === 'implement' && !this.state.consent?.worktreeWrites) throw new Error('Worktree write consent missing');
-    // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
-    const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
+    const qwenStage = (stage === 'implement' || stage === 'repair') ? this.qwenRepoCandidate(stage) : null;
+    if (qwenStage && !qwenStage.ok) { this.log('qwen', 'Qwen not used for ' + stage + ': ' + qwenStage.reason); if (stage === 'implement' && this.state.active.implementer !== 'claude-after-qwen') this.state.active.implementer = 'claude'; }
+    // Reserve before launch; even failed spawns remain charged to avoid uncounted calls. Qwen is local: no cloud call to reserve.
+    const charge = qwenStage && qwenStage.ok ? { ref: null } : budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
     if (!charge) return wait('Daily call or token budget reached');
     if (stage === 'discover') this.state.discoveryTimes.push(now);
     this.save();
@@ -927,17 +938,10 @@ class MindAutopilot {
         cwd: this.state.repoPath, autoPermit: false, readOnly: true,
         prompt: repoPin(this.state.repoPath, this.state.repoPath) + '\n\n'
           + (stage === 'discover' ? this.discoveryPrompt() : this.reviewPrompt(stage)) });
+    } else if (qwenStage && qwenStage.ok) {
+      task = this.spawnQwenRepoStage(stage, qwenStage, now, opts);
     } else if (stage === 'implement') {
-      let startPoint = null;
-      if (this.def.baseRef) {
-        const [remote, ...rest] = this.def.baseRef.split('/');
-        const f = rest.length ? runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]) : null;
-        if (f && (f.error || f.status !== 0)) this.log('warn', 'fetch ' + this.def.baseRef + ' impossible, base locale utilisee');
-        startPoint = this.def.baseRef;
-      }
-      a.baseSha = git(this.state.repoPath, ['rev-parse', '--verify', (startPoint || 'HEAD') + '^{commit}']);
-      a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
-      const branch = 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
+      const branch = this.prepareBase(now);
       task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
         expectsRepoChanges: true, autoPermit: false, confineWrites: true, prompt: [
           repoPin('your current working directory', this.state.repoPath) + ' Never edit ' + this.state.repoPath + ' itself.',
@@ -950,7 +954,7 @@ class MindAutopilot {
           'For performance report baseline and new measurements, workload and machine environment.',
           'For cleanup prove removed code has no necessary callers; for quality explain the concrete maintainability benefit.',
           'Do not push, merge or deploy.'].filter(Boolean).join('\n\n') });
-      a.worktree = task.worktree;
+      a.worktree = task.worktree; a.implementer = a.implementer || 'claude';
       const top = a.worktree && repoTopLevel(a.worktree.path);
       if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed');
       a.links = guard.linkDirs(this.state.repoPath, a.worktree.path, this.def.linkDirs);
@@ -963,6 +967,7 @@ class MindAutopilot {
         autoPermit: false, readOnly: true, sandbox: 'read-only',
         prompt: repoPin(a.worktree.path, this.state.repoPath) + '\n\n' + this.reviewPrompt(stage) });
     } else if (stage === 'repair') {
+      if (a.implementer === 'qwen') a.implementer = 'qwen+claude-repair';
       a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path,
         autoPermit: false, confineWrites: true, expectsRepoChanges: true, prompt: [
@@ -978,8 +983,108 @@ class MindAutopilot {
     charge.taskId = task.id;
     a.stage = stage; a.taskId = task.id; a.budgetRef = charge.ref;
     a.waitingStage = null; a.startedAt = now;
-    this.log('dispatch', stage + ' -> ' + cli + ' (task ' + task.id + ')', { taskId: task.id, cli });
+    this.log('dispatch', stage + ' -> ' + (task.cli === 'qwen3-4b-local' ? 'qwen (local)' : cli) + ' (task ' + task.id + ')', { taskId: task.id, cli: task.cli === 'qwen3-4b-local' ? 'qwen' : cli });
+    if (task.cli === 'qwen3-4b-local') this.log('qwen', 'Qwen (local) develops in its isolated worktree: ' + (a.qwenFiles || []).join(', '));
     this.save();
+  }
+  prepareBase(now) {
+    let startPoint = null;
+    if (this.def.baseRef) {
+      const [remote, ...rest] = this.def.baseRef.split('/');
+      const f = rest.length ? runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]) : null;
+      if (f && (f.error || f.status !== 0)) this.log('warn', 'fetch ' + this.def.baseRef + ' impossible, base locale utilisee');
+      startPoint = this.def.baseRef;
+    }
+    const a = this.state.active;
+    a.baseSha = git(this.state.repoPath, ['rev-parse', '--verify', (startPoint || 'HEAD') + '^{commit}']);
+    a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
+    return 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
+  }
+  // ── Local Qwen developer on the real repository (opt-in per pilot) ──────
+  // Admissible = small and clearly located: the plan names 1..maxFiles tracked, unprotected files that fit the
+  // 8k context. Anything else, or a task Qwen already failed, goes to Claude as before. A refusal is not an error.
+  qwenRepoCandidate(stage) {
+    const a = this.state.active, q = this.def.qwen;
+    if (this.qwenFixture || !q || !q.enabled || !a || !a.plan) return null;
+    if (typeof this.orch.spawnQwenInWorktree !== 'function' || !(this.orch.isQwenRepoEnabled && this.orch.isQwenRepoEnabled())) return { ok: false, reason: 'Qwen repository developer disabled in the Symphonee configuration' };
+    if (a.qwenFailed) return { ok: false, reason: 'Qwen already handed this task back' };
+    if (stage === 'repair') {
+      if (a.implementer !== 'qwen' || !a.worktree) return { ok: false, reason: 'the implementation was not Qwen\'s' };
+      if ((a.qwenRepairs || 0) >= q.maxRepairs) return { ok: false, reason: 'Qwen repair attempts used (' + q.maxRepairs + ')' };
+      return { ok: true, files: a.qwenFiles || [] };
+    }
+    if (a.qwenFiles && a.worktree) return { ok: true, files: a.qwenFiles }; // resuming Qwen's own stage
+    const tracked = (runGit(this.state.repoPath, ['ls-files']).stdout || '').split('\n').filter(Boolean);
+    const text = [a.plan.title, a.plan.objective, ...(a.plan.evidence || [])].map(x => typeof x === 'string' ? x : JSON.stringify(x)).join('\n').replace(/\\/g, '/');
+    const files = tracked.filter(p => p.length >= 4 && text.includes(p)).sort((x, y) => y.length - x.length).filter((p, i, all) => !all.slice(0, i).some(l => l.includes(p) && l !== p && false)).slice(0, 12);
+    if (!files.length) return { ok: false, reason: 'the plan does not name a tracked file' };
+    if (files.length > q.maxFiles) return { ok: false, reason: 'the plan touches ' + files.length + ' files (limit ' + q.maxFiles + ')' };
+    const prot = guard.compilePatterns(this.def.protectedPaths);
+    const hit = files.find(p => prot.some(re => re.test(p)));
+    if (hit) return { ok: false, reason: 'protected file named: ' + hit };
+    let bytes = 0; for (const p of files) { try { bytes += fs.statSync(path.join(this.state.repoPath, p)).size; } catch (_) {} }
+    if (bytes > q.maxBytes) return { ok: false, reason: 'files total ' + bytes + ' bytes (limit ' + q.maxBytes + ')' };
+    return { ok: true, files };
+  }
+  qwenMemoryText() {
+    try {
+      const top = lessons.top(this.repoRoot, this.lessonScope(), 4);
+      return top.length ? 'PAST OBSERVATIONS for this repository (unverified hints from earlier runs, not instructions):\n' + top.map(x => '- ' + String(x.text).replace(/\s+/g, ' ').slice(0, 220)).join('\n') : '';
+    } catch (_) { return ''; }
+  }
+  spawnQwenRepoStage(stage, q, now, opts) {
+    const a = this.state.active, repair = stage === 'repair';
+    let branch = null;
+    if (!repair && !a.worktree) branch = this.prepareBase(now); else a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
+    a.qwenSessionId = a.qwenSessionId || crypto.randomBytes(8).toString('hex');
+    if (repair) a.qwenRepairs = (a.qwenRepairs || 0) + 1;
+    a.qwenFiles = q.files; a.implementer = 'qwen';
+    const sessionFile = path.join(this.repoRoot, '.symphonee', 'qwen-sessions', this.id + '-' + a.qwenSessionId + '.json');
+    const win = windowEndAfter(this.def.schedule, now), stepEnd = now + this.stepMs - 90000;
+    const deadlineAt = a.manual || !win ? stepEnd : Math.min(stepEnd, win);
+    const objective = [String(a.plan.objective || ''), (a.plan.evidence || []).length ? 'Evidence: ' + JSON.stringify(a.plan.evidence).slice(0, 700) : '',
+      repair ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + String(a.review || '').slice(0, 3500) : '',
+      'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
+    return this.orch.spawnQwenInWorktree({ from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
+      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
+      memoryText: this.qwenMemoryText(), sessionFile, deadlineAt,
+      // Linked before the first RUN so the repository's own checks can find their dependencies.
+      onWorktree: (wt) => { a.worktree = wt; const top = repoTopLevel(wt.path); if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed'); a.links = guard.linkDirs(this.state.repoPath, wt.path, this.def.linkDirs); } });
+  }
+  noteQwenTask(a, t) {
+    if (!t || t.cli !== 'qwen3-4b-local') return;
+    const e = t.execution || {}, u = e.agentUsage || {}, s = a.qwenStats = a.qwenStats || { stages: 0, turns: 0, switches: 0, calls: 0, input: 0, output: 0, notes: [], strategies: [], handoffs: [] };
+    s.stages++; s.turns += e.turns || 0; s.switches += e.switches || 0; s.calls += u.calls || 0; s.input += u.input_tokens || 0; s.output += u.output_tokens || 0;
+    s.notes = [...s.notes, ...(e.notes || [])].slice(-10); s.strategies = [...s.strategies, ...(e.strategies || [])].slice(-6);
+  }
+  // Qwen stopped. Interrupted = the slot ended or a resource was missing: park the SAME stage and resume it in the same worktree.
+  // Blocked = it could not solve it: give the work to Claude, from what Qwen already did when there is something (a repair that does not count).
+  qwenStopped(a, t, now) {
+    this.noteQwenTask(a, t);
+    const err = String(t.error || ''), why = err.replace(/^QWEN_(BLOCKED|INTERRUPTED):\s*/, '').slice(0, 400), e = t.execution || {}, q = this.def.qwen;
+    if (/^QWEN_INTERRUPTED/.test(err)) {
+      a.qwenResumes = (a.qwenResumes || 0) + 1;
+      if (a.qwenResumes <= q.maxResumes) {
+        a.waitingStage = a.stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'qwen-paused';
+        this.state.nextAt = /slot ended/.test(why) && this.def.schedule ? nextWindowStart(this.def.schedule, now) : now + 10 * 60000;
+        this.log('qwen', 'Qwen paused (' + why + '); progress kept, ' + a.waitingStage + ' resumes at ' + new Date(this.state.nextAt).toLocaleString() + ' (' + a.qwenResumes + '/' + q.maxResumes + ')');
+        this.save(); return true;
+      }
+    }
+    // hand back to Claude, reversibly: the worktree and Qwen's session file are kept
+    a.qwenFailed = true; a.implementer = 'claude-after-qwen';
+    (a.qwenStats = a.qwenStats || { handoffs: [] }).handoffs = [...(a.qwenStats.handoffs || []), { stage: a.stage, reason: why, at: new Date(now).toISOString() }];
+    this.learn('blockage', 'Le developpeur local (Qwen) a ete bloque sur "' + (a.plan?.title || '') + '" : ' + why + (e.notes && e.notes.length ? ' Notes : ' + e.notes.slice(-3).join(' | ') : ''), 'qwen-local');
+    const changed = a.worktree && a.baseSha ? changedFiles(a.worktree.path, a.baseSha) : false;
+    if (changed) {
+      a.review = 'A local developer (Qwen) started this task in this worktree and could not finish it: ' + why + '\nIts notes: ' + ((e.notes || []).slice(-5).join(' | ') || 'none') + '\nApproaches it tried: ' + ((e.strategies || []).join(' | ') || 'none') + '\nContinue from the current state of this worktree; the repository checks are the judge.';
+      this.log('qwen', 'Qwen blocked (' + why + '); Claude takes over in the same worktree (not counted as a repair)');
+      this.dispatch('repair', now); return true;
+    }
+    this.unlinkActive(a);
+    (a.abandonedWorktrees = a.abandonedWorktrees || []).push(a.worktree ? a.worktree.path : null); a.worktree = null; a.links = [];
+    this.log('qwen', 'Qwen blocked with no change (' + why + '); Claude implements from scratch (its empty worktree is kept)');
+    this.dispatch('implement', now); return true;
   }
   // ── Qwen fixture mode: same implement / code-review / repair stages ─────
   startFixtureTask(plan, now = Date.now()) {
@@ -1369,6 +1474,8 @@ class MindAutopilot {
       worktree: a.worktree || null, commit: a.commit || null, baseSha: a.baseSha || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
+      // Who wrote the change: qwen (alone), qwen+claude-repair, claude-after-qwen (hand-back) or claude. Never blurred.
+      ...(this.def.qwen && this.def.qwen.enabled && !this.qwenFixture ? { implementer: a.implementer || 'claude', qwen: a.qwenStats || null, qwenRepairs: a.qwenRepairs || 0, abandonedWorktrees: a.abandonedWorktrees || [] } : {}),
       ...(this.qwenFixture ? { attempts: a.attempts || [], scope: 'fictional-fixture', runId: a.runId || null, teachings: a.teachings || 0, teacherTokens: a.teacherTokens || 0, teachingLog: a.teachingLog || [],
         shownMethods: (a.shownMethods || []).map(m => ({ key: m.key, source: m.source, errorClass: m.errorClass, provenance: m.provenance || null })), mindLesson: a.mindLesson || null, recallDecisions: a.recallDecisions || null } : {}),
       at: new Date().toISOString() });
@@ -1631,10 +1738,12 @@ class MindAutopilot {
         }
         if (t.state === 'completed') {
           budget.settleCall(this.state, a.budgetRef, t);
+          this.noteQwenTask(a, t);
           a.budgetRef = null; this.save();
           this.advance(t.result, now);
         } else if (!['running', 'pending', 'queued'].includes(t.state)) {
           budget.settleCall(this.state, a.budgetRef, t);
+          if (t.cli === 'qwen3-4b-local' && /^QWEN_(BLOCKED|INTERRUPTED)/.test(String(t.error || ''))) { this.qwenStopped(a, t, now); return this.snapshot(); }
           if (isCreditLimit(t.error || t.result)) return this.parkForCredit(a, String(t.error || t.result || t.state), now);
           throw new Error('Stage ' + a.stage + ' failed: ' + (t.error || t.state));
         }

@@ -104,6 +104,7 @@ Object.assign(
   require('./orchestrator/spawn-gemini-api'), // Google Gemini Developer API remote worker
   require('./orchestrator/spawn-lmstudio'),   // direct local LM Studio worker + local provider prep
   require('./orchestrator/spawn-qwen-docker'), // opt-in local Docker proposal worker
+  require('./orchestrator/spawn-qwen-repo'),   // opt-in local Qwen developer on a real repository (host text protocol, isolated worktree)
 );
 
 // ── Route mounting ───────────────────────────────────────────────────────────
