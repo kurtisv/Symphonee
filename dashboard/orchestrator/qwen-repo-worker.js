@@ -29,7 +29,7 @@ const cp = require('node:child_process');
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({
   actionsPerTurn: 4, readChars: 5000, grepHits: 20, listEntries: 60, editFileBytes: 120000, newFileBytes: 60000, noteChars: 300, planSteps: 6,
-  maxTurns: 60, maxSwitches: 3, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, promptChars: 11000, maxTokens: 1600, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
+  maxTurns: 80, maxSwitches: 3, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, promptChars: 11000, maxTokens: 1600, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
 });
 const sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
 const clip = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '\n...[cut]' : String(s));
@@ -131,18 +131,19 @@ function doEdit(ctx, a) {
   fs.writeFileSync(abs, crlf ? next.replace(/\n/g, '\r\n') : next);
   return { ok: 'EDIT ' + rel + ': applied (' + a.search.split('\n').length + ' line(s) replaced by ' + a.replace.split('\n').length + ')', file: rel };
 }
-function doCreate(ctx, a) {
+function doCreate(ctx, a, mine) {
   const { rel, abs } = confine(ctx.worktree, a.file, ctx.prot);
-  if (fs.existsSync(abs)) return { err: 'CREATE ' + rel + ': the file exists (use EDIT)' };
+  const replacing = fs.existsSync(abs);
+  if (replacing && !(mine || []).includes(rel)) return { err: 'CREATE ' + rel + ': the file exists (use EDIT)' };
   if (Buffer.byteLength(a.content) > LIMITS.newFileBytes) return { err: 'CREATE ' + rel + ': too large' };
   fs.mkdirSync(path.dirname(abs), { recursive: true }); fs.writeFileSync(abs, a.content.endsWith('\n') ? a.content : a.content + '\n');
-  return { ok: 'CREATE ' + rel + ': created', file: rel };
+  return { ok: 'CREATE ' + rel + (replacing ? ': rewritten (it is a file you created)' : ': created'), file: rel, created: true };
 }
 
 // ── state kept outside the model's context (survives restarts) ──────────
 function loadSession(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
 function saveSession(file, s) { if (!file) return; fs.mkdirSync(path.dirname(file), { recursive: true }); const tmp = file + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(s)); fs.renameSync(tmp, file); }
-const freshSession = () => ({ v: 1, turns: 0, plan: [], notes: [], changed: [], runs: [], switches: 0, strategies: [], idleRuns: 0, formatErrors: 0, lastRunSig: null, sameSigStreak: 0, lastDiffHash: null, usage: { input: 0, output: 0, calls: 0 }, observations: [], events: [] });
+const freshSession = () => ({ v: 1, turns: 0, plan: [], notes: [], changed: [], runs: [], switches: 0, strategies: [], idleRuns: 0, formatErrors: 0, lastRunSig: null, sameSigStreak: 0, lastDiffHash: null, created: [], stuckRefusals: 0, reads: 0, recent: [], log: [], repeatStreak: 0, lastTurnSig: null, repeatDemands: 0, turnsSinceChange: 0, noChangeDemanded: false, usage: { input: 0, output: 0, calls: 0 }, observations: [], events: [] });
 
 function diffHash(ctx) { const r = git(ctx.worktree, ['diff', '--no-color', ctx.base]); const u = git(ctx.worktree, ['ls-files', '--others', '--exclude-standard']); return sha(r.out + '\n' + u.out); }
 function changedNow(ctx, skip) {
@@ -157,11 +158,13 @@ const PROTOCOL = [
   'PLAN <short step>  (up to 6, to split the work)  |  STEP-DONE <n>  |  NOTE <one fact worth remembering>  |  DONE <summary>  |  STUCK <reason>',
   'To change a file, EXACTLY this block (SEARCH must be copied verbatim from READ output without line numbers and must occur once):',
   'EDIT <path>\n<<<<<<< SEARCH\nold lines\n=======\nnew lines\n>>>>>>> REPLACE',
-  'To add a file: CREATE <path>\n<<<<<<< CONTENT\nlines\n>>>>>>> END',
+  'To add a file: CREATE <path>\n<<<<<<< CONTENT\nlines\n>>>>>>> END  (a file you created yourself can be rewritten with a new CREATE)',
+  'Worked examples (unrelated to your task):\nCREATE lib/hello.test.js\n<<<<<<< CONTENT\nconst test = require("node:test");\nconst assert = require("node:assert/strict");\nconst { hello } = require("./hello");\ntest("hello greets", () => { assert.equal(hello("a"), "hi a"); });\n>>>>>>> END\n\nEDIT lib/hello.js\n<<<<<<< SEARCH\n  return "hi";\n=======\n  return "hi " + name;\n>>>>>>> REPLACE',
   'Read before you edit. Make small changes. Use RUN after each change. Say DONE only after RUN passed. If you are blocked, say STUCK and why: a stronger developer will take over. Paths are relative to the repository root. Secrets and configuration files are not available.',
 ].join('\n');
 
 function buildPrompt(s, task, memoryText, lastObs, demand) {
+  const nudge = s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN.' : '';
   const parts = [PROTOCOL,
     'TASK: ' + task.title + '\n' + clip(task.objective, 1800) + (task.files && task.files.length ? '\nFiles the plan mentions: ' + task.files.slice(0, 8).join(', ') : ''),
     memoryText ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
@@ -169,7 +172,7 @@ function buildPrompt(s, task, memoryText, lastObs, demand) {
     s.notes.length ? 'YOUR NOTES:\n' + s.notes.slice(-8).map((n) => '- ' + n).join('\n') : '',
     s.strategies.length ? 'APPROACHES ALREADY TRIED THAT FAILED:\n' + s.strategies.slice(-4).map((x, i) => (i + 1) + '. ' + x).join('\n') : '',
     s.changed.length ? 'FILES YOU CHANGED: ' + s.changed.slice(0, 10).join(', ') : '',
-    demand || '',
+    demand || '', nudge,
     'LAST RESULTS:\n' + (lastObs || '(none yet)')];
   let p = parts.filter(Boolean).join('\n\n');
   if (p.length > LIMITS.promptChars) { const head = p.slice(0, p.indexOf('LAST RESULTS:')); p = clip(head, LIMITS.promptChars - 3500) + '\n\nLAST RESULTS:\n' + clip(lastObs, 3300); }
@@ -185,14 +188,18 @@ async function runRepoWorker(opts) {
   if (!opts.profile || opts.profile.mode !== 'text') throw new Error('Not a text-only developer profile');
   const s = (opts.sessionFile && loadSession(opts.sessionFile)) || freshSession();
   const ev = (kind, msg) => { s.events.push({ at: now(), kind, msg: clip(msg, 300) }); s.events = s.events.slice(-60); if (opts.onEvent) { try { opts.onEvent(kind, msg); } catch (_) {} } };
-  const finish = (state, summary, extra = {}) => { ev(state, summary); saveSession(opts.sessionFile, s); return { state, summary, turns: s.turns, switches: s.switches, changed: changedNow(ctx, opts.skipDirs), notes: s.notes, plan: s.plan, usage: s.usage, strategies: s.strategies, lastRun: s.runs.at(-1) || null, events: s.events, ...extra }; };
+  const finish = (state, summary, extra = {}) => { ev(state, summary); saveSession(opts.sessionFile, s); return { state, summary, turns: s.turns, switches: s.switches, changed: changedNow(ctx, opts.skipDirs), notes: s.notes, plan: s.plan, log: s.log, usage: s.usage, strategies: s.strategies, lastRun: s.runs.at(-1) || null, events: s.events, ...extra }; };
 
   let lastObs = s.observations.slice(-2).join('\n---\n'), demand = '';
   for (;;) {
     if (opts.signal && opts.signal.aborted) return finish('interrupted', 'Cancelled; progress saved');
     if (opts.deadlineAt && now() > opts.deadlineAt) return finish('interrupted', 'Work slot ended; progress saved, the task resumes in the next slot');
     if (s.turns >= LIMITS.maxTurns) return finish('blocked', 'Turn limit reached (' + LIMITS.maxTurns + ') without a passing verification');
-    if (freemem() < LIMITS.minFreeRamBytes) return finish('interrupted', 'Free RAM below ' + Math.round(LIMITS.minFreeRamBytes / 1048576) + ' MB; paused, progress saved');
+    if (freemem() < LIMITS.minFreeRamBytes) {
+      const sleep = dep.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+      for (let waited = 0; freemem() < LIMITS.minFreeRamBytes && waited < LIMITS.ramWaitMs; waited += LIMITS.ramPollMs) { if (opts.signal && opts.signal.aborted) break; await sleep(LIMITS.ramPollMs); }
+      if (freemem() < LIMITS.minFreeRamBytes) return finish('interrupted', 'Free RAM below ' + Math.round(LIMITS.minFreeRamBytes / 1048576) + ' MB for ' + Math.round(LIMITS.ramWaitMs / 1000) + ' s; paused, progress saved');
+    }
     let status; try { status = await fetchLocal(BASE_URL + '/api/v0/models', { signal: AbortSignal.timeout(5000) }); } catch { return finish('interrupted', 'LM Studio unreachable; progress saved'); }
     if (!status.ok) return finish('interrupted', 'LM Studio unavailable (HTTP ' + status.status + ')');
     const models = await status.json();
@@ -222,9 +229,9 @@ async function runRepoWorker(opts) {
       executed++;
       try {
         if (a.type === 'list') obs.push(doList(ctx, a));
-        else if (a.type === 'read') obs.push(doRead(ctx, a));
+        else if (a.type === 'read') { const r = doRead(ctx, a); obs.push(r); if (!/: (no such file|not a file|file too large|binary)/.test(r)) s.reads++; }
         else if (a.type === 'grep') obs.push(doGrep(ctx, a));
-        else if (a.type === 'edit' || a.type === 'create') { const r = a.type === 'edit' ? doEdit(ctx, a) : doCreate(ctx, a); obs.push(r.err || r.ok); if (r.file && !s.changed.includes(r.file)) s.changed.push(r.file); }
+        else if (a.type === 'edit' || a.type === 'create') { const r = a.type === 'edit' ? doEdit(ctx, a) : doCreate(ctx, a, s.created); obs.push(r.err || r.ok); if (r.file && !s.changed.includes(r.file)) s.changed.push(r.file); if (r.created && !s.created.includes(r.file)) s.created.push(r.file); }
         else if (a.type === 'note') { s.notes.push(clip(a.text, LIMITS.noteChars)); s.notes = s.notes.slice(-12); obs.push('NOTE saved'); }
         else if (a.type === 'plan') { if (s.plan.length < LIMITS.planSteps) s.plan.push({ text: clip(a.text, 160), done: false }); obs.push('PLAN step ' + s.plan.length + ' recorded'); }
         else if (a.type === 'stepdone') { if (s.plan[a.n - 1]) s.plan[a.n - 1].done = true; obs.push('Step ' + a.n + ' marked done'); }
@@ -251,9 +258,26 @@ async function runRepoWorker(opts) {
     if (bad.length) { for (const f of bad) { git(ctx.worktree, ['checkout', '--', f]); try { if (!git(ctx.worktree, ['ls-files', '--error-unmatch', f]).ok) fs.rmSync(path.join(ctx.worktree, f), { force: true }); } catch (_) {} } obs.push('REFUSED: changes to protected path(s) were reverted: ' + bad.slice(0, 4).join(', ')); ev('protected', bad.join(', ')); }
 
     lastObs = clip(obs.join('\n\n'), 6500); s.observations.push(lastObs); s.observations = s.observations.slice(-3);
-    if (claimedStuck) return finish('blocked', 'The model declared itself stuck: ' + clip(claimedStuck, 400));
+    // Diagnostics that survive restarts: what each turn asked for and what came back.
+    const turnSig = sha(actions.map((a) => a.type + ':' + (a.file || a.dir || a.text || a.n || '') + ':' + (a.search || '').length + ':' + (a.content || '').length).join('|') + '#' + lastObs.slice(0, 400));
+    s.log.push({ turn: s.turns, acts: actions.map((a) => a.type + (a.file || a.dir ? ' ' + (a.file || a.dir) : '')).join('; ').slice(0, 160), errors: errors.length, obs: lastObs.replace(/\s+/g, ' ').slice(0, 140) }); s.log = s.log.slice(-60);
+    s.recent = [...s.recent, turnSig].slice(-8); s.repeatStreak = s.recent.filter((x) => x === turnSig).length >= 3 ? LIMITS.repeatTurnsBeforeDemand : 1; s.lastTurnSig = turnSig;
+    const dh = diffHash(ctx); if (s.changeHash === undefined) s.changeHash = dh; if (dh !== s.changeHash) { s.changeHash = dh; s.turnsSinceChange = 0; s.noChangeDemanded = false; } else s.turnsSinceChange++;
+    if (s.repeatStreak >= LIMITS.repeatTurnsBeforeDemand) {
+      s.repeatDemands++; s.repeatStreak = 0; s.recent = []; // a warning gives the model a fresh chance
+      if (s.repeatDemands > LIMITS.maxRepeatDemands) return finish('blocked', 'The model repeats the same actions with the same results (' + s.repeatDemands + ' warnings ignored)');
+      demand = 'YOU ARE REPEATING THE SAME ACTIONS and getting the same result (' + s.repeatDemands + '/' + LIMITS.maxRepeatDemands + '). Do something different now: use the information you already have to EDIT or CREATE a file, or say STUCK.';
+      ev('repeat', 'identical turns, warning ' + s.repeatDemands);
+    }
+    if (!s.noChangeDemanded && s.turnsSinceChange >= LIMITS.noChangeDemandTurns && !s.changed.length) { s.noChangeDemanded = true; demand = (demand ? demand + '\n' : '') + 'AFTER ' + s.turnsSinceChange + ' TURNS YOU HAVE CHANGED NOTHING. Stop exploring: write the change now (EDIT or CREATE), or say STUCK with the reason.'; ev('no-change', s.turnsSinceChange + ' turns without a change'); }
+    if (s.turnsSinceChange >= LIMITS.noChangeStuckTurns && !s.changed.length) return finish('blocked', 'No change to the repository after ' + s.turnsSinceChange + ' turns of exploration');
+    if (claimedStuck) {
+      const failing = s.runs.filter((r) => !r.ok).length;
+      if (s.stuckRefusals < 2 && s.turns < 8 && failing < 3 && s.changed.length) { s.stuckRefusals++; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'STUCK refused (' + s.stuckRefusals + '/2): you have tried only ' + failing + ' time(s) to make the checks pass. Read the failure above carefully, find what differs from what you expected, and fix it with EDIT or a new CREATE of your own file.'; s.observations.push(lastObs); s.observations = s.observations.slice(-3); saveSession(opts.sessionFile, s); continue; }
+      return finish('blocked', 'The model declared itself stuck: ' + clip(claimedStuck, 400));
+    }
     if (claimedDone !== null) {
-      if (!s.changed.length && !changedNow(ctx, opts.skipDirs).length) { demand = 'DONE refused: you changed nothing. Make the change, or say STUCK.'; saveSession(opts.sessionFile, s); continue; }
+      if (!s.changed.length && !changedNow(ctx, opts.skipDirs).length) { demand = 'DONE refused: you changed nothing. Make the change, or say STUCK.'; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'DONE refused: nothing was changed yet. Write the change with an EDIT or CREATE block (see the worked examples).'; saveSession(opts.sessionFile, s); continue; }
       const v = ran && ranResult && s.lastDiffHash === diffHash(ctx) ? ranResult : null;
       let check = v;
       if (!check) { const r = await runVerify(ctx.worktree, opts.verify || []); check = { ok: r.ok, results: r.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() }; s.runs.push(check); s.lastDiffHash = diffHash(ctx); }

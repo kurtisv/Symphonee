@@ -59,7 +59,7 @@ module.exports = {
         const out = await runRepoWorker({ worktree: wt.path, base, task, verify, protectedPatterns, skipDirs, model, profile, signal: abort.signal, deadlineAt, sessionFile, memoryText, onEvent });
         if (t.state !== STATE.RUNNING) return;
         Object.assign(t.execution, { changedFiles: out.changed, turns: out.turns, switches: out.switches, agentUsage: { input_tokens: out.usage.input, output_tokens: out.usage.output, total_tokens: out.usage.input + out.usage.output, calls: out.usage.calls },
-          notes: out.notes, plan: out.plan, strategies: out.strategies, events: out.events.slice(-20), verified: out.verified ? out.verified.results.map((r) => r.name) : null });
+          notes: out.notes, plan: out.plan, strategies: out.strategies, events: out.events.slice(-20), log: out.log.slice(-40), verified: out.verified ? out.verified.results.map((r) => r.name) : null });
         if (out.state === 'completed') { t.state = STATE.COMPLETED; t.result = 'Qwen (local developer) finished after ' + out.turns + ' turn(s), ' + out.switches + ' strategy switch(es). ' + out.summary + ' Files: ' + out.changed.join(', '); }
         else { t.state = STATE.FAILED; t.error = (out.state === 'blocked' ? 'QWEN_BLOCKED: ' : 'QWEN_INTERRUPTED: ') + out.summary; t.execution.handoff = out.state === 'blocked'; t.execution.resumable = out.state === 'interrupted'; }
       } catch (e) {

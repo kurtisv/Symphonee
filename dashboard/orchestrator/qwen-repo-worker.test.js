@@ -44,7 +44,7 @@ const FIX = 'EDIT src/add.js\n<<<<<<< SEARCH\n  return a - b;\n=======\n  return
 function opts(t, r, replies, over = {}) {
   const lm = fakeLm(replies);
   return { lm, o: { worktree: r.root, base: r.base, task: { title: 'Fix add', objective: 'add(2, 3) must return 5.', files: ['src/add.js'] }, verify: VERIFY, protectedPatterns: PROT, model: 'm', profile: PROFILE,
-    sessionFile: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sym-qwen-sess-')), 's.json'), dependencies: { fetch: lm.fetch, freemem: () => 8 * 1024 ** 3 }, ...over } };
+    sessionFile: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sym-qwen-sess-')), 's.json'), dependencies: { fetch: lm.fetch, freemem: () => 8 * 1024 ** 3, sleep: async () => {} }, ...over } };
 }
 
 test('parser: strict actions, blocks, and everything else ignored', () => {
@@ -78,7 +78,7 @@ test('a real fix: PLAN, READ, EDIT, RUN, DONE; the host verifies; only the edite
 
 test('DONE is never believed without a passing host verification', async t => {
   const r = repo(t);
-  const { o } = opts(t, r, ['EDIT src/add.js\n<<<<<<< SEARCH\n  return a - b;\n=======\n  return a * b;\n>>>>>>> REPLACE\nDONE all good', 'STUCK cannot do it']);
+  const { o } = opts(t, r, ['EDIT src/add.js\n<<<<<<< SEARCH\n  return a - b;\n=======\n  return a * b;\n>>>>>>> REPLACE\nDONE all good', 'STUCK cannot do it', 'STUCK cannot do it', 'STUCK cannot do it']);
   const out = await W.runRepoWorker(o);
   assert.equal(out.state, 'blocked'); assert.match(out.summary, /declared itself stuck/);
 });
@@ -135,12 +135,12 @@ test('format drift: repeated answers outside the protocol stop the run', async t
   const r = repo(t);
   const { o } = opts(t, r, Array(8).fill('I will think about it and explain what to do in prose only.'));
   const out = await W.runRepoWorker(o);
-  assert.equal(out.state, 'blocked'); assert.match(out.summary, /outside the protocol/);
+  assert.equal(out.state, 'blocked'); assert.match(out.summary, /outside the protocol|repeats the same actions/);
 });
 
 test('resources and health: low RAM, unloaded model, unreachable server and the work slot pause the run with the progress saved', async t => {
   const r = repo(t);
-  let a = opts(t, r, ['READ src/add.js'], { dependencies: { fetch: fakeLm([]).fetch, freemem: () => 100 * 1024 * 1024 } });
+  let a = opts(t, r, ['READ src/add.js'], { dependencies: { fetch: fakeLm([]).fetch, freemem: () => 100 * 1024 * 1024, sleep: async () => {} } });
   assert.match((await W.runRepoWorker(a.o)).summary, /Free RAM below/);
   a = opts(t, r, [], { dependencies: { fetch: async () => { throw new Error('ECONNREFUSED'); }, freemem: () => 8 * 1024 ** 3 } });
   const res = await W.runRepoWorker(a.o); assert.equal(res.state, 'interrupted'); assert.match(res.summary, /LM Studio unreachable/);
@@ -177,4 +177,75 @@ test('the prompt stays within the context budget whatever the observations', asy
   await W.runRepoWorker(o);
   assert.ok(lm.seen.every((p) => p.length <= W.LIMITS.promptChars + 400), lm.seen.map((p) => p.length).join());
   assert.match(lm.seen[1], /cut at 5000 characters/);
+});
+
+test('identical turns with identical results are warned about, then the task is handed back as blocked', async t => {
+  const r = repo(t);
+  const { lm, o } = opts(t, r, Array(12).fill('READ src/add.js'));
+  const out = await W.runRepoWorker(o);
+  assert.equal(out.state, 'blocked'); assert.match(out.summary, /repeats the same actions with the same results/);
+  assert.ok(lm.seen.some((p) => /YOU ARE REPEATING THE SAME ACTIONS/.test(p)));
+  assert.ok(out.log.length >= 8 && /^read src\/add\.js/.test(out.log[0].acts), 'every turn is logged for diagnosis');
+});
+
+test('exploring without ever changing anything is called out, then handed back, even when each turn looks different', async t => {
+  const r = repo(t);
+  const replies = []; for (let i = 0; i < 40; i++) replies.push('NOTE observation number ' + i + '\nGREP add IN src\nLIST src');
+  const { lm, o } = opts(t, r, replies);
+  const out = await W.runRepoWorker(o);
+  assert.equal(out.state, 'blocked'); assert.match(out.summary, /No change to the repository after 26 turns/);
+  assert.ok(lm.seen.some((p) => /CHANGED NOTHING/.test(p)), 'warned once at 12 turns');
+});
+
+test('memory pressure that passes is waited out; memory pressure that stays pauses the run with progress saved', async t => {
+  const r = repo(t);
+  let free = 100 * 1024 * 1024, slept = 0;
+  const lm = fakeLm([FIX, 'DONE ok']);
+  const o = { ...opts(t, r, []).o, dependencies: { fetch: lm.fetch, freemem: () => free, sleep: async () => { slept++; if (slept === 3) free = 8 * 1024 ** 3; } } };
+  const out = await W.runRepoWorker(o);
+  assert.equal(out.state, 'completed'); assert.equal(slept, 3, 'waited three polls, then went on');
+  const low = { ...opts(t, r, []).o, dependencies: { fetch: fakeLm([]).fetch, freemem: () => 100 * 1024 * 1024, sleep: async () => {} } };
+  const res = await W.runRepoWorker(low);
+  assert.equal(res.state, 'interrupted'); assert.match(res.summary, /Free RAM below 1536 MB for 180 s/);
+});
+
+test('the protocol carries worked examples that the host parser accepts, and a read-only model is told to write the change', async t => {
+  assert.match(W.PROTOCOL, /Worked examples/);
+  const ex = W.parseActions(W.PROTOCOL.slice(W.PROTOCOL.indexOf('Worked examples')));
+  assert.deepEqual(ex.actions.filter((a) => a.type === 'create' || a.type === 'edit').map((a) => a.type), ['create', 'edit']); assert.deepEqual(ex.errors, []);
+  const r = repo(t);
+  const { lm, o } = opts(t, r, ['READ src/add.js', 'READ src/add.js', 'STUCK x']);
+  await W.runRepoWorker(o);
+  assert.doesNotMatch(lm.seen[0], /NEXT STEP/); assert.match(lm.seen[1], /NEXT STEP: you have read what you need\. Do NOT read again and do NOT say DONE yet: write the change now/);
+});
+
+test('an A,B,A,B cycle (read, say DONE, read, say DONE ...) is detected as repetition and DONE-without-change is explained in the results', async t => {
+  const r = repo(t);
+  const replies = []; for (let i = 0; i < 40; i++) replies.push(i % 2 ? 'DONE finished' : 'READ src/add.js');
+  const { lm, o } = opts(t, r, replies);
+  const out = await W.runRepoWorker(o);
+  assert.equal(out.state, 'blocked'); assert.match(out.summary, /repeats the same actions|No change to the repository/);
+  assert.ok(lm.seen.some((p) => /DONE refused: nothing was changed yet\. Write the change with an EDIT or CREATE block/.test(p)));
+  assert.ok(lm.seen.some((p) => /YOU ARE REPEATING THE SAME ACTIONS/.test(p)));
+});
+
+test('a file the model created may be rewritten whole; any other existing file may not', async t => {
+  const r = repo(t);
+  const mk = (body) => `CREATE src/new.test.js\n<<<<<<< CONTENT\n${body}\n>>>>>>> END`;
+  const { lm, o } = opts(t, r, [mk('first') + '\nCREATE src/add.js\n<<<<<<< CONTENT\nx\n>>>>>>> END', mk('second'), 'STUCK enough']);
+  await W.runRepoWorker(o);
+  assert.match(lm.seen[1], /CREATE src\/add\.js: the file exists \(use EDIT\)/);
+  assert.equal(fs.readFileSync(path.join(r.root, 'src', 'new.test.js'), 'utf8').trim(), 'second');
+  assert.match(lm.seen[2], /rewritten \(it is a file you created\)/);
+  assert.match(fs.readFileSync(path.join(r.root, 'src', 'add.js'), 'utf8'), /return a - b/, 'the original file is untouched');
+});
+
+test('giving up after a single failure is refused twice with an explanation, then accepted', async t => {
+  const r = repo(t);
+  const bad = 'CREATE src/x.test.js\n<<<<<<< CONTENT\nthrow new Error("boom");\n>>>>>>> END\nRUN';
+  const verify = [{ name: 'tests', cmd: [process.execPath, '--test', 'src/x.test.js'], timeoutMs: 60000 }];
+  const { lm, o } = opts(t, r, [bad, 'STUCK it fails', 'STUCK it still fails', 'STUCK I give up'], { verify });
+  const out = await W.runRepoWorker(o);
+  assert.equal(out.state, 'blocked'); assert.match(out.summary, /declared itself stuck: I give up/); assert.equal(out.turns, 4);
+  assert.match(lm.seen[2], /STUCK refused \(1\/2\): you have tried only 1 time\(s\)/); assert.match(lm.seen[3], /STUCK refused \(2\/2\)/);
 });

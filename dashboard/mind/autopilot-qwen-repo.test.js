@@ -121,7 +121,7 @@ test('too many files or a protected file in the plan: not admissible', async () 
 });
 
 test('Qwen stuck after a partial change: Claude takes over in the SAME worktree, not counted as a repair, and the observation is kept', async () => {
-  const f = setup({ qwenReplies: [CREATE_TEST.replace('\nRUN', ''), 'STUCK I do not know how to proceed'] });
+  const f = setup({ qwenReplies: [CREATE_TEST.replace('\nRUN', ''), 'STUCK I do not know how to proceed', 'STUCK still not', 'STUCK I do not know how to proceed'] }); // a first give-up is refused twice
   try {
     f.pilot.configure({ enabled: true, goal: 'g', allowWorktreeWrites: true }); await drive(f.pilot);
     const s = f.pilot.snapshot(); assert.equal(s.error, null, String(s.error));
