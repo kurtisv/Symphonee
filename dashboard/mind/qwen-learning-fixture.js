@@ -9,6 +9,11 @@ const store=require('./store');
 const lock=require('./lock');
 const {acquireFixtureLock,recoverDeadFixtureLock}=require('./qwen-fixture-lock');
 const {isJsonSafe}=require('../orchestrator/qwen-assertions');
+const lessonsMod=require('./lessons');
+const {retrieveLessons}=require('../brain/mind-context');
+// Validated lessons live in the same isolated fixture space, under their own source type.
+const LESSON_SOURCE='qwen-fixture-lesson';
+const RECALL_SPACE='zzfixturelessons';
 const hash=x=>crypto.createHash('sha256').update(x,'utf8').digest('hex');
 // Proof levels. Neither certifies a lesson for a real project.
 const PROOF=Object.freeze({simulated:'simulated-review',checks:'independent-checks-only','codex-fixture':'real-codex-review-fictional-fixture'});
@@ -107,6 +112,90 @@ function makeFixtureController({repoRoot,space,queueDir}) {
     return (store.loadGraph(repoRoot,space)?.nodes||[]).filter(n=>n.kind==='artifact' && n.disabled!==true && n.source?.type==='qwen-fixture-experiment' && hash(n.content)===n.observationDigest)
       .map(n=>JSON.parse(n.content)).filter(r=>r.runId===runId && r.proofLevel===proofLevel).sort((a,b)=>a.attempt-b.attempt);
   }
-  return {enqueue,flush,pending,drain,findExperiment,findRun,setExperimentDisabled,verifiedLessons};
+  // ── Validated lessons (durable, experimental) ───────────────────────────────
+  // A lesson reaches this store only with the full proof checked by
+  // lessons.validationProblems (independent checks, real tool-free Codex GO,
+  // current checker version, shown to the developer, after a repeated blockage).
+  // Same method again = one lesson with more independent evidence; a different
+  // method for the same error class and task family supersedes the older one.
+  // Writes use the same locks as observations and are read back; they do not go
+  // through the observation queue (no crash-replay): a failed write is simply retried.
+  const lessonParse=n=>{try{const c=JSON.parse(n.content);return hash(n.content)===n.observationDigest?c:null;}catch{return null;}};
+  const lessonNodes=g=>(g?.nodes||[]).filter(n=>n.kind==='artifact' && n.source?.type===LESSON_SOURCE);
+  const lessonCurrent=(n,c,checkerVersion,now)=>c && n.disabled!==true && c.status==='validated' && c.validation.checkerVersion===checkerVersion && now<c.validation.validUntil;
+  function lessonRecord(input,now){
+    if(!input || typeof input!=='object' || !isJsonSafe(input) || typeof input.key!=='string') throw Error('Invalid lesson');
+    const tp=lessonsMod.teachingProblems(input.teaching); if(tp.length) throw Error('Invalid lesson: '+tp.join(', '));
+    const vp=lessonsMod.validationProblems(input.evidence,input.checkerVersion,input.key); if(vp.length) throw Error('Lesson is not validated: '+vp.join('; '));
+    const t=input.teaching, ev=input.evidence;
+    return {status:'validated',key:input.key,errorClass:t.errorClass,family:t.family,strategyDigest:lessonsMod.digestOf(t.strategy),
+      teaching:{cause:t.cause.trim(),strategy:t.strategy.trim(),pitfalls:t.pitfalls.map(x=>x.trim()),verify:t.verify.trim(),source:t.source,model:t.model,tokens:t.tokens},
+      validation:{checkerVersion:input.checkerVersion,at:now,validUntil:now+lessonsMod.VALID_DAYS*86400000,codeHash:ev.codeHash,assertionsHash:ev.assertionsHash,diffHash:ev.codex.diffHash,
+        reviewTaskId:ev.codex.taskId,reviewerVersion:ev.codex.reviewer.version,independent:{executed:ev.independent.executed,expected:ev.independent.expected},
+        blocked:{signature:String(ev.blocked.signature).slice(0,600),failedAttempts:ev.blocked.failedAttempts},evidenceCount:1,
+        history:[{runId:ev.runId,at:now,codeHash:ev.codeHash,diffHash:ev.codex.diffHash,reviewTaskId:ev.codex.taskId,checkerVersion:input.checkerVersion}]},
+      uses:0,usesSucceeded:0};
+  }
+  function withGraph(fn){
+    const releaseFixture=acquireFixtureLock(repoRoot,space); let held;
+    try {
+      held=lock.acquire(space,'graph');if(!held.ok || held.alreadyHeld)throw Error('Mind graph lock unavailable');
+      const graph=store.loadGraph(repoRoot,space) || store.emptyGraph({space});
+      const out=fn(graph); store.saveGraph(repoRoot,space,graph); return out;
+    } finally {if(held?.ok && !held.alreadyHeld)lock.release(space,'graph');releaseFixture();}
+  }
+  const writeLesson=(n,c)=>{n.content=JSON.stringify(c);n.observationDigest=hash(n.content);};
+  function upsertLesson(input,now=Date.now()){
+    const rec=lessonRecord(input,now);
+    const out=withGraph(graph=>{
+      const peers=lessonNodes(graph).map(n=>({n,c:lessonParse(n)})).filter(x=>x.c && x.c.status==='validated' && x.n.disabled!==true && x.c.errorClass===rec.errorClass && x.c.family===rec.family);
+      const twin=peers.find(x=>x.c.strategyDigest===rec.strategyDigest || lessonsMod.similarity(x.c.teaching.strategy,rec.teaching.strategy)>=lessonsMod.SIMILAR);
+      if(twin){
+        const c=twin.c, h=rec.validation.history[0];
+        if(!c.validation.history.some(x=>x.runId===h.runId)){c.validation.history=[...c.validation.history,h].slice(-5);c.validation.evidenceCount+=1;}
+        c.validation.validUntil=rec.validation.validUntil; writeLesson(twin.n,c);
+        return {id:twin.n.id,merged:true,superseded:[],evidenceCount:c.validation.evidenceCount};
+      }
+      const id='qwen_lesson_'+hash(rec.errorClass+'|'+rec.family+'|'+rec.strategyDigest);
+      const superseded=[];
+      for(const p of peers){p.c.status='obsolete';p.c.obsoleteReason='superseded';p.c.supersededBy=id;writeLesson(p.n,p.c);superseded.push(p.n.id);}
+      let node=graph.nodes.find(n=>n.id===id);
+      if(!node){node={id,kind:'artifact',label:'EXPERIMENTAL validated lesson ['+rec.errorClass+']',source:{type:LESSON_SOURCE,ref:id},proofLevel:PROOF['codex-fixture'],createdAt:new Date(now).toISOString()};graph.nodes.push(node);}
+      node.disabled=false; writeLesson(node,rec);
+      return {id,merged:false,superseded,evidenceCount:1};
+    });
+    const back=lessonParse(lessonNodes(store.loadGraph(repoRoot,space)).find(n=>n.id===out.id)||{});
+    if(!back || back.status!=='validated') throw Error('Mind read-back failed');
+    return out;
+  }
+  // Only current validated lessons are returned: right status, not disabled, same
+  // checker version, not expired; ranked by the existing Mind lesson retrieval.
+  function recallLessons({question,checkerVersion,limit=3,now=Date.now()}={}){
+    if(typeof checkerVersion!=='string' || !checkerVersion) throw Error('checkerVersion required');
+    const byId=new Map();
+    for(const n of lessonNodes(store.loadGraph(repoRoot,space))){const c=lessonParse(n);if(lessonCurrent(n,c,checkerVersion,now))byId.set(n.id,{n,c});}
+    const entries=[...byId.values()].map(({n,c})=>({scope:'mind@'+RECALL_SPACE,key:n.id,kind:c.errorClass,text:c.teaching.cause+' '+c.teaching.strategy,count:c.validation.evidenceCount,lastAt:c.validation.history.at(-1).at}));
+    return retrieveLessons({all:()=>entries},repoRoot,RECALL_SPACE,Math.min(5,limit),String(question||'')).map(p=>{
+      const {n,c}=byId.get(p.id);
+      return {id:n.id,key:c.key,errorClass:c.errorClass,family:c.family,teaching:c.teaching,
+        provenance:{nodeId:n.id,validatedAt:new Date(c.validation.at).toISOString(),reviewTaskId:c.validation.reviewTaskId,reviewerVersion:c.validation.reviewerVersion,diffHash:c.validation.diffHash,codeHash:c.validation.codeHash,
+          checkerVersion:c.validation.checkerVersion,evidenceCount:c.validation.evidenceCount,uses:c.uses,usesSucceeded:c.usesSucceeded,proofLevel:PROOF['codex-fixture']}};
+    });
+  }
+  // Counters only: a lesson shown before a success is NOT thereby proven useful.
+  function recordLessonUse(id,success){
+    if(!/^qwen_lesson_[a-f0-9]{64}$/.test(id) || typeof success!=='boolean') throw Error('Invalid lesson use');
+    withGraph(graph=>{const n=lessonNodes(graph).find(x=>x.id===id),c=n&&lessonParse(n);if(!c)throw Error('Lesson not found');c.uses+=1;if(success)c.usesSucceeded+=1;writeLesson(n,c);});
+  }
+  function retireLesson(id,reason){
+    if(!/^qwen_lesson_[a-f0-9]{64}$/.test(id)) throw Error('Invalid lesson id');
+    withGraph(graph=>{const n=lessonNodes(graph).find(x=>x.id===id),c=n&&lessonParse(n);if(!c)throw Error('Lesson not found');c.status='obsolete';c.obsoleteReason=String(reason||'manual').slice(0,80);writeLesson(n,c);});
+  }
+  // Retires lessons validated under another checker version or past their date.
+  function retireStale(checkerVersion,now=Date.now()){
+    return withGraph(graph=>{let k=0;for(const n of lessonNodes(graph)){const c=lessonParse(n);if(c && c.status==='validated' && !lessonCurrent(n,c,checkerVersion,now)){c.status='obsolete';c.obsoleteReason=c.validation.checkerVersion!==checkerVersion?'checker-changed':'expired';writeLesson(n,c);k++;}}return k;});
+  }
+  function listLessons(){return lessonNodes(store.loadGraph(repoRoot,space)).map(n=>({id:n.id,disabled:n.disabled===true,...(lessonParse(n)||{status:'corrupt'})}));}
+  return {enqueue,flush,pending,drain,findExperiment,findRun,setExperimentDisabled,verifiedLessons,upsertLesson,recallLessons,recordLessonUse,retireLesson,retireStale,listLessons};
 }
 module.exports={makeFixtureController};

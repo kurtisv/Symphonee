@@ -13,6 +13,8 @@ const localBrief = require('./local-brief');
 const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
+const tq = require('./qwen-teaching');
+const { CHECKER_VERSION } = require('../orchestrator/qwen-pure-assertions');
 // Optional Sentry reporting (window check-ins, completions, halts). Never throws.
 let sentry = null;
 try { sentry = require('../automation/sentry-report'); } catch (_) {}
@@ -370,6 +372,10 @@ class MindAutopilot {
       if (!f.root || !Array.isArray(f.files) || !Array.isArray(f.editable) || !Array.isArray(f.assertions) || typeof f.requirements !== 'string' || !/^[a-z0-9.-]{3,40}$/.test(f.reviewerModel || '')) throw new Error('Invalid Qwen fixture');
       if ((f.lessonsRoot !== undefined && (typeof f.lessonsRoot !== 'string' || !path.isAbsolute(f.lessonsRoot))) || (f.name !== undefined && !/^[a-z0-9-]{1,40}$/.test(f.name))) throw new Error('Invalid Qwen fixture');
       if (f.developerModel !== undefined &&!Object.hasOwn(require('../orchestrator/qwen-docker-adapter').PROFILES, f.developerModel)) throw new Error('Unsupported Qwen developer model');
+      // Teaching: Claude explains a repeated blockage; Mind keeps what was validated. Both optional.
+      if (f.family !== undefined && !/^[a-z0-9-]{2,40}$/.test(f.family)) throw new Error('Invalid Qwen fixture family');
+      if (f.teacher !== undefined && (!f.teacher || typeof f.teacher.enabled !== 'boolean' || (f.teacher.enabled && (!f.lessonsRoot || !f.family)))) throw new Error('Invalid Qwen fixture teacher');
+      if (f.mind !== undefined && !['recallLessons', 'upsertLesson', 'recordLessonUse'].every(k => typeof f.mind?.[k] === 'function')) throw new Error('Invalid Qwen fixture Mind');
       this.qwenFixture = Object.freeze({ ...f });
     } else this.qwenFixture = null;
     this.orch = orchestrator; this.repoRoot = repoRoot; this.getUiContext = getUiContext;
@@ -878,7 +884,7 @@ class MindAutopilot {
   }
   dispatch(stage, now = Date.now()) {
     const a = this.state.active;
-    if (!STAGES.includes(stage)) throw new Error('Invalid stage');
+    if (!STAGES.includes(stage) && !(this.qwenFixture && stage === 'teach')) throw new Error('Invalid stage');
     // No stage starts outside the work window, not even the next stage of a
     // task begun inside it: it waits for the next window.
     // A task started by hand ("Lancer une tache maintenant") runs to its end.
@@ -975,7 +981,8 @@ class MindAutopilot {
     if (!plan || typeof plan.title !== 'string' || typeof plan.objective !== 'string') throw new Error('Fixture plan required');
     Object.assign(this.state, { enabled: true, error: null, repoName: 'qwen-fixture', repoPath: this.qwenFixture.root, nextAt: 0 });
     this.state.active = { stage: 'implement', taskId: null, plan, review: '', planRevisions: 0, repairs: 0, baseSha: null, worktree: null,
-      budgetRef: null, waitingStage: null, manual: true, attempts: [], reviews: [], diff: null, technical: null, reviewRequest: null };
+      budgetRef: null, waitingStage: null, manual: true, attempts: [], reviews: [], diff: null, technical: null, reviewRequest: null,
+      runId: crypto.randomBytes(16).toString('hex'), teachings: 0, taughtSignatures: [], teaching: null, pendingTeach: null, currentShown: [], shownMethods: [], reviewRepeat: 0 };
     this.log('plan', '[fixture] ' + plan.title);
     if (this.qwenFixture.lessonsRoot) { try { const n = lessons.consolidate(this.qwenFixture.lessonsRoot, this.fixtureLessonScope()); if (n) this.log('lesson', n + ' lecon(s) reformulee(s) fusionnee(s)'); } catch (_) {} }
     this.dispatch('implement', now);
@@ -1019,13 +1026,18 @@ class MindAutopilot {
   qwenPrompt(stage) {
     const a = this.state.active, f = this.qwenFixture;
     let learned = '';
+    // Validated methods (instructions, with provenance) first; unverified observations only as hints.
+    const methods = this.recallMethods();
+    a.shownMethods = methods; a.appliedLessons = [];
+    let hints = [];
     if (f.lessonsRoot) {
       try {
-        const list = lessons.top(f.lessonsRoot, this.fixtureLessonScope(), 5);
-        a.appliedLessons = list.map(x => x.key);
-        learned = lessons.promptText(list).slice(0, 1200);
-      } catch (_) { a.appliedLessons = []; }
+        hints = lessons.top(f.lessonsRoot, this.fixtureLessonScope(), 5).filter(x => lessons.statusOf(x) === 'observation');
+        a.appliedLessons = hints.map(x => x.key);
+      } catch (_) { hints = []; }
     }
+    learned = [lessons.methodsText({ methods }), lessons.promptText(hints)].filter(Boolean).join('\n\n').slice(0, 2400);
+    a.currentShown = [...methods.map(m => m.key), ...(a.teaching ? [a.teaching.key] : [])];
     const textMode = Boolean(f.developerModel) && require('../orchestrator/qwen-docker-adapter').PROFILES[f.developerModel]?.mode === 'text';
     const parts = ['Task: ' + a.plan.objective, 'Requirements: ' + f.requirements,
       'Edit only ' + f.editable.join(', ') + '. The checker accepts only: ' + FIXTURE_SUBSET + '',
@@ -1033,20 +1045,27 @@ class MindAutopilot {
         : 'Tools: read files only with read_file and change average.js only with edit. The ONLY shell command allowed is exactly: node test.js (no ls, cat, node -e or any other command; any other command voids the attempt). The files are ' + f.files.join(' and ') + '.',
       'Unrelated example of the accepted shape: function sum(v){if(v.length===0)return 0;return v.reduce((a,b)=>a+b,0)}\nmodule.exports={sum};'];
     if (learned) parts.push(learned);
+    if (a.teaching) parts.push(tq.teachingText(a.teaching));
     if (stage === 'repair') {
       parts.push('Your previous proposal was REJECTED. Fix every observation below' + (textMode ? '' : ', starting again from the original file') + '. If a suggested fix needs syntax outside the accepted shape, reach the same result with an expression that stays inside it.',
         'Observations:\n' + String(a.review || '').slice(0, 1400), 'Previous proposal (diff):\n' + String(a.diff || '').slice(0, 900));
     }
-    return parts.join('\n\n').slice(0, textMode ? 5400 : 3900);
+    return parts.join('\n\n').slice(0, textMode ? 7600 : 3900);
   }
   dispatchQwenFixture(stage, now) {
     const a = this.state.active, f = this.qwenFixture;
-    if (!['implement', 'code-review', 'repair'].includes(stage)) throw new Error('Qwen fixture uses only implement, code-review and repair');
-    const cli = stage === 'code-review' ? 'codex' : 'qwen3-4b-docker';
+    if (!['implement', 'code-review', 'repair', 'teach'].includes(stage)) throw new Error('Qwen fixture uses only implement, code-review, repair and teach');
+    const cli = stage === 'code-review' ? 'codex' : stage === 'teach' ? 'claude' : 'qwen3-4b-docker';
     const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
     if (!charge) throw new Error('Fixture call budget reached');
     let task;
-    if (stage === 'code-review') {
+    if (stage === 'teach') {
+      const p = a.pendingTeach;
+      const prompt = tq.buildTeacherPrompt({ fn: f.assertions[0].export, requirements: f.requirements, subset: FIXTURE_SUBSET, failures: p.observations,
+        attempts: a.attempts.slice(-3).map(x => ({ attempt: x.attempt, code: tq.codeOf(x.diff), outcome: x.review ? 'Codex ' + x.review.decision : (x.technical && x.technical.passed ? 'checks passed' : 'refused by the independent checker') })),
+        counterexamples: (a.extraCases || []).map(c => c.export + '(' + JSON.stringify(c.args).slice(1, -1) + ') must return ' + JSON.stringify(c.expected)) });
+      task = this.orch.spawnHeadless(tq.teacherSpawnOptions({ prompt, cwd: f.root, space: this.state.space }));
+    } else if (stage === 'code-review') {
       const { buildFixtureReviewRequest } = require('../orchestrator/qwen-supervision');
       const reviewMs = Math.min(this.stepMs, 600000);
       const { request, prompt } = buildFixtureReviewRequest({ technical: a.technical, requirements: f.requirements, cases: this.fixtureCases(), counterexamples: true, diff: a.diff, timeoutMs: reviewMs + 60000, constraints: FIXTURE_SUBSET });
@@ -1088,6 +1107,103 @@ class MindAutopilot {
     }
     return added;
   }
+  // ── Teacher-assisted learning (fixture mode) ────────────────────────────────
+  // Validated methods relevant to this task: from Mind when it is configured (the
+  // durable store, also after a restart), else from the lessons file. Only current
+  // validated lessons; unvalidated teachings and observations are never returned.
+  recallMethods() {
+    const f = this.qwenFixture, a = this.state.active, question = [a.plan.objective, f.requirements].join(' ');
+    try {
+      if (f.mind) return f.mind.recallLessons({ question, checkerVersion: CHECKER_VERSION, limit: 3 }).map(r => ({ key: r.key, mindId: r.id, errorClass: r.errorClass, teaching: r.teaching, source: 'mind', provenance: r.provenance,
+        validation: { at: Date.parse(r.provenance.validatedAt), evidenceCount: r.provenance.evidenceCount, reviewTaskId: r.provenance.reviewTaskId, checkerVersion: r.provenance.checkerVersion } }));
+      if (f.lessonsRoot) {
+        lessons.expireStale(f.lessonsRoot, this.fixtureLessonScope(), CHECKER_VERSION);
+        return lessons.selectForTask(f.lessonsRoot, this.fixtureLessonScope(), { checkerVersion: CHECKER_VERSION, question }).methods
+          .map(x => ({ key: x.key, errorClass: x.errorClass, teaching: x.teaching, validation: x.validation, source: 'lessons' }));
+      }
+    } catch (e) { this.log('lesson', 'Recall failed, continuing without validated methods: ' + String(e.message || e).slice(0, 100)); }
+    return [];
+  }
+  // At most perTask teacher calls per task, one per distinct blockage, and only for
+  // an equivalent failure that just repeated.
+  shouldTeach(repeated, signature) {
+    const a = this.state.active, t = this.qwenFixture.teacher;
+    return Boolean(t && t.enabled && repeated && (a.teachings || 0) < Math.min(tq.LIMITS.perTask, t.maxPerTask || tq.LIMITS.perTask) && !(a.taughtSignatures || []).includes(signature));
+  }
+  startTeaching(ctx, now) {
+    const a = this.state.active, f = this.qwenFixture, errorClass = tq.errorClassFor(ctx.kind, ctx.raw || ctx.observations);
+    // The observation is the verified part: record it before anything is taught.
+    const text = String(ctx.observations[0] || errorClass).slice(0, 300);
+    let entry = null;
+    try { entry = lessons.record(f.lessonsRoot, { scope: this.fixtureLessonScope(), kind: 'blockage', text, key: errorClass + ' ' + f.family, source: ctx.kind === 'review' ? 'codex fixture review' : 'independent checks', evidence: 'verified' }).entry; } catch (_) { /* below */ }
+    a.taughtSignatures = [...(a.taughtSignatures || []), ctx.signature];
+    if (!entry || lessons.statusOf(entry) === 'validated') {
+      this.log('teach', entry ? 'Blockage already has a validated method (' + errorClass + '): the teacher is not called' : 'Blockage could not be recorded: the teacher is not called');
+      a.repeatCount = 0; a.lastFailureSignature = null; a.lastFailedDiff = null;
+      return this.dispatch('repair', now);
+    }
+    a.pendingTeach = { ...ctx, errorClass, lessonKey: entry.key };
+    this.log('teach', 'Equivalent failure repeated (' + errorClass + '): asking the teacher once');
+    return this.dispatch('teach', now);
+  }
+  qwenTeachSettled(t, now = Date.now()) {
+    const a = this.state.active, f = this.qwenFixture, p = a.pendingTeach;
+    a.teachings = (a.teachings || 0) + 1; a.pendingTeach = null;
+    a.repeatCount = 0; a.lastFailureSignature = null; a.lastFailedDiff = null; // a fresh start after the lesson
+    // The call cost tokens whether or not its answer is accepted.
+    const spent = tq.teacherTokens(t.usage); a.teacherTokens = (a.teacherTokens || 0) + (spent || 0);
+    const note = { at: new Date(now).toISOString(), errorClass: p.errorClass, state: t.state, tokens: spent, rawChars: String(t.result || '').length, accepted: false, error: null, raw: String(t.result || '').slice(0, 3000) };
+    a.teachingLog = [...(a.teachingLog || []), note];
+    if (t.state !== 'completed') {
+      note.error = String(t.error || t.state).slice(0, 120);
+      this.log('teach', 'Teacher unavailable (' + String(t.error || t.state).slice(0, 80) + '): standard repair, nothing is certified');
+      return this.dispatch('repair', now);
+    }
+    try {
+      const parsed = tq.parseTeaching(t.result, { fn: f.assertions[0].export });
+      const tokens = tq.teacherTokens(t.usage);
+      const teaching = { ...parsed, source: 'claude', model: String(t.model || 'claude'), tokens, errorClass: p.errorClass, family: f.family };
+      lessons.attachTeaching(f.lessonsRoot, this.fixtureLessonScope(), p.lessonKey, teaching);
+      a.teaching = { key: p.lessonKey, ...parsed, errorClass: p.errorClass, tokens, signature: p.signature, failedAttempts: p.failedAttempts, afterAttempt: a.attempts.length, at: now };
+      note.accepted = true;
+      this.log('teach', 'Teaching received (' + (tokens ?? '?') + ' tokens), status TEACHING, not certified: ' + parsed.cause.slice(0, 120));
+    } catch (e) {
+      note.error = String(e.message || e).slice(0, 160);
+      this.log('teach', 'Teaching refused (' + String(e.message || e).slice(0, 120) + '): standard repair, nothing is certified');
+    }
+    return this.dispatch('repair', now);
+  }
+  // VALIDATED needs every proof at once; any missing proof leaves the lesson TEACHING.
+  validateTaught(review, t, ex) {
+    const a = this.state.active, f = this.qwenFixture;
+    if (!a.teaching || !f.lessonsRoot) return null;
+    const last = a.attempts[a.attempts.length - 1], sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
+    const ev = { runId: a.runId, family: f.family, checkerVersion: CHECKER_VERSION,
+      independent: { passed: Boolean(a.technical && a.technical.passed), executed: a.technical && a.technical.executed, expected: a.technical && a.technical.expected },
+      codex: { decision: review.decision, taskId: t.id, diffHash: review.diffHash, reviewer: { provider: 'codex', cleanup: ex.cleanup, tools: ex.reviewer.tools, version: ex.reviewer.version } },
+      codeHash: sha(tq.codeOf(a.diff)), assertionsHash: a.technical && a.technical.assertionsHash, shown: last ? last.shown : [],
+      blocked: { signature: a.teaching.errorClass + ':' + sha(a.teaching.signature).slice(0, 16), failedAttempts: a.teaching.failedAttempts }, afterTeaching: Boolean(last && last.attempt > a.teaching.afterAttempt) };
+    try {
+      const r = lessons.validate(f.lessonsRoot, this.fixtureLessonScope(), a.teaching.key, ev, { checkerVersion: CHECKER_VERSION });
+      this.log('lesson', 'VALIDATED' + (r.merged ? ' (merged into an existing method)' : '') + ' [' + r.entry.errorClass + '] after the independent checks and a real Codex GO');
+      if (f.mind) {
+        const m = f.mind.upsertLesson({ key: a.teaching.key, checkerVersion: CHECKER_VERSION, evidence: ev,
+          teaching: { ...r.taught.teaching, errorClass: r.taught.errorClass, family: r.taught.family } });
+        this.log('lesson', 'Kept in Mind: ' + m.id + (m.merged ? ' (evidence ' + m.evidenceCount + ')' : ''));
+        a.mindLesson = m;
+      }
+      return r;
+    } catch (e) {
+      this.log('lesson', 'Not validated, stays TEACHING: ' + String(e.message || e).slice(0, 200));
+      return null;
+    }
+  }
+  // Counters only (a lesson shown before a success is not thereby proven useful).
+  recordFixtureUses(outcome) {
+    const f = this.qwenFixture, a = this.state.active;
+    if (!f.mind || !a) return;
+    for (const m of a.shownMethods || []) if (m.source === 'mind') { try { f.mind.recordLessonUse(m.mindId, outcome === 'fixture-approved'); } catch (_) { /* counters are best effort */ } }
+  }
   envWaitMs() { const w = this.qwenFixture.envWaitMs; return Number.isInteger(w) && w >= 0 && w <= ENV_WAIT_MS ? w : ENV_WAIT_MS; }
   qwenAttemptSettled(t, now = Date.now()) {
     const a = this.state.active;
@@ -1114,7 +1230,7 @@ class MindAutopilot {
     const observations = passed ? [] : (technical && technical.errors && technical.errors.length ? technical.errors : [String(t.error || 'Developer produced no verifiable proposal').slice(0, 600)]);
     a.attempts.push({ attempt: a.attempts.length + 1, stage: a.stage, taskId: t.id, at: new Date(now).toISOString(),
       diff: typeof t.result === 'string' ? t.result.slice(0, 4000) : null, technical, developerError: passed ? null : observations.join(' | ').slice(0, 1200),
-      qwenUsage: t.execution && t.execution.agentUsage || null, agentDurationMs: t.execution && t.execution.agentDurationMs || null, review: null });
+      qwenUsage: t.execution && t.execution.agentUsage || null, agentDurationMs: t.execution && t.execution.agentDurationMs || null, shown: a.currentShown || [], review: null });
     // A proposal the reviewer already refused is not paid for again.
     const refused = passed && (a.refusedDiffs || []).includes(require('../orchestrator/qwen-supervision').digest(t.result));
     if (refused) observations.push('Same proposal as one the reviewer already refused; it is not reviewed again. Change the code to fix: ' + String((a.reviews || []).at(-1)?.text || '').slice(0, 400));
@@ -1142,6 +1258,8 @@ class MindAutopilot {
       + explainChecks(observations).join('\n');
     a.repairs++;
     this.log('decision', 'Developer attempt rejected by independent checks: ' + observations.join(' | ').slice(0, 300));
+    // Equivalent failure twice in a row: one bounded teacher call, then the standard repair.
+    if (this.shouldTeach(sameAgain && a.repeatCount === 1, 'checks:' + signature)) return this.startTeaching({ kind: 'checks', signature: 'checks:' + signature, observations: explainChecks(observations), raw: observations, failedAttempts: a.repeatCount + 1 }, now);
     // No progress: the same refused code three times in a row. Stop now instead
     // of spending the remaining attempts on a model that will not change.
     if (a.repeatCount >= 2) { this.log('decision', 'Stopped without progress: the same refused code three times in a row'); return this.complete('stalled', a.review); }
@@ -1166,7 +1284,7 @@ class MindAutopilot {
     if (last) last.review = record;
     a.reviews = [...(a.reviews || []), { at: record.at, verdict: review.decision === 'GO' ? 'PASS' : 'FAIL', text: JSON.stringify(review.corrections).slice(0, 3000) }];
     this.log('decision', 'Codex fixture review: ' + review.decision);
-    if (review.decision === 'GO') { this.fixtureConfirm(null); return this.complete('fixture-approved', JSON.stringify(record)); }
+    if (review.decision === 'GO') { this.fixtureConfirm(null); this.validateTaught(review, t, ex); return this.complete('fixture-approved', JSON.stringify(record)); }
     // A real, host-validated review is verified evidence: its first correction becomes a lesson.
     this.fixtureLearn('revue', String(review.corrections[0] || '').slice(0, 300), { trigger: 'when writing ' + f.editable.join(', '), source: 'codex fixture review ' + t.id });
     a.refusedDiffs = [...(a.refusedDiffs || []), review.diffHash].slice(-20);
@@ -1175,11 +1293,17 @@ class MindAutopilot {
       + (added.length ? '\nNew independent checks from the reviewer (they must pass from now on): '
         + added.map(c => c.export + '(' + JSON.stringify(c.args).slice(1, -1) + ') must return ' + JSON.stringify(c.expected)).join('; ') : '');
     a.repairs++;
+    const first = String(review.corrections[0] || '');
+    a.reviewRepeat = a.lastReviewFirst && lessons.similarity(a.lastReviewFirst, first) >= 0.45 ? (a.reviewRepeat || 0) + 1 : 0;
+    a.lastReviewFirst = first;
+    const reviewSig = 'review:' + tq.errorClassFor('review', review.corrections);
+    if (a.repairs <= this.limits.repairs && this.shouldTeach(a.reviewRepeat >= 1, reviewSig)) return this.startTeaching({ kind: 'review', signature: reviewSig, observations: review.corrections.map(c => String(c).slice(0, 400)), failedAttempts: a.reviewRepeat + 1 }, now);
     if (a.repairs > this.limits.repairs) return this.complete('review-rejected', a.review);
     return this.dispatch('repair', now);
   }
   complete(outcome, reviewerEvidence = null) {
     const a = this.state.active;
+    if (this.qwenFixture) this.recordFixtureUses(outcome);
     // The task's span ends now: it stays reserved until a reading taken after this.
     if (a && a.launchedAt) {
       const sp = (this.state.taskSpans || []).find(t => t.launchedAt === a.launchedAt && t.endedAt == null);
@@ -1201,7 +1325,8 @@ class MindAutopilot {
       worktree: a.worktree || null, commit: a.commit || null, baseSha: a.baseSha || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
-      ...(this.qwenFixture ? { attempts: a.attempts || [], scope: 'fictional-fixture' } : {}),
+      ...(this.qwenFixture ? { attempts: a.attempts || [], scope: 'fictional-fixture', runId: a.runId || null, teachings: a.teachings || 0, teacherTokens: a.teacherTokens || 0, teachingLog: a.teachingLog || [],
+        shownMethods: (a.shownMethods || []).map(m => ({ key: m.key, source: m.source, errorClass: m.errorClass, provenance: m.provenance || null })), mindLesson: a.mindLesson || null } : {}),
       at: new Date().toISOString() });
     if (this.qwenFixture) this.state.enabled = false; // one fixture task, never a discovery afterwards
     this.state.history = this.state.history.slice(-100);
@@ -1366,7 +1491,7 @@ class MindAutopilot {
         if (now - a.startedAt > this.stepMs + 120000) { this.orch.cancelTask(a.taskId); budget.settleCall(this.state, a.budgetRef, t); throw new Error('Stage timed out: ' + a.stage); }
         if (['running', 'pending', 'queued'].includes(t.state)) return this.snapshot();
         budget.settleCall(this.state, a.budgetRef, t); a.budgetRef = null; this.save();
-        if (a.stage === 'code-review') await this.qwenReviewSettled(t, now); else this.qwenAttemptSettled(t, now);
+        if (a.stage === 'code-review') await this.qwenReviewSettled(t, now); else if (a.stage === 'teach') this.qwenTeachSettled(t, now); else this.qwenAttemptSettled(t, now);
         return this.snapshot();
       }
       if (!this.state.active) {

@@ -10,6 +10,12 @@
 // Math.min(a, b). Still refused: loops, reassignment, `let`/`var`, other calls,
 // property access other than .length, spread and any global.
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+
+// Changes whenever this interpreter changes. A lesson validated under another
+// version is no longer trusted (see lessons.js: isCurrent).
+const CHECKER_VERSION = 'pure-subset.' + crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest('hex').slice(0, 12);
 
 function compile(source, exportName) {
   if (typeof source !== 'string' || Buffer.byteLength(source) > 16384) throw Error('Source limit');
@@ -143,4 +149,4 @@ function runPureAssertions(sources, cases) {
   }
   return count;
 }
-module.exports = { compile, invoke, runPureAssertions };
+module.exports = { compile, invoke, runPureAssertions, CHECKER_VERSION };

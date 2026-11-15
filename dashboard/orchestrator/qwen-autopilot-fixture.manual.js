@@ -22,6 +22,13 @@ const REQUIREMENTS = TASK.req + ' Examples: ' + TASK.show.map(fmtCase).join('; '
 const REVIEWER_MODEL = 'gpt-6.1-sol';
 const DEVELOPER_MODEL = process.env.QWEN_FIXTURE_MODEL || 'qwen3-4b-instruct-2507';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Arms of the teaching demonstration (all optional): teacher on/off, Mind on/off, a persistent Mind space,
+// an isolated lessons directory, and a label for the report.
+const TEACHER = process.env.QWEN_FIXTURE_TEACHER === '1', USE_MIND = process.env.QWEN_FIXTURE_USE_MIND === '1', TAG = String(process.env.QWEN_FIXTURE_TAG || '').slice(0, 60);
+const LESSONS_ROOT = process.env.QWEN_FIXTURE_LESSONS_ROOT ? path.resolve(process.env.QWEN_FIXTURE_LESSONS_ROOT) : path.join(CHECKOUT, '.ai-workspace', 'qwen-fixture-lessons');
+const MIND_SPACE = /^fixture_[a-f0-9]{16}$/.test(process.env.QWEN_FIXTURE_MIND_SPACE || '') ? process.env.QWEN_FIXTURE_MIND_SPACE : 'fixture_' + crypto.randomBytes(8).toString('hex');
+// Working set of the local model server (what the model really costs in RAM).
+const llamaRamMB = () => { try { return Math.round(Number(cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', "(Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | Measure-Object WorkingSetSize -Sum).Sum"], { encoding: 'utf8', windowsHide: true, timeout: 20000 }).trim() || 0) / 1e6); } catch { return null; } };
 const list = (args) => { try { return cp.execFileSync('docker', args, { encoding: 'utf8', windowsHide: true, timeout: 20000 }).split(/\r?\n/).filter(x => /^sym-qwen-/.test(x)); } catch { return null; } };
 const codexPids = () => { try { return [].concat(JSON.parse(cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name like 'codex%'\" | Select-Object -ExpandProperty ProcessId | ConvertTo-Json -Compress"], { encoding: 'utf8', windowsHide: true, timeout: 30000 }) || '[]')); } catch { return null; } };
 
@@ -55,16 +62,20 @@ async function main() {
     const { MindAutopilot } = require('../mind/autopilot');
     const sup = require('./qwen-supervision');
     const stateRoot = path.join(temp, 'pilot'); fs.mkdirSync(stateRoot);
+    const { makeFixtureController } = require('../mind/qwen-learning-fixture');
+    const queue = path.join(CHECKOUT, '.ai-workspace', 'qwen-mind-isolated', MIND_SPACE, 'queue');
+    const mind = makeFixtureController({ repoRoot: CHECKOUT, space: MIND_SPACE, queueDir: queue });
+    const ramSamples = [llamaRamMB()];
     const pilot = new MindAutopilot({ repoRoot: stateRoot, orchestrator: orch, getUiContext: () => ({}), getRepoPath: () => null, autoTimer: false, id: 'qwen-fixture',
       def: { limits: { repairs: 5 }, stepMinutes: 15 },
       qwenFixture: { capability: sup.QWEN_DEVELOPER_FIXTURE, root, files: [NAME, 'test.js'], editable: [NAME], assertions: CASES, requirements: REQUIREMENTS, reviewerModel: REVIEWER_MODEL, developerModel: DEVELOPER_MODEL,
         // Persistent across runs: this is where the developer's verified lessons accumulate.
-        name: TASK.id + '-subset3', lessonsRoot: path.join(CHECKOUT, '.ai-workspace', 'qwen-fixture-lessons') } });
+        name: TASK.id + '-subset3', lessonsRoot: LESSONS_ROOT, family: TASK.id, teacher: { enabled: TEACHER }, ...(USE_MIND ? { mind } : {}) } });
     pilot.startFixtureTask({ title: 'Fictional ' + TASK.fn + ' function', objective: `Implement ${TASK.fn}(${TASK.params}) in ${NAME} so that it meets the requirements.` });
     // A killed parent skips cleanup (observed 2026-11-15): keep the run inside its caller's limit.
-    const deadline = Date.now() + Math.min(80, Math.max(3, Number(process.env.QWEN_FIXTURE_DEADLINE_MIN) || 80)) * 60000; let lastEvent = 0;
+    const deadline = Date.now() + Math.min(80, Math.max(3, Number(process.env.QWEN_FIXTURE_DEADLINE_MIN) || 80)) * 60000; let lastEvent = 0, tickNo = 0; const startedMs = Date.now();
     while (pilot.state.active && pilot.state.enabled && Date.now() < deadline) {
-      await sleep(3000); await pilot.tick();
+      await sleep(3000); await pilot.tick(); if (++tickNo % 4 === 0) ramSamples.push(llamaRamMB());
       for (const e of pilot.state.events.slice(lastEvent)) process.stderr.write(`[${e.at}] ${e.kind}: ${e.msg}\n`);
       lastEvent = pilot.state.events.length;
       fs.writeFileSync(historyFile, JSON.stringify({ ...report, live: pilot.state.active }, null, 2));
@@ -81,7 +92,7 @@ async function main() {
     try { report.lessons = require('../mind/lessons').top(path.join(CHECKOUT, '.ai-workspace', 'qwen-fixture-lessons'), pilot.fixtureLessonScope(), 10)
       .map(x => ({ kind: x.kind, text: x.text, action: x.action || null, confidence: x.confidence, count: x.count, confirmations: x.confirmations || 0 })); } catch (_) {}
     const outcome = pilot.state.history.at(-1) || null;
-    Object.assign(report, { outcome: outcome ? outcome.outcome : 'halted', error: pilot.state.error, attempts: outcome ? outcome.attempts : (pilot.state.active?.attempts || []), events: pilot.state.events, budget: pilot.state.budgetCalls || null });
+    Object.assign(report, { outcome: outcome ? outcome.outcome : 'halted', error: pilot.state.error, teachingLog: outcome ? outcome.teachingLog || [] : (pilot.state.active?.teachingLog || []), attempts: outcome ? outcome.attempts : (pilot.state.active?.attempts || []), events: pilot.state.events, budget: pilot.state.budgetCalls || null });
 
     // Final independent assertions on the approved diff, recomputed now.
     const approved = report.attempts.filter(a => a.review && a.review.decision === 'GO').at(-1);
@@ -97,18 +108,27 @@ async function main() {
           'ghcr.io/qwenlm/qwen-code:0.27.3', '-e', "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const {code,fn,list}=JSON.parse(d);const vm=require('vm');const m={exports:{}};vm.runInNewContext(code,{module:m,exports:m.exports},{timeout:3000});console.log(JSON.stringify(list.map(a=>{try{const v=vm.runInNewContext('f(...a)',{f:m.exports[fn],a},{timeout:1000});return v===undefined?'undefined':v}catch(e){return 'throws'}})))})"],
           { input: JSON.stringify({ code, fn: TASK.fn, list: argsList }), encoding: 'utf8', timeout: 60000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
         let got = null; try { got = JSON.parse(String(run.stdout).trim().split('\n').pop()); } catch (_) {}
-        const wrong = got ? argsList.map((a, i) => ({ a, want: TASK.stress.ref(a), got: got[i] })).filter(x => JSON.stringify(x.want) !== JSON.stringify(x.got)) : null;
+        const close = (w, g) => JSON.stringify(w) === JSON.stringify(g) || (TASK.stress.tolerance && typeof w === 'number' && typeof g === 'number' && Math.abs(w - g) <= TASK.stress.tolerance * Math.max(1, Math.abs(w)));
+        const wrong = got ? argsList.map((a, i) => ({ a, want: TASK.stress.ref(a), got: got[i] })).filter(x => !close(x.want, x.got)) : null;
         report.wideCheck = { note: 'informational, offline container, host reference', inputs: argsList.length, mismatches: wrong ? wrong.length : 'container run failed', firstMismatches: wrong ? wrong.slice(0, 3) : null };
       }
     }
+    // Measured, not estimated.
+    ramSamples.push(llamaRamMB());
+    const sum = (xs) => xs.reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+    report.metrics = { tag: TAG, task: TASK.id, arms: { teacher: TEACHER, mind: USE_MIND, mindSpace: USE_MIND ? MIND_SPACE : null },
+      outcome: report.outcome, approved: report.outcome === 'fixture-approved', attempts: report.attempts.length, seconds: Math.round((Date.now() - startedMs) / 100) / 10,
+      qwenTokens: sum(report.attempts.map(x => x.qwenUsage && x.qwenUsage.total_tokens)), codexReviews: report.attempts.filter(x => x.review).length,
+      codexTokens: sum(report.attempts.map(x => x.review && x.review.usage && x.review.usage.totalTokens)), claudeTeacherCalls: outcome ? outcome.teachings || 0 : 0, claudeTokens: outcome ? outcome.teacherTokens || 0 : 0,
+      peakLlamaRamMB: Math.max(...ramSamples.filter(Number.isFinite), 0), freeRamMBEnd: Math.round(os.freemem() / 1e6),
+      methodsShown: outcome && outcome.shownMethods ? outcome.shownMethods.map(m => ({ key: m.key, source: m.source, reviewTaskId: m.provenance && m.provenance.reviewTaskId })) : [] };
+    try { report.lessonStates = require('../mind/lessons').all(LESSONS_ROOT).filter(x => x.scope === pilot.fixtureLessonScope()).map(x => ({ key: x.key, status: require('../mind/lessons').statusOf(x), errorClass: x.errorClass || null })); } catch (_) {}
+    try { report.mindLessons = mind.listLessons().map(x => ({ id: x.id, status: x.status, errorClass: x.errorClass, family: x.family, evidence: x.validation && x.validation.evidenceCount, reviewTaskId: x.validation && x.validation.reviewTaskId })); } catch (_) {}
     // The fictional source repository is unchanged.
     report.sourceUnchanged = git('rev-parse', 'HEAD').trim() === baseHead && fs.readFileSync(path.join(root, NAME), 'utf8') === ORIGINAL && git('status', '--porcelain').trim() === '';
 
     // Mind: one observation per attempt, at the proof level that attempt actually reached.
-    const { makeFixtureController } = require('../mind/qwen-learning-fixture');
-    const space = 'fixture_' + crypto.randomBytes(8).toString('hex');
-    const queue = path.join(CHECKOUT, '.ai-workspace', 'qwen-mind-isolated', space, 'queue');
-    const mind = makeFixtureController({ repoRoot: CHECKOUT, space, queueDir: queue });
+    const space = MIND_SPACE;
     const ids = [];
     for (const a of report.attempts) {
       const r = a.review;

@@ -37,6 +37,13 @@ const TASKS = [
     req: 'average(v) for an array of finite numbers: return null for an empty array, otherwise the arithmetic mean. It must never return Infinity or -Infinity when the mean itself is a finite double, even for arrays of very large values close to the largest double (intermediate sums must not overflow, including through rounding). Ordinary rounding error, cancellation error and underflow of tiny values are acceptable.',
     show: [c('average', [[1, 2, 3]], 2), c('average', [[]], null)],
     cases: [c('average', [[1, 2, 3]], 2), c('average', [[]], null), c('average', [[-2, 2]], 0), c('average', [[4, 6]], 5), c('average', [[MAX, MAX]], MAX), c('average', [[MAX, MAX, MAX]], MAX), c('average', [[-MAX, -MAX, -MAX]], -MAX)] },
+  // Comparable skill to `average` (no intermediate overflow) but a different function, never used to create a lesson.
+  { id: 'meanabs', fn: 'meanAbs', params: 'v', level: 'hard',
+    req: 'meanAbs(v) for an array of finite numbers: return null for an empty array, otherwise the arithmetic mean of the absolute values. It must never return Infinity when that mean is a finite double, even for arrays of very large values close to the largest double (intermediate sums must not overflow, including through rounding). Ordinary rounding error and underflow of tiny values are acceptable.',
+    show: [c('meanAbs', [[1, -2, 3]], 2), c('meanAbs', [[]], null)],
+    cases: [c('meanAbs', [[1, -2, 3]], 2), c('meanAbs', [[]], null), c('meanAbs', [[-2, 2]], 2), c('meanAbs', [[-4, 6]], 5), c('meanAbs', [[0, 0]], 0), c('meanAbs', [[MAX, -MAX]], MAX), c('meanAbs', [[MAX, MAX, MAX]], MAX), c('meanAbs', [[-MAX, -MAX, -MAX]], MAX)],
+    stress: { tolerance: 1e-9, args: () => { const r = rng(5); return Array.from({ length: 1500 }, () => [Array.from({ length: 1 + Math.floor(r() * 12) }, () => (r() * 2 - 1) * (r() < 0.4 ? MAX * 0.9 : 1000))]); },
+      ref: ([v]) => v.reduce((a, x) => a + Math.abs(x) / v.length, 0) } },
 ];
 
 module.exports = { MAX, c, TASKS, rng };

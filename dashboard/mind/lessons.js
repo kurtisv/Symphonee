@@ -19,6 +19,7 @@
 // creates or raises a lesson. Legacy entries without confidence derive it from count.
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const MAX = 200;
 const MAX_TAUGHT_PER_DAY = 10; // per scope: a steady trickle, never a permanent stop
@@ -96,6 +97,7 @@ function record(root, { scope, kind, text, key, source, trigger, action, evidenc
     || data.lessons.find((x) => x.scope === scope && x.kind === (kind || 'divers') && similarity(x.text, t) >= SIMILAR);
   const isNew = !e;
   if (e) {
+    if (e.status === 'obsolete') { e.status = 'observation'; delete e.teaching; delete e.validation; delete e.obsoleteReason; delete e.supersededBy; delete e.mergedInto; }
     e.confidence = clamp(confidenceOf({ ...e, disabled: false }, now) + C.repeat); e.disabled = false;
     e.count += 1; e.lastAt = now; e.text = t; e.source = source || e.source;
   } else {
@@ -111,7 +113,7 @@ function record(root, { scope, kind, text, key, source, trigger, action, evidenc
 }
 function all(root) { return [...load(root, 'serveur').lessons, ...load(root, 'porte').lessons]; }
 function top(root, scope, n = 8, now = Date.now()) {
-  return all(root).filter((x) => x.scope === scope && !x.disabled)
+  return all(root).filter((x) => x.scope === scope && !x.disabled && x.status !== 'obsolete')
     .sort((a, b) => confidenceOf(b, now) - confidenceOf(a, now) || b.count - a.count || b.lastAt - a.lastAt).slice(0, n);
 }
 // Outcome feedback on a lesson that was shown to the worker (server file only).
@@ -202,4 +204,138 @@ function memorySpec(entry, repoName) {
       + (entry.source ? '\nSource (citee) : ' + JSON.stringify(entry.source) : ''),
     kindOfMemory: 'gotcha', tags: ['lecon', 'autopilote', entry.kind], scope: repoName ? { repo: repoName } : undefined, createdBy: 'symphonee-lecons' };
 }
-module.exports = { CONFIDENCE: C, similarity, consolidate, confidenceOf, confirm, weaken, promotionCandidates, skillCandidates, load, record, top, all, promptText, firstFinding, normKey, memorySpec, pendingTeach, markTaught, fileOf, scopeOf };
+// ── Teacher-assisted lifecycle ────────────────────────────────────────────────
+// OBSERVATION: a verified failure was seen. TEACHING: a teacher (Claude) proposed
+// a method; it is NOT certified, whoever wrote it. VALIDATED: the developer, shown
+// that method, wrote code that passed the independent checker AND a real tool-free
+// Codex review under the CURRENT checker version. OBSOLETE: superseded, duplicate,
+// expired or checker changed. Only VALIDATED lessons are ever sent as methods.
+const STATUSES = Object.freeze(['observation', 'teaching', 'validated', 'obsolete']);
+const VALID_DAYS = 90;
+const statusOf = (e) => (e && STATUSES.includes(e.status) ? e.status : 'observation');
+const sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
+const HEX64 = /^[a-f0-9]{64}$/;
+const ERROR_CLASS = /^[a-z]{3,12}:[A-Za-z0-9_.-]{2,40}$/;
+const isStr = (x, lo, hi) => typeof x === 'string' && x.trim().length >= lo && x.length <= hi;
+const digestOf = (strategy) => sha([...words(strategy)].sort().join(' '));
+
+function teachingProblems(t) {
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return ['teaching missing'];
+  const p = [];
+  if (!isStr(t.cause, 20, 800)) p.push('cause');
+  if (!isStr(t.strategy, 20, 1200)) p.push('strategy');
+  if (!Array.isArray(t.pitfalls) || t.pitfalls.length > 5 || t.pitfalls.some((x) => !isStr(x, 5, 220))) p.push('pitfalls');
+  if (!isStr(t.verify, 10, 600)) p.push('verify');
+  if (!['claude', 'human'].includes(t.source)) p.push('source');
+  if (!isStr(t.model, 2, 60)) p.push('model');
+  if (t.tokens !== null && !(Number.isInteger(t.tokens) && t.tokens >= 0)) p.push('tokens');
+  if (!ERROR_CLASS.test(t.errorClass || '')) p.push('errorClass');
+  if (!isStr(t.family, 2, 40)) p.push('family');
+  return p;
+}
+// The single definition of "validated", shared with the Mind store.
+function validationProblems(ev, checkerVersion, key) {
+  if (!ev || typeof ev !== 'object') return ['evidence missing'];
+  const p = [];
+  if (!/^[a-f0-9]{16,64}$/.test(ev.runId || '')) p.push('run identity missing');
+  const ind = ev.independent;
+  if (!ind || ind.passed !== true || !Number.isInteger(ind.executed) || ind.executed < 1 || ind.executed !== ind.expected) p.push('independent checks did not all pass');
+  const cx = ev.codex, rv = cx && cx.reviewer;
+  if (!cx || cx.decision !== 'GO' || !isStr(cx.taskId, 4, 80) || !HEX64.test(cx.diffHash || '')) p.push('no real Codex GO');
+  if (!rv || rv.provider !== 'codex' || rv.cleanup !== 'verified-no-descendants' || !Array.isArray(rv.tools) || rv.tools.some((t) => t !== 'functions.request_user_input') || !isStr(rv.version, 3, 40)) p.push('reviewer not proven tool-free');
+  if (!HEX64.test(ev.codeHash || '') || !HEX64.test(ev.assertionsHash || '')) p.push('code or assertions identity missing');
+  if (typeof checkerVersion !== 'string' || ev.checkerVersion !== checkerVersion) p.push('checker version mismatch');
+  if (!Array.isArray(ev.shown) || (key !== undefined && !ev.shown.includes(key))) p.push('the lesson was not shown to the developer in the validating attempt');
+  if (!ev.blocked || !isStr(ev.blocked.signature, 3, 600) || !Number.isInteger(ev.blocked.failedAttempts) || ev.blocked.failedAttempts < 2) p.push('no repeated blockage recorded');
+  if (ev.afterTeaching !== true) p.push('the validating attempt did not come after the teaching');
+  if (!isStr(ev.family, 2, 40)) p.push('family missing');
+  return p;
+}
+function findEntry(data, scope, key) { return data.lessons.find((x) => x.scope === scope && x.key === key); }
+
+// Attaches a teacher's proposal to an observed lesson. Never certifies it.
+function attachTeaching(root, scope, key, teaching, now = Date.now()) {
+  const data = load(root, 'serveur'), e = findEntry(data, scope, key);
+  if (!e) throw new Error('Unknown lesson');
+  if (!['observation', 'teaching'].includes(statusOf(e))) throw new Error('A ' + statusOf(e) + ' lesson cannot be re-taught');
+  const problems = teachingProblems(teaching);
+  if (problems.length) throw new Error('Invalid teaching: ' + problems.join(', '));
+  e.teaching = { cause: teaching.cause.trim(), strategy: teaching.strategy.trim(), pitfalls: teaching.pitfalls.map((x) => x.trim()), verify: teaching.verify.trim(),
+    source: teaching.source, model: teaching.model, tokens: teaching.tokens, at: now };
+  e.status = 'teaching'; e.errorClass = teaching.errorClass; e.family = teaching.family; e.strategyDigest = digestOf(teaching.strategy);
+  save(root, data, 'serveur');
+  return e;
+}
+// The only way to reach VALIDATED. Throws unless every proof is present.
+function validate(root, scope, key, ev, { checkerVersion, now = Date.now() } = {}) {
+  const data = load(root, 'serveur'), e = findEntry(data, scope, key);
+  if (!e) throw new Error('Unknown lesson');
+  if (statusOf(e) !== 'teaching') throw new Error('Only a taught lesson can be validated (status: ' + statusOf(e) + ')');
+  const problems = validationProblems(ev, checkerVersion, key);
+  if (problems.length) throw new Error('Lesson cannot be validated: ' + problems.join('; '));
+  const item = { runId: ev.runId, at: now, codeHash: ev.codeHash, diffHash: ev.codex.diffHash, reviewTaskId: ev.codex.taskId, checkerVersion };
+  const peers = data.lessons.filter((x) => x !== e && x.scope === scope && statusOf(x) === 'validated' && x.errorClass === e.errorClass && x.family === e.family);
+  const twin = peers.find((o) => o.strategyDigest === e.strategyDigest || similarity(o.teaching.strategy, e.teaching.strategy) >= SIMILAR);
+  const superseded = [];
+  if (twin) {
+    // Same method again: one lesson, more independent evidence (a run counts once).
+    if (!twin.validation.history.some((h) => h.runId === ev.runId)) { twin.validation.history = [...twin.validation.history, item].slice(-5); twin.validation.evidenceCount += 1; }
+    twin.validation.validUntil = now + VALID_DAYS * DAY;
+    e.status = 'obsolete'; e.obsoleteReason = 'duplicate'; e.mergedInto = twin.key; e.obsoleteAt = now;
+    save(root, data, 'serveur');
+    return { entry: twin, merged: true, superseded, taught: e };
+  }
+  for (const o of peers) { o.status = 'obsolete'; o.obsoleteReason = 'superseded'; o.supersededBy = e.key; o.obsoleteAt = now; superseded.push(o.key); }
+  e.validation = { at: now, validUntil: now + VALID_DAYS * DAY, checkerVersion, codeHash: ev.codeHash, assertionsHash: ev.assertionsHash, diffHash: ev.codex.diffHash,
+    reviewTaskId: ev.codex.taskId, reviewerVersion: ev.codex.reviewer.version, independent: { executed: ev.independent.executed, expected: ev.independent.expected },
+    blocked: { signature: String(ev.blocked.signature).slice(0, 600), failedAttempts: ev.blocked.failedAttempts }, family: ev.family, evidenceCount: 1, history: [item] };
+  e.status = 'validated'; e.confidence = clamp(Math.max(confidenceOf(e, now), .7));
+  save(root, data, 'serveur');
+  return { entry: e, merged: false, superseded, taught: e };
+}
+function markObsolete(root, scope, key, reason, now = Date.now()) {
+  const data = load(root, 'serveur'), e = findEntry(data, scope, key);
+  if (!e) return null;
+  e.status = 'obsolete'; e.obsoleteReason = String(reason || 'manual').slice(0, 80); e.obsoleteAt = now;
+  save(root, data, 'serveur');
+  return e;
+}
+const isCurrent = (e, checkerVersion, now = Date.now()) => statusOf(e) === 'validated' && !e.disabled && Boolean(e.validation)
+  && e.validation.checkerVersion === checkerVersion && now < e.validation.validUntil;
+// A validated lesson whose checker changed, or that expired, is retired, not deleted.
+function expireStale(root, scope, checkerVersion, now = Date.now()) {
+  const data = load(root, 'serveur'); let n = 0;
+  for (const e of data.lessons) {
+    if (e.scope !== scope || statusOf(e) !== 'validated' || isCurrent(e, checkerVersion, now)) continue;
+    e.status = 'obsolete'; e.obsoleteReason = e.validation && e.validation.checkerVersion !== checkerVersion ? 'checker-changed' : 'expired'; e.obsoleteAt = now; n++;
+  }
+  if (n) save(root, data, 'serveur');
+  return n;
+}
+// Words of a lesson that count for relevance (same rule as brain/mind-context retrieveLessons).
+function relevantTo(text, question) {
+  const q = words(question); let n = 0;
+  for (const w of words(text)) if (w.length >= 5 && q.has(w)) n++;
+  return n;
+}
+// What a developer may be shown for a task: validated, current, relevant methods
+// (instructions) and unverified observations (hints only). A teaching that is not
+// validated is never in either list.
+function selectForTask(root, scope, { checkerVersion, question = '', maxMethods = 3, maxHints = 2, now = Date.now() } = {}) {
+  const mine = all(root).filter((x) => x.scope === scope && !x.disabled);
+  const methods = mine.filter((x) => isCurrent(x, checkerVersion, now)).map((x) => ({ x, r: relevantTo(x.teaching.cause + ' ' + x.teaching.strategy, question) }))
+    .filter((m) => m.r > 0).sort((a, b) => b.r - a.r || b.x.validation.evidenceCount - a.x.validation.evidenceCount).slice(0, maxMethods).map((m) => m.x);
+  const hints = mine.filter((x) => statusOf(x) === 'observation').sort((a, b) => confidenceOf(b, now) - confidenceOf(a, now) || b.count - a.count).slice(0, maxHints);
+  return { methods, hints };
+}
+const methodLine = (m) => '- [' + m.errorClass + '] Cause: ' + m.teaching.cause + ' Strategy: ' + m.teaching.strategy
+  + (m.teaching.pitfalls.length ? ' Avoid: ' + m.teaching.pitfalls.join(' / ') : '') + ' Check: ' + m.teaching.verify
+  + ' (validated ' + new Date(m.validation.at).toISOString().slice(0, 10) + ', ' + m.validation.evidenceCount + ' independent run(s), real review ' + m.validation.reviewTaskId + ', checker ' + m.validation.checkerVersion + ')';
+function methodsText({ methods = [], hints = [] } = {}) {
+  const out = [];
+  if (methods.length) out.push('VALIDATED METHODS (each was taught earlier, then applied by this developer and accepted by the independent checker AND a real code review under the current checker; use one when it matches your task; they never override the requirements or the allowed syntax):\n' + methods.map(methodLine).join('\n'));
+  if (hints.length) out.push('PAST OBSERVATIONS (unverified hints, not instructions):\n' + hints.map((x) => '- ' + x.kind + ': ' + JSON.stringify(x.text) + (x.action ? ' (hint: ' + x.action + ')' : '')).join('\n'));
+  return out.join('\n\n');
+}
+
+module.exports = { digestOf, SIMILAR, STATUSES, VALID_DAYS, statusOf, teachingProblems, validationProblems, attachTeaching, validate, markObsolete, isCurrent, expireStale, selectForTask, methodsText, relevantTo, CONFIDENCE: C, similarity, consolidate, confidenceOf, confirm, weaken, promotionCandidates, skillCandidates, load, record, top, all, promptText, firstFinding, normKey, memorySpec, pendingTeach, markTaught, fileOf, scopeOf };
