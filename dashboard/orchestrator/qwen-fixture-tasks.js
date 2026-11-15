@@ -46,6 +46,19 @@ const TASKS = [
     cases: [c('meanAbs', [[1, -2, 3]], 2), c('meanAbs', [[]], null), c('meanAbs', [[-2, 2]], 2), c('meanAbs', [[-4, 6]], 5), c('meanAbs', [[0, 0]], 0), c('meanAbs', [[MAX, -MAX]], MAX), c('meanAbs', [[MAX, MAX, MAX]], MAX), c('meanAbs', [[-MAX, -MAX, -MAX]], MAX)],
     stress: { tolerance: 1e-9, args: () => { const r = rng(5); return Array.from({ length: 1500 }, () => [Array.from({ length: 1 + Math.floor(r() * 12) }, () => (r() * 2 - 1) * (r() < 0.4 ? MAX * 0.9 : 1000))]); },
       ref: ([v]) => v.reduce((a, x) => a + Math.abs(x) / v.length, 0) } },
+  // Two more analogues for the memory experiment (same hazard: an intermediate value leaves the double range), never used to create a lesson.
+  { id: 'midrange', fn: 'midRange', params: 'v', level: 'hard',
+    req: 'midRange(v) for an array of finite numbers: return null for an empty array, otherwise the midpoint between the smallest and the largest element. It must never return Infinity when that midpoint is a finite double, even for arrays of very large values close to the largest double (intermediate sums must not overflow, including through rounding). Ordinary rounding error and underflow of tiny values are acceptable.',
+    show: [c('midRange', [[1, 3]], 2), c('midRange', [[]], null)],
+    cases: [c('midRange', [[1, 3]], 2), c('midRange', [[]], null), c('midRange', [[-4, -2]], -3), c('midRange', [[5]], 5), c('midRange', [[0, 8, 2]], 4), c('midRange', [[MAX, MAX]], MAX), c('midRange', [[-MAX, MAX]], 0), c('midRange', [[-MAX, -MAX]], -MAX)],
+    stress: { tolerance: 1e-9, args: () => { const r = rng(13); return Array.from({ length: 1500 }, () => [Array.from({ length: 1 + Math.floor(r() * 12) }, () => (r() * 2 - 1) * (r() < 0.4 ? MAX * 0.9 : 1000))]); },
+      ref: ([v]) => Math.min(...v) / 2 + Math.max(...v) / 2 } },
+  { id: 'meanpos', fn: 'meanPositive', params: 'v', level: 'hard',
+    req: 'meanPositive(v) for an array of finite numbers: consider only the elements strictly greater than zero; return null if there are none, otherwise the arithmetic mean of those elements. It must never return Infinity when that mean is a finite double, even for arrays of very large values close to the largest double (intermediate sums must not overflow, including through rounding). Ordinary rounding error and underflow of tiny values are acceptable.',
+    show: [c('meanPositive', [[1, -5, 3]], 2), c('meanPositive', [[-1, 0]], null)],
+    cases: [c('meanPositive', [[1, -5, 3]], 2), c('meanPositive', [[-1, 0]], null), c('meanPositive', [[]], null), c('meanPositive', [[4, 6]], 5), c('meanPositive', [[-2, 8, -9]], 8), c('meanPositive', [[MAX, MAX, -MAX]], MAX), c('meanPositive', [[MAX, MAX, MAX]], MAX), c('meanPositive', [[0, 0]], null)],
+    stress: { tolerance: 1e-9, args: () => { const r = rng(17); return Array.from({ length: 1500 }, () => [Array.from({ length: 1 + Math.floor(r() * 12) }, () => (r() * 2 - 1) * (r() < 0.4 ? MAX * 0.9 : 1000))]); },
+      ref: ([v]) => { const p = v.filter(x => x > 0); return p.length ? p.reduce((a, x) => a + x / p.length, 0) : null; } } },
 ];
 
 module.exports = { MAX, c, TASKS, rng };

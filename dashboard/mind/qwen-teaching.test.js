@@ -22,7 +22,7 @@ const teaching = (over = {}) => ({ cause: 'The sum is computed first, so the int
   pitfalls: ['Do not index fixed positions of the array'], verify: 'Try three huge equal numbers and confirm the result is finite.', source: 'claude', model: 'sonnet', tokens: 1200, errorClass: 'result:non-finite', family: 'average', ...over });
 const evidence = (key, over = {}) => ({ runId: 'a'.repeat(32), family: 'average', checkerVersion: CV, independent: { passed: true, executed: 7, expected: 7 },
   codex: { decision: 'GO', taskId: 'task-1234', diffHash: 'd'.repeat(64), reviewer: { provider: 'codex', cleanup: 'verified-no-descendants', tools: ['functions.request_user_input'], version: 'codex-cli 0.169.0' } },
-  codeHash: 'c'.repeat(64), assertionsHash: 'e'.repeat(64), shown: [key], blocked: { signature: 'checks:result-non-finite', failedAttempts: 2 }, afterTeaching: true, ...over });
+  codeHash: 'c'.repeat(64), assertionsHash: 'e'.repeat(64), shown: [key], blocked: { signature: 'checks:result-non-finite', failedAttempts: 2 }, afterTeaching: true, wideRequired: false, ...over });
 const lesson = (key = 'blockage:result non finite average', over = {}, evOver = {}, cv = CV) => ({ key, checkerVersion: cv, teaching: teaching(over), evidence: evidence(key, { checkerVersion: cv, ...evOver }) });
 const Q = 'meanAbs(v) average of absolute values must never overflow: the intermediate sum of very large values exceeds the double range';
 
@@ -39,8 +39,8 @@ test('the teacher prompt carries the evidence and forbids handing over the solut
 
 test('the teacher answer is parsed strictly and a leaked solution is rejected', () => {
   const ok = teaching();
-  const good = { cause: ok.cause, strategy: ok.strategy, pitfalls: ok.pitfalls, verify: ok.verify };
-  assert.deepEqual(Object.keys(tq.parseTeaching('```json\n' + JSON.stringify(good) + '\n```', { fn: 'average' })).sort(), ['cause', 'pitfalls', 'strategy', 'verify']);
+  const good = { cause: ok.cause, principle: 'Keep each intermediate value small by combining small pieces, so that no step leaves the range the machine can hold.', strategy: ok.strategy, pitfalls: ok.pitfalls, verify: ok.verify };
+  assert.deepEqual(Object.keys(tq.parseTeaching('```json\n' + JSON.stringify(good) + '\n```', { fn: 'average' })).sort(), ['cause', 'pitfalls', 'principle', 'strategy', 'verify']);
   assert.throws(() => tq.parseTeaching('not json', { fn: 'average' }), /not valid JSON/);
   for (const bad of [{ ...good, extra: 1 }, { cause: good.cause }, { ...good, cause: 'short' }, { ...good, pitfalls: 'x' }, { ...good, pitfalls: Array(6).fill('a trap to avoid') }, { ...good, strategy: 'x'.repeat(1201) }])
     assert.throws(() => tq.parseTeaching(JSON.stringify(bad), { fn: 'average' }), /exactly|out of bounds/, JSON.stringify(bad).slice(0, 60));
@@ -154,4 +154,62 @@ test('skills are proposed only from several independent validated runs, and neve
   for (const c of r.candidates) assert.ok(c.sessions >= 2 && c.steps.length >= 2);
   const obsolete = { ...mk('c', '3'.repeat(32)), status: 'obsolete' };
   assert.match(tq.skillProposals([mk('a', '1'.repeat(32)), obsolete]).reason, /fewer than two/, 'retired lessons are no evidence');
+});
+
+// ---- stress proof in Mind, legacy lessons, general principle ----
+const store = require('./store');
+const legacyize = (m, id) => { // rewrite a stored lesson the way a pre-proof build wrote it
+  const g = store.loadGraph(m.root, m.space), n = g.nodes.find((x) => x.id === id), c = JSON.parse(n.content);
+  delete c.validation.wideRequired; delete c.validation.wide; c.validation.history.forEach((h) => { delete h.wideRequired; delete h.wide; });
+  n.content = JSON.stringify(c); n.observationDigest = crypto.createHash('sha256').update(n.content).digest('hex'); store.saveGraph(m.root, m.space, g);
+};
+
+test('Mind: a legacy lesson stays stored with its history but is not recalled as certified; retireStale keeps it; a proven run upgrades it', t => {
+  const m = mindFixture(t), c = m.open();
+  const a = c.upsertLesson(lesson('blockage:a', {}, { runId: '1'.repeat(32) }), T0);
+  assert.equal(c.recallLessons({ question: Q, checkerVersion: CV, now: T0 + 1 }).length, 1, 'with the proof declared it is recalled');
+  legacyize(m, a.id);
+  const c2 = m.open();
+  assert.equal(c2.recallLessons({ question: Q, checkerVersion: CV, now: T0 + 2 }).length, 0, 'legacy: not recalled as a certified method');
+  const row = c2.listLessons()[0];
+  assert.equal(row.status, 'validated'); assert.equal(row.certified, false); assert.equal(row.validation.history.length, 1, 'history kept');
+  assert.equal(c2.retireStale(CV, T0 + 3), 0, 'unproven is not stale: nothing is retired or lost');
+  const up = c2.upsertLesson(lesson('blockage:b', {}, { runId: '2'.repeat(32), wideRequired: true, wide: { inputs: 1500, mismatches: 0 } }), T0 + 10);
+  assert.equal(up.merged, true); assert.equal(up.id, a.id);
+  const back = c2.listLessons()[0]; assert.equal(back.certified, true); assert.equal(back.validation.evidenceCount, 2); assert.equal(back.validation.certifiedBy, '2'.repeat(32));
+  assert.equal(c2.recallLessons({ question: Q, checkerVersion: CV, now: T0 + 11 }).length, 1);
+});
+
+test('Mind refuses to store a lesson whose required stress proof is missing, failed or too small', t => {
+  const c = mindFixture(t).open();
+  for (const [over, re] of [[{ wideRequired: true }, /wide check missing/], [{ wideRequired: true, wide: { inputs: 10, mismatches: 0 } }, /wide check not passed/], [{ wideRequired: true, wide: { inputs: 1500, mismatches: 1 } }, /wide check not passed/]])
+    assert.throws(() => c.upsertLesson(lesson('blockage:x', {}, over), T0), re);
+  assert.equal(c.listLessons().length, 0);
+});
+
+test('the stress proof is stored with the Mind lesson and its history', t => {
+  const c = mindFixture(t).open();
+  c.upsertLesson(lesson('blockage:a', {}, { wideRequired: true, wide: { inputs: 1500, mismatches: 0 } }), T0);
+  const l = c.listLessons()[0]; assert.deepEqual(l.validation.wide, { inputs: 1500, mismatches: 0 }); assert.equal(l.validation.history[0].wideRequired, true);
+});
+
+test('the general principle travels with the lesson into recall, and parseTeaching demands one that does not name the function', () => {
+  const m = { principle: 'Keep each intermediate value small by combining small pieces, so that no step leaves the range the machine can hold.' };
+  const ok = teaching(), good = { cause: ok.cause, principle: m.principle, strategy: ok.strategy, pitfalls: ok.pitfalls, verify: ok.verify };
+  assert.equal(tq.parseTeaching(JSON.stringify(good), { fn: 'average' }).principle, m.principle);
+  const { principle, ...noPrinciple } = good;
+  assert.throws(() => tq.parseTeaching(JSON.stringify(noPrinciple), { fn: 'average' }), /exactly/, 'a new teaching must carry a principle');
+  assert.throws(() => tq.parseTeaching(JSON.stringify({ ...good, principle: 'To compute average safely, divide every element by the length first and add them.' }), { fn: 'average' }), /names the current function/);
+  assert.throws(() => tq.parseTeaching(JSON.stringify({ ...good, principle: 'short' }), { fn: 'average' }), /out of bounds/);
+  assert.match(tq.teachingText({ ...ok, principle: m.principle }), /General principle: Keep each intermediate[\s\S]*Application to this problem: 1\./);
+  assert.match(tq.teachingText(ok), /Strategy: 1\./);
+});
+
+test('Mind recall carries the principle and an old lesson without one still works', t => {
+  const mf = mindFixture(t), c = mf.open();
+  c.upsertLesson(lesson('blockage:p', { principle: 'Keep each intermediate value small by combining small pieces, so no step leaves the range.' }, { wideRequired: false }), T0);
+  const r = c.recallLessons({ question: Q, checkerVersion: CV, now: T0 + 1 });
+  assert.equal(r.length, 1); assert.match(r[0].teaching.principle, /Keep each intermediate value small/);
+  const mf2 = mindFixture(t), c2 = mf2.open(); c2.upsertLesson(lesson('blockage:q', {}), T0);
+  assert.equal(c2.recallLessons({ question: Q, checkerVersion: CV, now: T0 + 1 })[0].teaching.principle, undefined);
 });

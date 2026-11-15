@@ -37,12 +37,13 @@ function buildTeacherPrompt({ fn, requirements, subset, attempts = [], failures 
     counterexamples.length ? 'INPUTS ADDED BY THE REVIEWER (the code must handle them):\n' + counterexamples.slice(0, 4).map((c) => '- ' + c).join('\n') : '',
     'Explain in plain language a 4B model can follow:',
     '1. cause: the real misunderstanding behind these attempts (not a restatement of the error).',
-    '2. strategy: the approach to take, as 2 to 5 numbered steps in words, usable within the allowed syntax.',
-    '3. pitfalls: up to 4 short traps to avoid.',
-    '4. verify: how it can check its own result mentally before answering.',
-    `Length targets (the answer is refused beyond these hard limits: cause 800, strategy 1200, verify 600 characters, 5 pitfalls of 220): cause under 450 characters, strategy under 800, at most 4 pitfalls under 140 each, verify under 300. Be concrete and brief.
+    '2. principle: a GENERAL reusable method, in words, that would also help on other problems of the same kind. It must NOT name this function or its exact inputs and must read as a rule you could apply to a different function.',
+    '3. strategy: the APPLICATION of that principle to the current function: 2 to 5 numbered steps in words, usable within the allowed syntax, saying what must be adapted for this function.',
+    '4. pitfalls: up to 4 short traps to avoid.',
+    '5. verify: how it can check its own result mentally before answering.',
+    `Length targets (the answer is refused beyond these hard limits: cause 800, principle 500, strategy 1200, verify 600 characters, 5 pitfalls of 220): cause under 450 characters, principle under 350, strategy under 800, at most 4 pitfalls under 140 each, verify under 300. Be concrete and brief.
 
-Rules: do not write the complete function; never output a function declaration, module.exports or a code fence; you may quote at most two tiny expression idioms inline, each under 100 characters. Return ONLY a JSON object with exactly the keys cause (string), strategy (string), pitfalls (array of strings), verify (string).`,
+Rules: do not write the complete function; never output a function declaration, module.exports or a code fence; you may quote at most two tiny expression idioms inline, each under 100 characters. Return ONLY a JSON object with exactly the keys cause (string), principle (string), strategy (string), pitfalls (array of strings), verify (string).`,
   ].filter(Boolean).join('\n\n').slice(0, 9000);
 }
 
@@ -61,11 +62,13 @@ function leaksSolution(text, fn) {
 // fields lessons.attachTeaching needs (the host adds source, model, tokens, class).
 function parseTeaching(raw, { fn }) {
   let j; try { j = JSON.parse(unfence(raw)); } catch { throw new Error('Teaching is not valid JSON'); }
-  if (!j || typeof j !== 'object' || Array.isArray(j) || Object.keys(j).sort().join(',') !== 'cause,pitfalls,strategy,verify') throw new Error('Teaching must have exactly cause, strategy, pitfalls, verify');
+  if (!j || typeof j !== 'object' || Array.isArray(j) || Object.keys(j).sort().join(',') !== 'cause,pitfalls,principle,strategy,verify') throw new Error('Teaching must have exactly cause, principle, strategy, pitfalls, verify');
   const str = (x, lo, hi, name) => { if (typeof x !== 'string' || x.trim().length < lo || x.length > hi) throw new Error('Teaching field out of bounds: ' + name); return x.trim(); };
-  const out = { cause: str(j.cause, 20, 800, 'cause'), strategy: str(j.strategy, 20, 1200, 'strategy'), verify: str(j.verify, 10, 600, 'verify'),
+  const out = { cause: str(j.cause, 20, 800, 'cause'), principle: str(j.principle, 20, 500, 'principle'), strategy: str(j.strategy, 20, 1200, 'strategy'), verify: str(j.verify, 10, 600, 'verify'),
     pitfalls: Array.isArray(j.pitfalls) && j.pitfalls.length <= 5 ? j.pitfalls.map((p) => str(p, 5, 220, 'pitfall')) : (() => { throw new Error('Teaching field out of bounds: pitfalls'); })() };
-  if (leaksSolution([out.cause, out.strategy, out.verify, ...out.pitfalls].join('\n'), fn)) throw new Error('Teaching rejected: it contains the solution instead of teaching it');
+  // The principle must be reusable: it may not name the function it was taught on.
+  if (new RegExp('\\b' + String(fn).replace(/[^A-Za-z0-9_$]/g, '') + '\\b', 'i').test(out.principle)) throw new Error('Teaching rejected: the principle names the current function, so it is not general');
+  if (leaksSolution([out.cause, out.principle, out.strategy, out.verify, ...out.pitfalls].join('\n'), fn)) throw new Error('Teaching rejected: it contains the solution instead of teaching it');
   return out;
 }
 
@@ -78,7 +81,7 @@ const teacherTokens = (usage) => (usage && Number.isFinite(usage.inputTokens) &&
 // What the developer reads in its next prompt. Explicitly unverified.
 function teachingText(t) {
   return "TEACHER'S EXPLANATION (from Claude, who read your failed attempts; a proposal that has NOT been verified yet; write the code yourself):\n"
-    + 'Cause: ' + t.cause + '\nStrategy: ' + t.strategy + (t.pitfalls.length ? '\nAvoid: ' + t.pitfalls.join(' / ') : '') + '\nCheck: ' + t.verify;
+    + 'Cause: ' + t.cause + (t.principle ? '\nGeneral principle: ' + t.principle + '\nApplication to this problem: ' : '\nStrategy: ') + t.strategy + (t.pitfalls.length ? '\nAvoid: ' + t.pitfalls.join(' / ') : '') + '\nCheck: ' + t.verify;
 }
 
 // Generalisation goes through the existing skill reflection, and only when several

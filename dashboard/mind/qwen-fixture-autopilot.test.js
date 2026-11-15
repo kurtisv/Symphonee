@@ -296,14 +296,14 @@ test('wrong results are told in plain sentences and a rename-only repeat is judg
 // ══ Teacher-assisted learning in the loop ═════════════════════════════════════
 const wrongWith = (n, name = 'a') => `function average(v){const ${name}=${n};return ${name}}\nmodule.exports={average};\n`;
 const safeVariant = (k) => `function average(v){if(v.length===0)return null;return v.reduce((a,b)=>a+b/v.length+0*${k},0)}\nmodule.exports={average};\n`;
-const TEACH = { cause: 'The first versions return a constant, so every input gets the same answer instead of a computed mean.', strategy: '1. Return null at once for an empty array. 2. Divide each element by the length inside the reduce. 3. Start the reduce from zero.',
+const TEACH = { principle: 'Keep every intermediate value small by working on small pieces, so that no step can leave the range the machine can hold.', cause: 'The first versions return a constant, so every input gets the same answer instead of a computed mean.', strategy: '1. Return null at once for an empty array. 2. Divide each element by the length inside the reduce. 3. Start the reduce from zero.',
   pitfalls: ['Do not return a constant'], verify: 'Check that [1,2,3] gives 2 and [] gives null before answering.' };
 function teachSetup(t, over = {}) {
   const lessonsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-qwen-lessons-')); t.after(() => fs.rmSync(lessonsRoot, { recursive: true, force: true }));
   const mroot = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-qwen-mind-')); t.after(() => fs.rmSync(mroot, { recursive: true, force: true }));
   const space = 'fixture_' + crypto.randomBytes(8).toString('hex');
   const mind = makeFixtureController({ repoRoot: mroot, space, queueDir: path.join(mroot, 'queue') });
-  return { lessonsRoot, mind, reopen: () => makeFixtureController({ repoRoot: mroot, space, queueDir: path.join(mroot, 'queue') }), extra: { lessonsRoot, family: 'average', name: 'average', teacher: { enabled: true }, mind, ...over } };
+  return { lessonsRoot, mind, reopen: () => makeFixtureController({ repoRoot: mroot, space, queueDir: path.join(mroot, 'queue') }), extra: { lessonsRoot, family: 'average', name: 'average', teacher: { enabled: true }, mind, wideCheck: () => ({ inputs: 1500, mismatches: 0 }), ...over } };
 }
 const start = (h, objective = 'Implement average(v) in average.js; it must not overflow on very large values.') => h.pilot.startFixtureTask({ title: 'Fictional average', objective });
 
@@ -391,7 +391,7 @@ test('a new session recalls validated methods from Mind, with provenance, and co
   const s = teachSetup(t, { teacher: { enabled: false } });
   const seed = { key: 'blockage:seed', checkerVersion: CHECKER_VERSION, teaching: { ...TEACH, source: 'claude', model: 'sonnet', tokens: 1700, errorClass: 'result:wrong-values', family: 'average',
       cause: 'The intermediate sum of very large values exceeds the double range before the final division happens.', strategy: '1. Divide each element by the length before adding. 2. Keep the running total bounded.' },
-    evidence: { runId: 'f'.repeat(32), family: 'average', checkerVersion: CHECKER_VERSION, independent: { passed: true, executed: 7, expected: 7 }, shown: ['blockage:seed'], blocked: { signature: 'checks:x', failedAttempts: 2 }, afterTeaching: true,
+    evidence: { runId: 'f'.repeat(32), family: 'average', checkerVersion: CHECKER_VERSION, independent: { passed: true, executed: 7, expected: 7 }, shown: ['blockage:seed'], blocked: { signature: 'checks:x', failedAttempts: 2 }, afterTeaching: true, wideRequired: true, wide: { inputs: 1500, mismatches: 0 },
       codex: { decision: 'GO', taskId: 'task-seed-1', diffHash: 'd'.repeat(64), reviewer: { provider: 'codex', cleanup: 'verified-no-descendants', tools: ['functions.request_user_input'], version: 'codex-cli 0.169.0' } }, codeHash: 'c'.repeat(64), assertionsHash: 'e'.repeat(64) } };
   const m = s.mind.upsertLesson(seed);
   const h = harness(t, { sources: [SAFE], reviews: [{ decision: 'GO', corrections: [] }], extra: { ...s.extra, teacher: { enabled: false } } });
@@ -501,4 +501,23 @@ test('a Mind write that fails after local validation is pending, then synced onc
   assert.equal(h.pilot.syncPendingMind(), 1); assert.equal(h.pilot.syncPendingMind(), 0);
   assert.equal(h.pilot.state.mindSyncPending.length, 0);
   assert.equal(real.listLessons().length, 1); assert.equal(real.listLessons()[0].validation.evidenceCount, 1);
+});
+
+test('fail closed: a family that defines a stress check can never be promoted without it, even if the harness forgot to configure one', async t => {
+  const s = teachSetup(t, { wideCheck: undefined });
+  const h = harness(t, { sources: [wrongWith(0, 'a'), wrongWith(0, 'b'), SAFE], reviews: [{ decision: 'GO', corrections: [] }], teachings: [TEACH], extra: s.extra });
+  start(h); await run(h.pilot);
+  assert.equal(h.pilot.state.history.at(-1).outcome, 'fixture-approved');
+  assert.ok(!lessonsMod.all(s.lessonsRoot).some(x => lessonsMod.statusOf(x) === 'validated'));
+  assert.match(h.pilot.state.events.map(e => e.msg).join('\n'), /wide check missing/); assert.equal(s.mind.listLessons().length, 0);
+});
+
+test('the stress proof of a promoted lesson is stored in the local lessons and in Mind', async t => {
+  const s = teachSetup(t);
+  const h = harness(t, { sources: [wrongWith(0, 'a'), wrongWith(0, 'b'), SAFE], reviews: [{ decision: 'GO', corrections: [] }], teachings: [TEACH], extra: s.extra });
+  start(h); await run(h.pilot);
+  const l = lessonsMod.all(s.lessonsRoot).find(x => lessonsMod.statusOf(x) === 'validated');
+  assert.deepEqual([l.validation.wideRequired, l.validation.wide], [true, { inputs: 1500, mismatches: 0 }]);
+  const m = s.mind.listLessons()[0]; assert.equal(m.certified, true); assert.deepEqual(m.validation.wide, { inputs: 1500, mismatches: 0 });
+  assert.equal(l.teaching.principle, TEACH.principle, 'the principle is kept'); assert.equal(m.teaching.principle, TEACH.principle);
 });

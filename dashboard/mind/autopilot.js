@@ -1185,8 +1185,9 @@ class MindAutopilot {
       codex: { decision: review.decision, taskId: t.id, diffHash: review.diffHash, reviewer: { provider: 'codex', cleanup: ex.cleanup, tools: ex.reviewer.tools, version: ex.reviewer.version } },
       codeHash: sha(tq.codeOf(a.diff)), assertionsHash: a.technical && a.technical.assertionsHash, shown: last ? last.shown : [],
       blocked: { signature: a.teaching.errorClass + ':' + sha(a.teaching.signature).slice(0, 16), failedAttempts: a.teaching.failedAttempts }, afterTeaching: Boolean(last && last.attempt > a.teaching.afterAttempt) };
+    // Fail closed: a family that defines a stress check requires it, even if the harness forgot to configure it.
+    ev.wideRequired = typeof f.wideCheck === 'function' || require('../orchestrator/qwen-fixture-tasks').TASKS.some(x => x.id === f.family && x.stress);
     if (typeof f.wideCheck === 'function') {
-      ev.wideRequired = true;
       try { const w = f.wideCheck(tq.codeOf(a.diff)); if (w && Number.isInteger(w.inputs) && Number.isInteger(w.mismatches)) ev.wide = { inputs: w.inputs, mismatches: w.mismatches }; } catch (e) { this.log('lesson', 'Wide check failed to run: ' + String(e.message || e).slice(0, 120)); }
     }
     let r;

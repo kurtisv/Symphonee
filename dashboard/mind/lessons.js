@@ -224,6 +224,7 @@ function teachingProblems(t) {
   const p = [];
   if (!isStr(t.cause, 20, 800)) p.push('cause');
   if (!isStr(t.strategy, 20, 1200)) p.push('strategy');
+  if (t.principle !== undefined && !isStr(t.principle, 20, 500)) p.push('principle');
   if (!Array.isArray(t.pitfalls) || t.pitfalls.length > 5 || t.pitfalls.some((x) => !isStr(x, 5, 220))) p.push('pitfalls');
   if (!isStr(t.verify, 10, 600)) p.push('verify');
   if (!['claude', 'human'].includes(t.source)) p.push('source');
@@ -250,6 +251,7 @@ function validationProblems(ev, checkerVersion, key) {
   if (ev.afterTeaching !== true) p.push('the validating attempt did not come after the teaching');
   if (!isStr(ev.family, 2, 40)) p.push('family missing');
   // Stress evidence: when the family defines a wide check it is mandatory and must show zero mismatches on enough inputs.
+  if (typeof ev.wideRequired !== 'boolean') p.push('wide requirement not declared');
   if (ev.wideRequired === true && !ev.wide) p.push('wide check missing');
   if (ev.wide && (!Number.isInteger(ev.wide.inputs) || ev.wide.inputs < 100 || ev.wide.mismatches !== 0)) p.push('wide check not passed');
   return p;
@@ -263,7 +265,7 @@ function attachTeaching(root, scope, key, teaching, now = Date.now()) {
   if (!['observation', 'teaching'].includes(statusOf(e))) throw new Error('A ' + statusOf(e) + ' lesson cannot be re-taught');
   const problems = teachingProblems(teaching);
   if (problems.length) throw new Error('Invalid teaching: ' + problems.join(', '));
-  e.teaching = { cause: teaching.cause.trim(), strategy: teaching.strategy.trim(), pitfalls: teaching.pitfalls.map((x) => x.trim()), verify: teaching.verify.trim(),
+  e.teaching = { cause: teaching.cause.trim(), ...(teaching.principle !== undefined ? { principle: teaching.principle.trim() } : {}), strategy: teaching.strategy.trim(), pitfalls: teaching.pitfalls.map((x) => x.trim()), verify: teaching.verify.trim(),
     source: teaching.source, model: teaching.model, tokens: teaching.tokens, at: now };
   e.status = 'teaching'; e.errorClass = teaching.errorClass; e.family = teaching.family; e.strategyDigest = digestOf(teaching.strategy);
   save(root, data, 'serveur');
@@ -276,7 +278,7 @@ function validate(root, scope, key, ev, { checkerVersion, now = Date.now() } = {
   if (statusOf(e) !== 'teaching') throw new Error('Only a taught lesson can be validated (status: ' + statusOf(e) + ')');
   const problems = validationProblems(ev, checkerVersion, key);
   if (problems.length) throw new Error('Lesson cannot be validated: ' + problems.join('; '));
-  const item = { runId: ev.runId, at: now, codeHash: ev.codeHash, diffHash: ev.codex.diffHash, reviewTaskId: ev.codex.taskId, checkerVersion };
+  const item = { runId: ev.runId, at: now, codeHash: ev.codeHash, diffHash: ev.codex.diffHash, reviewTaskId: ev.codex.taskId, checkerVersion, wideRequired: ev.wideRequired, ...(ev.wide ? { wide: { inputs: ev.wide.inputs, mismatches: ev.wide.mismatches } } : {}) };
   const peers = data.lessons.filter((x) => x !== e && x.scope === scope && statusOf(x) === 'validated' && x.errorClass === e.errorClass && x.family === e.family);
   const twin = peers.find((o) => o.strategyDigest === e.strategyDigest || similarity(o.teaching.strategy, e.teaching.strategy) >= SIMILAR);
   const superseded = [];
@@ -284,6 +286,8 @@ function validate(root, scope, key, ev, { checkerVersion, now = Date.now() } = {
     // Same method again: one lesson, more independent evidence (a run counts once).
     if (!twin.validation.history.some((h) => h.runId === ev.runId)) { twin.validation.history = [...twin.validation.history, item].slice(-5); twin.validation.evidenceCount += 1; }
     twin.validation.validUntil = now + VALID_DAYS * DAY;
+    // A new proven run upgrades a legacy lesson that never had the stress proof (its history is kept).
+    if (!wideCertified(twin.validation) && wideCertified(item)) { twin.validation.wideRequired = item.wideRequired; if (item.wide) twin.validation.wide = item.wide; twin.validation.certifiedBy = ev.runId; }
     e.status = 'obsolete'; e.obsoleteReason = 'duplicate'; e.mergedInto = twin.key; e.obsoleteAt = now;
     save(root, data, 'serveur');
     return { entry: twin, merged: true, superseded, taught: e };
@@ -291,7 +295,8 @@ function validate(root, scope, key, ev, { checkerVersion, now = Date.now() } = {
   for (const o of peers) { o.status = 'obsolete'; o.obsoleteReason = 'superseded'; o.supersededBy = e.key; o.obsoleteAt = now; superseded.push(o.key); }
   e.validation = { at: now, validUntil: now + VALID_DAYS * DAY, checkerVersion, codeHash: ev.codeHash, assertionsHash: ev.assertionsHash, diffHash: ev.codex.diffHash,
     reviewTaskId: ev.codex.taskId, reviewerVersion: ev.codex.reviewer.version, independent: { executed: ev.independent.executed, expected: ev.independent.expected },
-    blocked: { signature: String(ev.blocked.signature).slice(0, 600), failedAttempts: ev.blocked.failedAttempts }, family: ev.family, evidenceCount: 1, history: [item] };
+    blocked: { signature: String(ev.blocked.signature).slice(0, 600), failedAttempts: ev.blocked.failedAttempts }, family: ev.family, evidenceCount: 1, history: [item],
+    wideRequired: ev.wideRequired, ...(ev.wide ? { wide: { inputs: ev.wide.inputs, mismatches: ev.wide.mismatches } } : {}) };
   e.status = 'validated'; e.confidence = clamp(Math.max(confidenceOf(e, now), .7));
   save(root, data, 'serveur');
   return { entry: e, merged: false, superseded, taught: e };
@@ -303,13 +308,17 @@ function markObsolete(root, scope, key, reason, now = Date.now()) {
   save(root, data, 'serveur');
   return e;
 }
-const isCurrent = (e, checkerVersion, now = Date.now()) => statusOf(e) === 'validated' && !e.disabled && Boolean(e.validation)
+// Stress proof recorded with the validation. A lesson validated before this rule has no `wideRequired` field: it is
+// 'legacy-unproven' (kept, with its history, but never recalled as a certified method until a proven run confirms it).
+const wideCertified = (v) => Boolean(v) && (v.wideRequired === false || (v.wideRequired === true && Boolean(v.wide) && Number.isInteger(v.wide.inputs) && v.wide.inputs >= 100 && v.wide.mismatches === 0));
+const isFresh = (e, checkerVersion, now = Date.now()) => statusOf(e) === 'validated' && !e.disabled && Boolean(e.validation)
   && e.validation.checkerVersion === checkerVersion && now < e.validation.validUntil;
+const isCurrent = (e, checkerVersion, now = Date.now()) => isFresh(e, checkerVersion, now) && wideCertified(e.validation);
 // A validated lesson whose checker changed, or that expired, is retired, not deleted.
 function expireStale(root, scope, checkerVersion, now = Date.now()) {
   const data = load(root, 'serveur'); let n = 0;
   for (const e of data.lessons) {
-    if (e.scope !== scope || statusOf(e) !== 'validated' || isCurrent(e, checkerVersion, now)) continue;
+    if (e.scope !== scope || statusOf(e) !== 'validated' || isFresh(e, checkerVersion, now)) continue;
     e.status = 'obsolete'; e.obsoleteReason = e.validation && e.validation.checkerVersion !== checkerVersion ? 'checker-changed' : 'expired'; e.obsoleteAt = now; n++;
   }
   if (n) save(root, data, 'serveur');
@@ -331,7 +340,7 @@ function selectForTask(root, scope, { checkerVersion, question = '', maxMethods 
   const hints = mine.filter((x) => statusOf(x) === 'observation').sort((a, b) => confidenceOf(b, now) - confidenceOf(a, now) || b.count - a.count).slice(0, maxHints);
   return { methods, hints };
 }
-const methodLine = (m) => '- [' + m.errorClass + '] Cause: ' + m.teaching.cause + ' Strategy: ' + m.teaching.strategy
+const methodLine = (m) => '- [' + m.errorClass + '] Cause: ' + m.teaching.cause + (m.teaching.principle ? ' General principle (applies to other problems too): ' + m.teaching.principle + ' Application to the problem it was taught on (adapt it, do not copy it): ' : ' Strategy: ') + m.teaching.strategy
   + (m.teaching.pitfalls.length ? ' Avoid: ' + m.teaching.pitfalls.join(' / ') : '') + ' Check: ' + m.teaching.verify
   + ' (validated ' + new Date(m.validation.at).toISOString().slice(0, 10) + ', ' + m.validation.evidenceCount + ' independent run(s), real review ' + m.validation.reviewTaskId + ', checker ' + m.validation.checkerVersion + ')';
 function methodsText({ methods = [], hints = [] } = {}) {
@@ -341,4 +350,4 @@ function methodsText({ methods = [], hints = [] } = {}) {
   return out.join('\n\n');
 }
 
-module.exports = { digestOf, SIMILAR, STATUSES, VALID_DAYS, statusOf, teachingProblems, validationProblems, attachTeaching, validate, markObsolete, isCurrent, expireStale, selectForTask, methodsText, relevantTo, CONFIDENCE: C, similarity, consolidate, confidenceOf, confirm, weaken, promotionCandidates, skillCandidates, load, record, top, all, promptText, firstFinding, normKey, memorySpec, pendingTeach, markTaught, fileOf, scopeOf };
+module.exports = { wideCertified, isFresh, digestOf, SIMILAR, STATUSES, VALID_DAYS, statusOf, teachingProblems, validationProblems, attachTeaching, validate, markObsolete, isCurrent, expireStale, selectForTask, methodsText, relevantTo, CONFIDENCE: C, similarity, consolidate, confidenceOf, confirm, weaken, promotionCandidates, skillCandidates, load, record, top, all, promptText, firstFinding, normKey, memorySpec, pendingTeach, markTaught, fileOf, scopeOf };

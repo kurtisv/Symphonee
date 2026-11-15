@@ -15,7 +15,7 @@ const teaching = (over = {}) => ({ cause: 'The sum is computed first, so the int
   pitfalls: ['Do not index fixed positions of the array'], verify: 'Try three huge equal numbers and confirm the result is finite.', source: 'claude', model: 'sonnet', tokens: 1200, errorClass: 'result:non-finite', family: 'average', ...over });
 const evidence = (key, over = {}) => ({ runId: 'a'.repeat(32), family: 'average', checkerVersion: CV, independent: { passed: true, executed: 7, expected: 7 },
   codex: { decision: 'GO', taskId: 'task-1234', diffHash: 'd'.repeat(64), reviewer: { provider: 'codex', cleanup: 'verified-no-descendants', tools: ['functions.request_user_input'], version: 'codex-cli 0.169.0' } },
-  codeHash: 'c'.repeat(64), assertionsHash: 'e'.repeat(64), shown: [key], blocked: { signature: 'checks:result-non-finite', failedAttempts: 2 }, afterTeaching: true, ...over });
+  codeHash: 'c'.repeat(64), assertionsHash: 'e'.repeat(64), shown: [key], blocked: { signature: 'checks:result-non-finite', failedAttempts: 2 }, afterTeaching: true, wideRequired: false, ...over });
 function observe(root, scope, text = 'The sum overflows before the division on very large values', key = 'result:non-finite average') {
   return L.record(root, { scope, kind: 'blockage', text, key, source: 'independent checks', evidence: 'verified' }, T0).entry;
 }
@@ -155,4 +155,67 @@ test('a retired lesson seen again starts a fresh observation cycle', t => {
 test('unverified evidence never creates an observation', t => {
   const root = tmp(t);
   assert.equal(L.record(root, { scope: L.scopeOf('p', 'x'), kind: 'blockage', text: 'a claim made by the model itself', key: 'x y', evidence: 'self-reported' }).refused, 'unverified-evidence');
+});
+
+// ---- stress proof, legacy lessons and the general principle ----
+const legacyValidate = (root, scope, key) => { // what a pre-proof build wrote: no wideRequired / wide in validation or history
+  const data = JSON.parse(fs.readFileSync(L.fileOf(root, 'serveur'), 'utf8')); const e = data.lessons.find((x) => x.scope === scope && x.key === key);
+  delete e.validation.wideRequired; delete e.validation.wide; e.validation.history.forEach((h) => { delete h.wideRequired; delete h.wide; });
+  fs.writeFileSync(L.fileOf(root, 'serveur'), JSON.stringify(data));
+};
+
+test('new evidence must declare whether a stress check was required, and a required one must have passed', t => {
+  const key = 'blockage:k';
+  const miss = (over) => L.validationProblems(evidence(key, over), CV, key);
+  const noDecl = evidence(key); delete noDecl.wideRequired;
+  assert.match(L.validationProblems(noDecl, CV, key).join(), /wide requirement not declared/);
+  assert.match(miss({ wideRequired: true }).join(), /wide check missing/);
+  assert.match(miss({ wideRequired: true, wide: { inputs: 50, mismatches: 0 } }).join(), /wide check not passed/);
+  assert.match(miss({ wideRequired: true, wide: { inputs: 1500, mismatches: 2 } }).join(), /wide check not passed/);
+  assert.deepEqual(miss({ wideRequired: true, wide: { inputs: 1500, mismatches: 0 } }), []);
+  assert.deepEqual(miss({ wideRequired: false }), []);
+});
+
+test('the stress proof is recorded with the validation and with each history item', t => {
+  const root = tmp(t), scope = L.scopeOf('p', 'fixture:x'), e = observe(root, scope);
+  L.attachTeaching(root, scope, e.key, teaching(), T0);
+  const r = L.validate(root, scope, e.key, evidence(e.key, { wideRequired: true, wide: { inputs: 1500, mismatches: 0 } }), { checkerVersion: CV, now: T0 + 5 });
+  assert.deepEqual(r.entry.validation.wide, { inputs: 1500, mismatches: 0 }); assert.equal(r.entry.validation.wideRequired, true);
+  assert.deepEqual(r.entry.validation.history[0].wide, { inputs: 1500, mismatches: 0 });
+  assert.equal(L.isCurrent(r.entry, CV, T0 + 6), true);
+});
+
+test('a legacy lesson without the stress proof is kept with its history but never recalled as a certified method; a proven run upgrades it', t => {
+  const root = tmp(t), scope = L.scopeOf('p', 'fixture:x'), e = observe(root, scope);
+  L.attachTeaching(root, scope, e.key, teaching(), T0);
+  L.validate(root, scope, e.key, evidence(e.key), { checkerVersion: CV, now: T0 + 5 });
+  legacyValidate(root, scope, e.key);
+  const legacy = L.all(root).find((x) => x.key === e.key);
+  assert.equal(L.statusOf(legacy), 'validated', 'status and history are untouched'); assert.equal(legacy.validation.history.length, 1);
+  assert.equal(L.isCurrent(legacy, CV, T0 + 6), false, 'not certified');
+  assert.equal(L.isFresh(legacy, CV, T0 + 6), true);
+  const q = 'average of very large numbers must not overflow: the intermediate total exceeds the double range';
+  assert.equal(L.selectForTask(root, scope, { checkerVersion: CV, question: q, now: T0 + 6 }).methods.length, 0, 'not offered as a method');
+  assert.equal(L.expireStale(root, scope, CV, T0 + 7), 0, 'not retired either: nothing is lost');
+  // the same method confirmed by a run that carries the proof upgrades it, with a second piece of evidence
+  const b = observe(root, scope, 'Another run hit a non finite result again with huge inputs', 'blockage:again'); L.attachTeaching(root, scope, b.key, teaching(), T0 + 10);
+  const up = L.validate(root, scope, b.key, evidence(b.key, { runId: 'b'.repeat(32), wideRequired: true, wide: { inputs: 1500, mismatches: 0 } }), { checkerVersion: CV, now: T0 + 11 });
+  assert.equal(up.merged, true); assert.equal(up.entry.validation.evidenceCount, 2); assert.equal(up.entry.validation.certifiedBy, 'b'.repeat(32));
+  assert.equal(L.selectForTask(root, scope, { checkerVersion: CV, question: q, now: T0 + 12 }).methods.length, 1, 'certified now');
+});
+
+test('the general principle is optional (old lessons), bounded, kept, and shown as principle plus application', t => {
+  const root = tmp(t), scope = L.scopeOf('p', 'fixture:x');
+  const e = observe(root, scope);
+  assert.throws(() => L.attachTeaching(root, scope, e.key, teaching({ principle: 'short' })), /Invalid teaching: principle/);
+  assert.throws(() => L.attachTeaching(root, scope, e.key, teaching({ principle: 'x'.repeat(501) })), /Invalid teaching: principle/);
+  L.attachTeaching(root, scope, e.key, teaching({ principle: 'Keep every intermediate value small by combining small pieces instead of one big total.' }), T0);
+  L.validate(root, scope, e.key, evidence(e.key), { checkerVersion: CV, now: T0 + 5 });
+  const m = L.selectForTask(root, scope, { checkerVersion: CV, question: 'average of very large numbers must not overflow: the intermediate total exceeds the double range', now: T0 + 6 });
+  const txt = L.methodsText(m);
+  assert.match(txt, /General principle \(applies to other problems too\): Keep every intermediate value small/); assert.match(txt, /Application to the problem it was taught on \(adapt it, do not copy it\)/);
+  // a lesson without principle keeps the old wording
+  const root2 = tmp(t), e2 = observe(root2, scope); L.attachTeaching(root2, scope, e2.key, teaching(), T0); L.validate(root2, scope, e2.key, evidence(e2.key), { checkerVersion: CV, now: T0 + 5 });
+  const old = L.methodsText(L.selectForTask(root2, scope, { checkerVersion: CV, question: 'average of very large numbers must not overflow: the intermediate total exceeds the double range', now: T0 + 6 }));
+  assert.match(old, /Strategy: /); assert.doesNotMatch(old, /General principle/);
 });

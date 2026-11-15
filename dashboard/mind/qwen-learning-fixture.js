@@ -122,18 +122,20 @@ function makeFixtureController({repoRoot,space,queueDir}) {
   // through the observation queue (no crash-replay): a failed write is simply retried.
   const lessonParse=n=>{try{const c=JSON.parse(n.content);return hash(n.content)===n.observationDigest?c:null;}catch{return null;}};
   const lessonNodes=g=>(g?.nodes||[]).filter(n=>n.kind==='artifact' && n.source?.type===LESSON_SOURCE);
-  const lessonCurrent=(n,c,checkerVersion,now)=>c && n.disabled!==true && c.status==='validated' && c.validation.checkerVersion===checkerVersion && now<c.validation.validUntil;
+  const lessonFresh=(n,c,checkerVersion,now)=>c && n.disabled!==true && c.status==='validated' && c.validation.checkerVersion===checkerVersion && now<c.validation.validUntil;
+  // Recalled as a certified method only with the stress proof; a legacy lesson stays stored, history intact.
+  const lessonCurrent=(n,c,checkerVersion,now)=>lessonFresh(n,c,checkerVersion,now) && lessonsMod.wideCertified(c.validation);
   function lessonRecord(input,now){
     if(!input || typeof input!=='object' || !isJsonSafe(input) || typeof input.key!=='string') throw Error('Invalid lesson');
     const tp=lessonsMod.teachingProblems(input.teaching); if(tp.length) throw Error('Invalid lesson: '+tp.join(', '));
     const vp=lessonsMod.validationProblems(input.evidence,input.checkerVersion,input.key); if(vp.length) throw Error('Lesson is not validated: '+vp.join('; '));
     const t=input.teaching, ev=input.evidence;
     return {status:'validated',key:input.key,errorClass:t.errorClass,family:t.family,strategyDigest:lessonsMod.digestOf(t.strategy),
-      teaching:{cause:t.cause.trim(),strategy:t.strategy.trim(),pitfalls:t.pitfalls.map(x=>x.trim()),verify:t.verify.trim(),source:t.source,model:t.model,tokens:t.tokens},
+      teaching:{cause:t.cause.trim(),...(t.principle!==undefined?{principle:t.principle.trim()}:{}),strategy:t.strategy.trim(),pitfalls:t.pitfalls.map(x=>x.trim()),verify:t.verify.trim(),source:t.source,model:t.model,tokens:t.tokens},
       validation:{checkerVersion:input.checkerVersion,at:now,validUntil:now+lessonsMod.VALID_DAYS*86400000,codeHash:ev.codeHash,assertionsHash:ev.assertionsHash,diffHash:ev.codex.diffHash,
         reviewTaskId:ev.codex.taskId,reviewerVersion:ev.codex.reviewer.version,independent:{executed:ev.independent.executed,expected:ev.independent.expected},
-        blocked:{signature:String(ev.blocked.signature).slice(0,600),failedAttempts:ev.blocked.failedAttempts},evidenceCount:1,
-        history:[{runId:ev.runId,at:now,codeHash:ev.codeHash,diffHash:ev.codex.diffHash,reviewTaskId:ev.codex.taskId,checkerVersion:input.checkerVersion}]},
+        blocked:{signature:String(ev.blocked.signature).slice(0,600),failedAttempts:ev.blocked.failedAttempts},evidenceCount:1,wideRequired:ev.wideRequired,...(ev.wide?{wide:{inputs:ev.wide.inputs,mismatches:ev.wide.mismatches}}:{}),
+        history:[{runId:ev.runId,at:now,codeHash:ev.codeHash,diffHash:ev.codex.diffHash,reviewTaskId:ev.codex.taskId,checkerVersion:input.checkerVersion,wideRequired:ev.wideRequired,...(ev.wide?{wide:{inputs:ev.wide.inputs,mismatches:ev.wide.mismatches}}:{})}]},
       uses:0,usesSucceeded:0};
   }
   function withGraph(fn){
@@ -153,7 +155,9 @@ function makeFixtureController({repoRoot,space,queueDir}) {
       if(twin){
         const c=twin.c, h=rec.validation.history[0];
         if(!c.validation.history.some(x=>x.runId===h.runId)){c.validation.history=[...c.validation.history,h].slice(-5);c.validation.evidenceCount+=1;}
-        c.validation.validUntil=rec.validation.validUntil; writeLesson(twin.n,c);
+        c.validation.validUntil=rec.validation.validUntil;
+        if(!lessonsMod.wideCertified(c.validation) && lessonsMod.wideCertified(rec.validation)){c.validation.wideRequired=rec.validation.wideRequired;if(rec.validation.wide)c.validation.wide=rec.validation.wide;c.validation.certifiedBy=h.runId;}
+        writeLesson(twin.n,c);
         return {id:twin.n.id,merged:true,superseded:[],evidenceCount:c.validation.evidenceCount};
       }
       const id='qwen_lesson_'+hash(rec.errorClass+'|'+rec.family+'|'+rec.strategyDigest);
@@ -174,7 +178,7 @@ function makeFixtureController({repoRoot,space,queueDir}) {
     if(typeof checkerVersion!=='string' || !checkerVersion) throw Error('checkerVersion required');
     const byId=new Map();
     for(const n of lessonNodes(store.loadGraph(repoRoot,space))){const c=lessonParse(n);if(lessonCurrent(n,c,checkerVersion,now))byId.set(n.id,{n,c});}
-    const entries=[...byId.values()].map(({n,c})=>({scope:'mind@'+RECALL_SPACE,key:n.id,kind:c.errorClass,text:c.teaching.cause+' '+c.teaching.strategy,count:c.validation.evidenceCount,lastAt:c.validation.history.at(-1).at}));
+    const entries=[...byId.values()].map(({n,c})=>({scope:'mind@'+RECALL_SPACE,key:n.id,kind:c.errorClass,text:c.teaching.cause+' '+(c.teaching.principle||'')+' '+c.teaching.strategy,count:c.validation.evidenceCount,lastAt:c.validation.history.at(-1).at}));
     return retrieveLessons({all:()=>entries},repoRoot,RECALL_SPACE,Math.min(5,limit),String(question||'')).map(p=>{
       const {n,c}=byId.get(p.id);
       return {id:n.id,key:c.key,errorClass:c.errorClass,family:c.family,teaching:c.teaching,
@@ -193,9 +197,9 @@ function makeFixtureController({repoRoot,space,queueDir}) {
   }
   // Retires lessons validated under another checker version or past their date.
   function retireStale(checkerVersion,now=Date.now()){
-    return withGraph(graph=>{let k=0;for(const n of lessonNodes(graph)){const c=lessonParse(n);if(c && c.status==='validated' && !lessonCurrent(n,c,checkerVersion,now)){c.status='obsolete';c.obsoleteReason=c.validation.checkerVersion!==checkerVersion?'checker-changed':'expired';writeLesson(n,c);k++;}}return k;});
+    return withGraph(graph=>{let k=0;for(const n of lessonNodes(graph)){const c=lessonParse(n);if(c && c.status==='validated' && !lessonFresh(n,c,checkerVersion,now)){c.status='obsolete';c.obsoleteReason=c.validation.checkerVersion!==checkerVersion?'checker-changed':'expired';writeLesson(n,c);k++;}}return k;});
   }
-  function listLessons(){return lessonNodes(store.loadGraph(repoRoot,space)).map(n=>({id:n.id,disabled:n.disabled===true,...(lessonParse(n)||{status:'corrupt'})}));}
+  function listLessons(){return lessonNodes(store.loadGraph(repoRoot,space)).map(n=>{const c=lessonParse(n);return {id:n.id,disabled:n.disabled===true,certified:Boolean(c && c.status==='validated' && lessonsMod.wideCertified(c.validation)),...(c||{status:'corrupt'})};});}
   return {enqueue,flush,pending,drain,findExperiment,findRun,setExperimentDisabled,verifiedLessons,upsertLesson,recallLessons,recordLessonUse,retireLesson,retireStale,listLessons};
 }
 module.exports={makeFixtureController};

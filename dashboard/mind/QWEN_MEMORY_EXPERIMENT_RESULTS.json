@@ -1,0 +1,1182 @@
+{
+ "date": "2026-11-15",
+ "note": "Fictional functions only. Data of the controlled memory experiment mem-e1. Raw session files stay local (gitignored).",
+ "rule": "gain only if memory approvals - no-memory approvals >= 2 AND memory not worse on any task",
+ "summary": {
+  "id": "mem-e1",
+  "space": "fixture_2ed19b56667ab75a",
+  "preparedLessons": [
+   {
+    "id": "qwen_lesson_963e0b1024f5be36bae1161524ae09258b2f71e151647ddd4ecddf89faf8ac64",
+    "errorClass": "syntax:CallExpression",
+    "evidenceCount": 1,
+    "wide": {
+     "inputs": 1500,
+     "mismatches": 0
+    },
+    "principle": "When combining many values could exceed the number range, scale each value down before you combine them. Keep extra headroom so rounding cannot overflow either. Then undo the scaling once at the end, and clamp the result to the representable range. Express every repetition as a single reduce, never as a loop.",
+    "reviewTaskId": "51a1be7021fe"
+   }
+  ],
+  "prep": [
+   {
+    "step": "P1",
+    "outcome": "checks-failed",
+    "attempts": 6,
+    "seconds": 96.7,
+    "claudeCalls": 1,
+    "claudeTokens": 4704,
+    "codexTokens": 0,
+    "invalid": null
+   },
+   {
+    "step": "P2",
+    "outcome": "checks-failed",
+    "attempts": 7,
+    "seconds": 150.6,
+    "claudeCalls": 2,
+    "claudeTokens": 7555,
+    "codexTokens": 0,
+    "invalid": null
+   },
+   {
+    "step": "P3",
+    "outcome": "fixture-approved",
+    "attempts": 5,
+    "seconds": 109.9,
+    "claudeCalls": 1,
+    "claudeTokens": 3672,
+    "codexTokens": 6596,
+    "invalid": null
+   }
+  ],
+  "comparison": {
+   "noMemory": {
+    "runs": 6,
+    "approved": 0,
+    "checksPassedThenReviewed": 0,
+    "meanAttempts": 4.7,
+    "meanSeconds": 56,
+    "qwenTokens": 22577,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakRamMB": 4340,
+    "methodsShown": 0
+   },
+   "memory": {
+    "runs": 6,
+    "approved": 2,
+    "checksPassedThenReviewed": 2,
+    "meanAttempts": 3.5,
+    "meanSeconds": 65,
+    "qwenTokens": 30618,
+    "codexTokens": 13377,
+    "claudeTokens": 0,
+    "peakRamMB": 4422,
+    "methodsShown": 6
+   },
+   "perTask": {
+    "meanabs": {
+     "nomem": {
+      "runs": 2,
+      "approved": 0,
+      "checksPassedThenReviewed": 0,
+      "meanAttempts": 3.5,
+      "meanSeconds": 45,
+      "qwenTokens": 5864,
+      "codexTokens": 0,
+      "claudeTokens": 0,
+      "peakRamMB": 4222,
+      "methodsShown": 0
+     },
+     "mem": {
+      "runs": 2,
+      "approved": 2,
+      "checksPassedThenReviewed": 2,
+      "meanAttempts": 1,
+      "meanSeconds": 37,
+      "qwenTokens": 2256,
+      "codexTokens": 13377,
+      "claudeTokens": 0,
+      "peakRamMB": 4422,
+      "methodsShown": 2
+     }
+    },
+    "midrange": {
+     "nomem": {
+      "runs": 2,
+      "approved": 0,
+      "checksPassedThenReviewed": 0,
+      "meanAttempts": 5.5,
+      "meanSeconds": 65,
+      "qwenTokens": 8974,
+      "codexTokens": 0,
+      "claudeTokens": 0,
+      "peakRamMB": 2402,
+      "methodsShown": 0
+     },
+     "mem": {
+      "runs": 2,
+      "approved": 0,
+      "checksPassedThenReviewed": 0,
+      "meanAttempts": 4,
+      "meanSeconds": 68,
+      "qwenTokens": 11414,
+      "codexTokens": 0,
+      "claudeTokens": 0,
+      "peakRamMB": 2992,
+      "methodsShown": 2
+     }
+    },
+    "meanpos": {
+     "nomem": {
+      "runs": 2,
+      "approved": 0,
+      "checksPassedThenReviewed": 0,
+      "meanAttempts": 5,
+      "meanSeconds": 60,
+      "qwenTokens": 7739,
+      "codexTokens": 0,
+      "claudeTokens": 0,
+      "peakRamMB": 4340,
+      "methodsShown": 0
+     },
+     "mem": {
+      "runs": 2,
+      "approved": 0,
+      "checksPassedThenReviewed": 0,
+      "meanAttempts": 5.5,
+      "meanSeconds": 89,
+      "qwenTokens": 16948,
+      "codexTokens": 0,
+      "claudeTokens": 0,
+      "peakRamMB": 4209,
+      "methodsShown": 2
+     }
+    }
+   },
+   "preregisteredRule": "gain only if memory approvals - no-memory approvals >= 2 AND memory not worse on any task",
+   "verdict": "gain-supported-by-the-preregistered-rule"
+  },
+  "runs": [
+   {
+    "step": "E-meanabs-1-nomem",
+    "task": "meanabs",
+    "trial": 1,
+    "arm": "nomem",
+    "outcome": "stalled",
+    "attempts": 4,
+    "seconds": 59.4,
+    "qwenTokens": 3911,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 4222,
+    "methodsShown": [],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-meanabs-1-mem",
+    "task": "meanabs",
+    "trial": 1,
+    "arm": "mem",
+    "outcome": "fixture-approved",
+    "attempts": 1,
+    "seconds": 40.8,
+    "qwenTokens": 1131,
+    "codexReviews": 1,
+    "codexTokens": 6698,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 4422,
+    "methodsShown": [
+     "blockage:syntax callexpression average"
+    ],
+    "final": {
+     "passed": true,
+     "executed": 8,
+     "expected": 8
+    },
+    "wideCheck": {
+     "inputs": 1500,
+     "mismatches": 0
+    },
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-midrange-1-nomem",
+    "task": "midrange",
+    "trial": 1,
+    "arm": "nomem",
+    "outcome": "stalled",
+    "attempts": 6,
+    "seconds": 70.6,
+    "qwenTokens": 4940,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 2064,
+    "methodsShown": [],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-midrange-1-mem",
+    "task": "midrange",
+    "trial": 1,
+    "arm": "mem",
+    "outcome": "stalled",
+    "attempts": 4,
+    "seconds": 67.7,
+    "qwenTokens": 5609,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 2307,
+    "methodsShown": [
+     "blockage:syntax callexpression average"
+    ],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-meanpos-1-nomem",
+    "task": "meanpos",
+    "trial": 1,
+    "arm": "nomem",
+    "outcome": "stalled",
+    "attempts": 4,
+    "seconds": 44.8,
+    "qwenTokens": 2902,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 2620,
+    "methodsShown": [],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-meanpos-1-mem",
+    "task": "meanpos",
+    "trial": 1,
+    "arm": "mem",
+    "outcome": "stalled",
+    "attempts": 5,
+    "seconds": 88.3,
+    "qwenTokens": 7733,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 4209,
+    "methodsShown": [
+     "blockage:syntax callexpression average"
+    ],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-meanabs-2-mem",
+    "task": "meanabs",
+    "trial": 2,
+    "arm": "mem",
+    "outcome": "fixture-approved",
+    "attempts": 1,
+    "seconds": 33.3,
+    "qwenTokens": 1125,
+    "codexReviews": 1,
+    "codexTokens": 6679,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 4209,
+    "methodsShown": [
+     "blockage:syntax callexpression average"
+    ],
+    "final": {
+     "passed": true,
+     "executed": 8,
+     "expected": 8
+    },
+    "wideCheck": {
+     "inputs": 1500,
+     "mismatches": 0
+    },
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-meanabs-2-nomem",
+    "task": "meanabs",
+    "trial": 2,
+    "arm": "nomem",
+    "outcome": "stalled",
+    "attempts": 3,
+    "seconds": 30.2,
+    "qwenTokens": 1953,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 2992,
+    "methodsShown": [],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-midrange-2-mem",
+    "task": "midrange",
+    "trial": 2,
+    "arm": "mem",
+    "outcome": "stalled",
+    "attempts": 4,
+    "seconds": 68.8,
+    "qwenTokens": 5805,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 2992,
+    "methodsShown": [
+     "blockage:syntax callexpression average"
+    ],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-midrange-2-nomem",
+    "task": "midrange",
+    "trial": 2,
+    "arm": "nomem",
+    "outcome": "stalled",
+    "attempts": 5,
+    "seconds": 58.6,
+    "qwenTokens": 4034,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 2402,
+    "methodsShown": [],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-meanpos-2-mem",
+    "task": "meanpos",
+    "trial": 2,
+    "arm": "mem",
+    "outcome": "stalled",
+    "attempts": 6,
+    "seconds": 90.4,
+    "qwenTokens": 9215,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 3668,
+    "methodsShown": [
+     "blockage:syntax callexpression average"
+    ],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   },
+   {
+    "step": "E-meanpos-2-nomem",
+    "task": "meanpos",
+    "trial": 2,
+    "arm": "nomem",
+    "outcome": "checks-failed",
+    "attempts": 6,
+    "seconds": 74.4,
+    "qwenTokens": 4837,
+    "codexReviews": 0,
+    "codexTokens": 0,
+    "claudeTokens": 0,
+    "peakLlamaRamMB": 4340,
+    "methodsShown": [],
+    "final": null,
+    "wideCheck": null,
+    "cleanup": {
+     "tempRemoved": true,
+     "dockerLeftovers": [],
+     "newCodexProcesses": []
+    },
+    "sourceUnchanged": true
+   }
+  ],
+  "invalid": [],
+  "totals": {
+   "claudeTokens": 15931,
+   "claudeCalls": 4,
+   "codexTokens": 19973,
+   "codexReviews": 3,
+   "qwenTokens": 70919
+  }
+ },
+ "lessonsInMindAtTheEnd": [
+  {
+   "id": "qwen_lesson_963e0b1024f5be36bae1161524ae09258b2f71e151647ddd4ecddf89faf8ac64",
+   "status": "validated",
+   "errorClass": "syntax:CallExpression",
+   "family": "average",
+   "teaching": {
+    "cause": "You think the only danger is the final division, so you add raw values and divide at the end, and you reach for loops, let, spread and map. The real issue is that a running total of huge values passes the largest double before you divide. You must shrink each value before it enters the total, using only reduce and the allowed calls.",
+    "principle": "When combining many values could exceed the number range, scale each value down before you combine them. Keep extra headroom so rounding cannot overflow either. Then undo the scaling once at the end, and clamp the result to the representable range. Express every repetition as a single reduce, never as a loop.",
+    "strategy": "1. Keep a const for the length. If it is 0, return null.\n2. Build one reduce that adds each element after dividing it by the length and by 2, for example a + b / n / 2, starting from 0. Every partial total then stays near half the largest double or below, so it cannot overflow.\n3. Multiply that result by 2 to undo the halving.\n4. Clamp the product between -1.7976931348623157e308 and 1.7976931348623157e308 with Math.min and Math.max. This stops rounding from producing an infinity. Return the clamped value.",
+    "pitfalls": [
+     "No let, var, loops, +=, spread (...) or .map. Only const, if, return, reduce, Math.abs/max/min.",
+     "Do not sum the raw values and divide at the end: the total overflows first.",
+     "Give reduce its initial value 0, and write the arrow with an expression body.",
+     "Every path must return a value. Attempt 1 returned nothing."
+    ],
+    "verify": "Trace [1,2,3]: the terms are 1/6, 2/6 and 3/6, the total is 1, times 2 gives 2. Then trace [1.7e308, 1.7e308]: each term is about 4.25e307, the total is about 8.5e307, doubled gives 1.7e308, which is finite. Finally, scan the code for any keyword or call outside the allowed list.",
+    "source": "claude",
+    "model": "sonnet",
+    "tokens": 3672
+   },
+   "validation": {
+    "checkerVersion": "pure-subset.6f8f7a3e660b",
+    "at": 1794770827776,
+    "validUntil": 1802546827776,
+    "codeHash": "262fe439510ba583ef5c81272c16e3eb2cd3c4d1a58b7d91b4f3207b980f7212",
+    "assertionsHash": "1f7d5e1e2fede4db1fa905b884aa2a9d874b40f42c292936baf6487fdfe5335a",
+    "diffHash": "d41659a3ec9ba193f9eb4793b51865cb8d46b9f8b022386b7a59859474e87e64",
+    "reviewTaskId": "51a1be7021fe",
+    "reviewerVersion": "codex-cli 0.169.0",
+    "independent": {
+     "executed": 7,
+     "expected": 7
+    },
+    "blocked": {
+     "signature": "syntax:CallExpression:427b3b310b6e481b",
+     "failedAttempts": 2
+    },
+    "evidenceCount": 1,
+    "wideRequired": true,
+    "wide": {
+     "inputs": 1500,
+     "mismatches": 0
+    },
+    "history": [
+     {
+      "runId": "ff13b4f32e0afbc4082dd862137f2a6f",
+      "at": 1794770827776,
+      "codeHash": "262fe439510ba583ef5c81272c16e3eb2cd3c4d1a58b7d91b4f3207b980f7212",
+      "diffHash": "d41659a3ec9ba193f9eb4793b51865cb8d46b9f8b022386b7a59859474e87e64",
+      "reviewTaskId": "51a1be7021fe",
+      "checkerVersion": "pure-subset.6f8f7a3e660b",
+      "wideRequired": true,
+      "wide": {
+       "inputs": 1500,
+       "mismatches": 0
+      }
+     }
+    ]
+   },
+   "uses": 6,
+   "usesSucceeded": 2
+  }
+ ],
+ "attemptsByRun": {
+  "P1": {
+   "outcome": "checks-failed",
+   "teachingLog": [
+    {
+     "accepted": true,
+     "tokens": 4704,
+     "errorClass": "result:wrong-values",
+     "error": null
+    }
+   ],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;let sum=0;for(let i=0;i<n;i++){sum+=v[i]};return sum/n}\nmodule.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: VariableDeclaration (only a new const with a value) | Supervisor refused: verification refused: Unsupported statement: VariableDeclarat"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.min(Math.max(0,v.reduce((a,b)=>a+b,0)),Number.MAX_VALUE);return sum/n}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: MemberExpression | Supervisor refused: verification refused: Unsupported expression: MemberExpression | Supervisor refused: verificati"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.min(Math.max(0,v.reduce((a,b)=>a+b,0)),1.7976931348623157e308);return sum/n}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + 8.988465674311579e+307 - 1.7976931348623157e+308 | Supervisor refused: verification refused: "
+    },
+    {
+     "attempt": 4,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.min(Math.max(1.7976931348623157e+308,v.reduce((a,b)=>a+b,0)),1.7976931348623157e+308);return sum/n}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + 5.992310449541053e+307 - 2 | Supervisor refused: verification refused: Expected values to be "
+    },
+    {
+     "attempt": 5,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.min(Math.max(1.7976931348623157e+308,v.reduce((a,b)=>a+b,0)),1.7976931348623157e+308);return sum/n}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + 5.992310449541053e+307 - 2 | Supervisor refused: verification refused: Expected values to be "
+    },
+    {
+     "attempt": 6,
+     "shown": [
+      "blockage:result wrong-values average"
+     ],
+     "code": "",
+     "codexDecision": null,
+     "failure": "Invalid task"
+    }
+   ]
+  },
+  "P2": {
+   "outcome": "checks-failed",
+   "teachingLog": [
+    {
+     "accepted": true,
+     "tokens": 3656,
+     "errorClass": "syntax:CallExpression",
+     "error": null
+    },
+    {
+     "accepted": true,
+     "tokens": 3899,
+     "errorClass": "result:non-finite",
+     "error": null
+    }
+   ],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;let sum=0;for(let i=0;i<n;i++){sum+=v[i]}}module.exports={average}",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: VariableDeclaration (only a new const with a value) | Supervisor refused: verification refused: Unsupported statement: VariableDeclarat"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.max.apply(null,[...v.map((x)=>Math.abs(x))].reduce((a,b)=>a+b,0));return sum/n}module.exports={average}",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.max.apply(null,[...v.map((x)=>Math.abs(x))].reduce((a,b)=>a+b,0));return sum/n}module.exports={average}",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 4,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const m=Math.min(...v);const M=Math.max(...v);return v.reduce((a,b)=>a+b/2,0)*2}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 5,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const m=v.reduce((a,b)=>Math.min(a,b),v[0]);const M=v.reduce((a,b)=>Math.max(a,b),v[0]);return v.reduce((a,b)=>a+b/2,0)*2}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: 6 !== 2 | Supervisor refused: verification refused: Expected values to be strictly deep-equal: 10 !== 5 | Superviso"
+    },
+    {
+     "attempt": 6,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const m=v.reduce((a,b)=>Math.min(a,b),v[0]);const M=v.reduce((a,b)=>Math.max(a,b),v[0]);return v.reduce((a,b)=>a+b/2,0)*2}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: 6 !== 2 | Supervisor refused: verification refused: Expected values to be strictly deep-equal: 10 !== 5 | Superviso"
+    },
+    {
+     "attempt": 7,
+     "shown": [
+      "blockage:result non-finite average"
+     ],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const mn=v.reduce((a,b)=>Math.min(a,b),v[0]);const mx=v.reduce((a,b)=>Math.max(a,b),v[0]);return v.reduce((a,b)=>a+b/2/n,0)*2}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    }
+   ]
+  },
+  "P3": {
+   "outcome": "fixture-approved",
+   "teachingLog": [
+    {
+     "accepted": true,
+     "tokens": 3672,
+     "errorClass": "syntax:CallExpression",
+     "error": null
+    }
+   ],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;let sum=0;for(let i=0;i<n;i++){sum+=v[i]}}module.exports={average}",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: VariableDeclaration (only a new const with a value) | Supervisor refused: verification refused: Unsupported statement: VariableDeclarat"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.max(...v.map(x=>x))||0;return v.reduce((a,b)=>a+b,0)/n}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=Math.max(...v.map(x=>x))||0;return v.reduce((a,b)=>a+b,0)/n}module.exports={average};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 4,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=v.reduce((a,b)=>a+b/2,0);return Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308)}module.exports={average}",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: 6 !== 2 | Supervisor refused: verification refused: Expected values to be strictly deep-equal: 10 !== 5"
+    },
+    {
+     "attempt": 5,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function average(v){const n=v.length;if(n===0)return null;const sum=v.reduce((a,b)=>a+b/n/2,0);return Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308)}module.exports={average}",
+     "codexDecision": "GO",
+     "failure": null
+    }
+   ]
+  },
+  "E-meanabs-1-nomem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function meanAbs(v){if(v.length===0)return null;const sum=v.reduce((a,b)=>Math.abs(b)+a,0);const count=v.length;if(sum>Number.MAX_SAFE_INTEGER||sum<-Number.MAX_SAFE_INTEGER)return null;return sum/count}\nmodule.exports={meanAbs};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: MemberExpression | Supervisor refused: verification refused: Unsupported expression: MemberExpression | Supervisor refused: verificati"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function meanAbs(v){if(v.length===0)return null;const sum=v.reduce((a,b)=>Math.abs(b)+a,0);const count=v.length;if(sum>1.7976931348623157e308||sum<-1.7976931348623157e308)return null;return sum/count}\nmodule.exports={meanAbs};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + null - 1.7976931348623157e+308 | Supervisor refused: verification refused: Expected values to"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function meanAbs(v){if(v.length===0)return null;const sum=v.reduce((a,b)=>Math.abs(b)+a,0);const count=v.length;if(sum>1.7976931348623157e308||sum<-1.7976931348623157e308)return null;return sum/count}\nmodule.exports={meanAbs};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + null - 1.7976931348623157e+308 | Supervisor refused: verification refused: Expected values to"
+    },
+    {
+     "attempt": 4,
+     "shown": [],
+     "code": "function meanAbs(v){if(v.length===0)return null;const sum=v.reduce((a,b)=>Math.abs(b)+a,0);const count=v.length;if(sum>1.7976931348623157e308||sum<-1.7976931348623157e308)return null;return sum/count}\nmodule.exports={meanAbs};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + null - 1.7976931348623157e+308 | Supervisor refused: verification refused: Expected values to"
+    }
+   ]
+  },
+  "E-meanabs-1-mem": {
+   "outcome": "fixture-approved",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanAbs(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+Math.abs(b)/n/2,0);return Math.min(1.7976931348623157e308,Math.max(-1.7976931348623157e308,sum*2))}\nmodule.exports={meanAbs};",
+     "codexDecision": "GO",
+     "failure": null
+    }
+   ]
+  },
+  "E-midrange-1-nomem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function midRange(v){if(v.length===0)return null;const min=Math.min(v[0],v[1]);const max=Math.max(v[0],v[1]);for(let i=2;i<v.length;i++){const a=v[i];if(a<min)min=a;if(a>max)max=a}return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function midRange(v){if(v.length===0)return null;const min=Math.min(...v);const max=Math.max(...v);return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function midRange(v){if(v.length===0)return null;const min=arr.reduce((a,b)=>Math.min(a,b),v[0]);const max=arr.reduce((a,b)=>Math.max(a,b),v[0]);return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    },
+    {
+     "attempt": 4,
+     "shown": [],
+     "code": "function midRange(v){if(v.length===0)return null;const min=v.reduce((a,b)=>Math.min(a,b),v[0]);const max=v.reduce((a,b)=>Math.max(a,b),v[0]);return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    },
+    {
+     "attempt": 5,
+     "shown": [],
+     "code": "function midRange(v){if(v.length===0)return null;const min=v.reduce((a,b)=>Math.min(a,b),v[0]);const max=v.reduce((a,b)=>Math.max(a,b),v[0]);return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    },
+    {
+     "attempt": 6,
+     "shown": [],
+     "code": "function midRange(v){if(v.length===0)return null;const min=v.reduce((a,b)=>Math.min(a,b),v[0]);const max=v.reduce((a,b)=>Math.max(a,b),v[0]);return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    }
+   ]
+  },
+  "E-midrange-1-mem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=Math.min(...v);const max=Math.max(...v);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,(min+max)/2)),1.7976931348623157e308)}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 2,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=arr.reduce((m,x)=>Math.min(m,x),v[0]);const max=arr.reduce((m,x)=>Math.max(m,x),v[0]);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,(min+max)/2)),1.7976931348623157e308)}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    },
+    {
+     "attempt": 3,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=arr.reduce((m,x)=>Math.min(m,x),v[0]);const max=arr.reduce((m,x)=>Math.max(m,x),v[0]);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,(min+max)/2)),1.7976931348623157e308)}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    },
+    {
+     "attempt": 4,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=arr.reduce((m,x)=>Math.min(m,x),v[0]);const max=arr.reduce((m,x)=>Math.max(m,x),v[0]);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,(min+max)/2)),1.7976931348623157e308)}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    }
+   ]
+  },
+  "E-meanpos-1-nomem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=0;let count=0;if(v.length===0)return null;for(let i=0;i<v.length;i++){if(v[i]>0){sum+=v[i];count++;}}if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: VariableDeclaration (only a new const with a value) | Supervisor refused: verification refused: Unsupported statement: VariableDeclarat"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=0;const count=0;if(v.length===0)return null;for(let i=0;i<v.length;i++){if(v[i]>0){sum+=v[i];count++;}}if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=0;const count=0;if(v.length===0)return null;for(let i=0;i<v.length;i++){if(v[i]>0){sum+=v[i];count++;}}if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused"
+    },
+    {
+     "attempt": 4,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=0;const count=0;if(v.length===0)return null;for(let i=0;i<v.length;i++){if(v[i]>0){sum+=v[i];count++;}}if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused: Unsupported statement: ForStatement | Supervisor refused: verification refused"
+    }
+   ]
+  },
+  "E-meanpos-1-mem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+b/2/n/2,0);return Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308)}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -0.16666666666666674 - 2 | Supervisor refused: verification refused: Expected values to be st"
+    },
+    {
+     "attempt": 2,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+b/2/n/2,0);return Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308)}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -0.16666666666666674 - 2 | Supervisor refused: verification refused: Expected values to be st"
+    },
+    {
+     "attempt": 3,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;if(n>0&&v[0]<=0)return null;const sum=v.reduce((a,b)=>{if(b<=0)return a;return a+b/2/n/2},0);const result=Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308);return result}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported reduce callback | Supervisor refused: verification refused: Unsupported reduce callback | Supervisor refused: verification refused: Unsupported re"
+    },
+    {
+     "attempt": 4,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;if(n>0&&v[0]<=0)return null;const sum=v.reduce((a,b)=>{if(b<=0)return a;return a+b/2/n/2},0);const result=Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308);return result}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported reduce callback | Supervisor refused: verification refused: Unsupported reduce callback | Supervisor refused: verification refused: Unsupported re"
+    },
+    {
+     "attempt": 5,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;if(n>0&&v[0]<=0)return null;const sum=v.reduce((a,b)=>{if(b<=0)return a;return a+b/2/n/2},0);const result=Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308);return result}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported reduce callback | Supervisor refused: verification refused: Unsupported reduce callback | Supervisor refused: verification refused: Unsupported re"
+    }
+   ]
+  },
+  "E-meanabs-2-mem": {
+   "outcome": "fixture-approved",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanAbs(v){const n=v.length;if(n===0)return null;return Math.max(-1.7976931348623157e308,Math.min(1.7976931348623157e308,v.reduce((a,b)=>a+Math.abs(b)/n/2,0)*2))}\nmodule.exports={meanAbs};",
+     "codexDecision": "GO",
+     "failure": null
+    }
+   ]
+  },
+  "E-meanabs-2-nomem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function meanAbs(v){if(v.length===0)return null;const sum=Math.max(0,v.reduce((a,b)=>Math.abs(a)+Math.abs(b),0));return sum/v.length}\nmodule.exports={meanAbs};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function meanAbs(v){if(v.length===0)return null;const sum=Math.max(0,v.reduce((a,b)=>Math.abs(a)+Math.abs(b),0));return sum/v.length}\nmodule.exports={meanAbs};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function meanAbs(v){if(v.length===0)return null;const sum=Math.max(0,v.reduce((a,b)=>Math.abs(a)+Math.abs(b),0));return sum/v.length}module.exports={meanAbs};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    }
+   ]
+  },
+  "E-midrange-2-mem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=Math.min(...v);const max=Math.max(...v);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)),Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)))}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 2,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=arr.reduce((m,x)=>Math.min(m,x),v[0]);const max=arr.reduce((m,x)=>Math.max(m,x),v[0]);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)),Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)))}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    },
+    {
+     "attempt": 3,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=arr.reduce((m,x)=>Math.min(m,x),v[0]);const max=arr.reduce((m,x)=>Math.max(m,x),v[0]);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)),Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)))}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    },
+    {
+     "attempt": 4,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function midRange(v){const n=v.length;if(n===0)return null;const min=arr.reduce((m,x)=>Math.min(m,x),v[0]);const max=arr.reduce((m,x)=>Math.max(m,x),v[0]);return Math.min(Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)),Math.max(-1.7976931348623157e308,Math.max(-1.7976931348623157e308,min,max)))}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    }
+   ]
+  },
+  "E-midrange-2-nomem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function midRange(v){if(v.length===0)return null;let min=Math.min(v[0],v[1]);let max=Math.max(v[0],v[1]);for(let i=2;i<v.length;i++){min=Math.min(min,v[i]);max=Math.max(max,v[i])}return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported statement: VariableDeclaration (only a new const with a value) | Supervisor refused: verification refused: Unsupported statement: VariableDeclarat"
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function midRange(v){const min=Math.min(...v);const max=Math.max(...v);if(v.length===0)return null;return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function midRange(v){const min=v.reduce((a,b)=>Math.min(a,b),v[0]);const max=v.reduce((a,b)=>Math.max(a,b),v[0]);if(v.length===0)return null;return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Index out of range | Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    },
+    {
+     "attempt": 4,
+     "shown": [],
+     "code": "function midRange(v){const min=v.reduce((a,b)=>Math.min(a,b),v[0]);const max=v.reduce((a,b)=>Math.max(a,b),v[0]);if(v.length===0)return null;return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Index out of range | Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    },
+    {
+     "attempt": 5,
+     "shown": [],
+     "code": "function midRange(v){const min=v.reduce((a,b)=>Math.min(a,b),v[0]);const max=v.reduce((a,b)=>Math.max(a,b),v[0]);if(v.length===0)return null;return (min+max)/2}\nmodule.exports={midRange};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Index out of range | Supervisor refused: verification refused: Unsupported result | Supervisor refused: verification refused: Unsupported result"
+    }
+   ]
+  },
+  "E-meanpos-2-mem": {
+   "outcome": "stalled",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+b/2/n/2,0);return Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308)}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -0.16666666666666674 - 2 | Supervisor refused: verification refused: Expected values to be st"
+    },
+    {
+     "attempt": 2,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+b/2/n/2,0);return Math.min(Math.max(sum*2,-1.7976931348623157e308),1.7976931348623157e308)}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -0.16666666666666674 - 2 | Supervisor refused: verification refused: Expected values to be st"
+    },
+    {
+     "attempt": 3,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;if(n%2!==0)return v.reduce((a,b)=>a+b/2/n,0)*2*n;return v.reduce((a,b)=>a+b/4/n,n)*4}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -1.0000000000000004 - 2 | Supervisor refused: verification refused: Expected values to be str"
+    },
+    {
+     "attempt": 4,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+b/2/n,0)*2*n;return Math.min(Math.max(sum,-1.7976931348623157e308),1.7976931348623157e308)}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -1.0000000000000004 - 2 | Supervisor refused: verification refused: Expected values to be str"
+    },
+    {
+     "attempt": 5,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+b/2/n,0)*2*n;return Math.min(Math.max(sum,-1.7976931348623157e308),1.7976931348623157e308)}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -1.0000000000000004 - 2 | Supervisor refused: verification refused: Expected values to be str"
+    },
+    {
+     "attempt": 6,
+     "shown": [
+      "blockage:syntax callexpression average"
+     ],
+     "code": "function meanPositive(v){if(v.length===0)return null;const n=v.length;const sum=v.reduce((a,b)=>a+b/2/n,0)*2*n;return Math.min(Math.max(sum,-1.7976931348623157e308),1.7976931348623157e308)}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: + actual - expected + -1.0000000000000004 - 2 | Supervisor refused: verification refused: Expected values to be str"
+    }
+   ]
+  },
+  "E-meanpos-2-nomem": {
+   "outcome": "checks-failed",
+   "teachingLog": [],
+   "attempts": [
+    {
+     "attempt": 1,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=v.reduce((a,b)=>Math.max(a+b,-Infinity),0);const count=v.filter(x=>x>0).length;if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    },
+    {
+     "attempt": 2,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=v.reduce((a,b)=>Math.max(a+b,-Infinity),0);const count=v.length;for(let i=0;i<count;i++){if(v[i]>0)count=i+1}if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor refused: verification refused: Unknown identifier | Supervisor "
+    },
+    {
+     "attempt": 3,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=v.reduce((a,b)=>a+b,0);const count=v.filter(x=>x>0).length;if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification refused: Unsupported expression: CallExpression | Supervisor refused: verification r"
+    },
+    {
+     "attempt": 4,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=v.reduce((a,b)=>a+b,0);const count=v.reduce((m,x)=>x>0?m+1:m,0);if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: -0.5 !== 2 | Supervisor refused: verification refused: Expected values to be strictly deep-equal: -3 !== 8 | Superv"
+    },
+    {
+     "attempt": 5,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=v.reduce((a,b)=>Math.max(a,b)>0?a+b:a,0);const count=v.reduce((m,x)=>x>0?m+1:m,0);if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: -0.5 !== 2 | Supervisor refused: verification refused: Expected values to be strictly deep-equal: -1 !== 8 | Superv"
+    },
+    {
+     "attempt": 6,
+     "shown": [],
+     "code": "function meanPositive(v){const sum=v.reduce((a,b)=>Math.max(a,b)>0?a+b:a,0);const count=v.reduce((m,x)=>x>0?m+1:m,0);if(count===0)return null;return sum/count}\nmodule.exports={meanPositive};",
+     "codexDecision": null,
+     "failure": "Supervisor refused: verification refused: Expected values to be strictly deep-equal: -0.5 !== 2 | Supervisor refused: verification refused: Expected values to be strictly deep-equal: -1 !== 8 | Superv"
+    }
+   ]
+  }
+ }
+}

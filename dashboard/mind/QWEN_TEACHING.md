@@ -66,3 +66,27 @@ Cost of the valid runs: Claude teacher about 23k tokens in total, Codex 6,570 to
 - Stress evidence before promotion: when the family defines a wide check (`average` now has one, like `meanAbs`), the lesson is promoted only if it ran on at least 100 inputs with 0 mismatches. A check that cannot run blocks the promotion. The earlier B2 lesson was validated BEFORE this rule (its `wideCheck` was null), so it counts as unproven by the new rule.
 - Not done yet: splitting each teaching into a general principle and an `average`-specific application, and a comparative experiment over several unseen tasks with identical conditions with and without memory. Raw session files stay local (gitignored), so the published numbers cannot be replayed from GitHub.
 - Tests: 282 total, 280 pass, 0 fail, 2 skipped.
+
+## Second round (2026-11-15): stress proof in the lesson, general principle, controlled memory experiment
+
+Changes (tests: 293, 291 pass, 0 fail, 2 skipped, run before any AI call):
+- The stress proof (`wideRequired`, `wide {inputs, mismatches}`) is stored with each validation and each history item, locally and in Mind. `isCurrent`/`lessonCurrent` now require it (`wideCertified`); freshness (checker version, expiry) is separate (`isFresh`). A lesson validated before this rule (no `wideRequired`) is kept with its history, listed as `certified: false`, never recalled as a certified method and never retired for it; a later run that carries the proof merges into it and upgrades it. Fail closed: a family that defines a stress check (`TASKS[].stress`) requires it even if the harness forgot to configure one. The B2 lesson of the first round is exactly such a legacy lesson.
+- Each teaching now has a general `principle` (reusable, must not name the current function; 20-500 chars) and the existing `strategy` is its application to the current function. `principle` is optional in storage so old lessons keep working; a new teacher answer must carry it. The developer reads "General principle ... / Application to the problem it was taught on (adapt it, do not copy it)"; Mind recall matches on the principle too.
+
+Experiment `mem-e1` (`orchestrator/qwen-memory-experiment.manual.js`, data in `QWEN_MEMORY_EXPERIMENT_RESULTS.json`, per-attempt code included). Preparation: Claude may teach on `average` (3 runs: P1, P2 checks-failed, P3 approved by Codex, lesson certified with 1500 stress inputs, 0 mismatches). Comparison: 3 unseen tasks (`meanAbs`, `midRange`, `meanPositive`) x 2 independent trials x {no memory, memory}, interleaved, same model and conditions, NO Claude, Codex only after the independent checks pass. Rule fixed before the runs: gain only if memory approvals - no-memory approvals >= 2 of 6 and memory is not worse on any task.
+
+| | No memory | Memory |
+|---|---|---|
+| Approved (checks + Codex GO) | 0 / 6 | 2 / 6 |
+| `meanAbs` | 0 / 2 | 2 / 2 (first attempt each time) |
+| `midRange` | 0 / 2 | 0 / 2 |
+| `meanPositive` | 0 / 2 | 0 / 2 |
+| Mean attempts / seconds | 4.7 / 56 | 3.5 / 65 |
+| Qwen tokens | 22,577 | 30,618 |
+| Codex tokens (only after checks pass) | 0 | 13,377 (2 reviews) |
+| Claude tokens | 0 | 0 |
+| Peak llama.cpp RAM | 4,340 MB | 4,422 MB |
+
+Whole experiment: Claude 4 calls / 15,931 tokens (preparation only), Codex 3 reviews / 19,973 tokens, Qwen 70,919 tokens.
+
+Reading. The pre-registered rule is met (2 vs 0, nowhere worse), but the evidence is thin: n = 6 per arm, the whole difference comes from one task, and the difference is not statistically convincing (2/6 vs 0/6). What is real: on `meanAbs`, the closest analogue of the taught task, Qwen wrote a correct solution on its first attempt both times with the lesson, and the code shows the principle being adapted (divide each term before adding, absolute value added, clamp), whereas it stalled four times without it. On `midRange` and `meanPositive` the lesson was shown but there was no gain: the failures there are mostly checker limits (spread, other reduce shapes, counting) and a harder adaptation, not overflow. So: transfer to a near analogue is observed; transfer to a structurally different problem is not. No broader claim is made. Next: more trials and more varied tasks before any decision about real projects, which stay locked.
