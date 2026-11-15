@@ -59,7 +59,7 @@ function isEmbeddingModel(name) {
 let _status = { reachable: false, models: [], preferred: null, checkedAt: 0 };
 const STATUS_TTL_MS = 5 * 60 * 1000;
 
-function postJson(urlStr, body, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+function postJson(urlStr, body, { timeoutMs = DEFAULT_TIMEOUT_MS, signal } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     const data = JSON.stringify(body);
@@ -68,6 +68,7 @@ function postJson(urlStr, body, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
       port: u.port || 80,
       path: u.pathname,
       method: 'POST',
+      signal,
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
     }, (res) => {
       let buf = '';
@@ -222,7 +223,7 @@ async function chatOllama(messages, opts = {}) {
     },
   };
   if (format) body.format = format;
-  const r = await postJson(OLLAMA_BASE + '/api/chat', body, { timeoutMs: opts.timeoutMs });
+  const r = await postJson(OLLAMA_BASE + '/api/chat', body, { timeoutMs: opts.timeoutMs, signal: opts.signal });
   const msg = r && r.message || {};
   let content = msg.content;
   // Thinking-mode fallback: some models (gemma4 family) put their full

@@ -4,6 +4,8 @@
 // Extracted from orchestrator.js (behavior-preserving).
 
 const { spawn } = require('child_process');
+const { trackProcess } = require('./process-termination');
+const { prepareWindowsJob } = require('./windows-job');
 const fs = require('fs');
 const path = require('path');
 const { STATE } = require('./state');
@@ -137,10 +139,12 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, fixtureNoApiKeys = false, reviewerNoTools = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, fixtureNoApiKeys = false, reviewerNoTools = false, requireProcessTreeProof = false, _retryAttempt = 0 }) {
     if (fixtureNoApiKeys && (!['codex', 'claude'].includes(cli) || !readOnly || !noRetry || !noFallback || !compactContext || !(cloudTimeoutMs > 0))) throw new Error('Invalid fixture review safeguards');
     // Tool-free Codex reviewer for fictional fixtures only (see codex-no-tools.js).
     if (reviewerNoTools && (cli !== 'codex' || !fixtureNoApiKeys || !model || _retryAttempt !== 0)) throw new Error('Invalid tool-free reviewer request');
+    // The autopilot owns retries/handoff when process containment is required.
+    if (requireProcessTreeProof) { noFallback = true; noRetry = true; }
     cli = canonicalProviderId(cli);
     if (cli === 'qwen3-4b-docker') {
       throw new Error('Qwen3 Docker agent is disabled until its sandbox adapter is verified');
@@ -453,14 +457,19 @@ module.exports = {
 
     // Chemin avec espace + shell Windows : voir shellSafeCommand (gemini-runtime.js).
     const spawnArgs = useShell && process.platform === 'win32' ? finalArgs.map(winQuoteArg) : finalArgs;
-    const proc = (this._spawnImpl || spawn)(useShell ? shellSafeCommand(command) : command, spawnArgs, {
+    const job = requireProcessTreeProof && process.platform === 'win32'
+      ? prepareWindowsJob({ command: useShell ? shellSafeCommand(command) : command, args: spawnArgs,
+        cwd: cwd || process.cwd(), shell: useShell, storageDir: this.workspaceDir }) : null;
+    const proc = (this._spawnImpl || spawn)(job ? job.command : useShell ? shellSafeCommand(command) : command, job ? job.args : spawnArgs, {
       cwd: cwd || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv,
-      shell: useShell,
+      shell: job ? false : useShell,
+      windowsHide: !!job,
     });
 
     task._proc = proc;
+    trackProcess(task, proc, job);
     task.state = STATE.RUNNING;
     task.startedAt = Date.now();
 
@@ -689,6 +698,7 @@ module.exports = {
 
     proc.on('error', (err) => {
       if (reviewerDir) { try { fs.rmSync(reviewerDir, { recursive: true, force: true }); } catch (_) {} }
+      if (job) { try { fs.unlinkSync(job.requestFile); } catch (_) {} }
       if (task._settled) return;
       task._settled = true;
       task._proc = null;

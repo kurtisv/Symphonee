@@ -9,12 +9,23 @@ const crypto = require('crypto');
 const { STATE } = require('./state');
 const { classifyProviderError, isFailoverEligible } = require('./provider-health');
 const { isLocalProvider } = require('./local-providers');
+const { ensureTerminated } = require('./process-termination');
 
 // A task must have a bounded lifetime unless the caller supplies a longer
 // explicit timeout. Zero used to mean "forever", which left stalled workers
 // permanently active after a provider stopped producing output.
 const DEFAULT_TASK_TIMEOUT_MS = 15 * 60 * 1000;
 module.exports = {
+  // Do not equate cancelled/failed, null _proc, or parent exit with a dead tree.
+  async ensureTaskProcessTerminated(taskId) {
+    const task = this.tasks.get(taskId);
+    const result = await ensureTerminated(task, {
+      verify: this._processTerminationVerifier,
+      stop: task && task._kill ? () => task._kill() : null,
+    });
+    if (task) this._saveTasks();
+    return result;
+  },
   /** Persist all non-running tasks to disk */
   _saveTasks() {
     try {

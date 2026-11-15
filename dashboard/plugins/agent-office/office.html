@@ -5,23 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bureau des agents</title>
 <style>
-  :root { --bg:#16141f; --panel:#1e1b2b; --line:#322d47; --text:#e6e2f2; --dim:#948fb0; }
+  :root { --bg:#14141f; --panel:#201e2e; --line:#39354d; --text:#f1effa; --dim:#bbb6d0; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
     font: 13px/1.4 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
   #app { display: flex; height: 100%; }
-  #stage { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; position: relative; }
+  #stage { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; position: relative; background:radial-gradient(ellipse at center,#302d48,#171621 72%); }
   canvas { image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
   #mode { position: absolute; top: 10px; left: 12px; font-size: 11px; letter-spacing: .08em; padding: 2px 8px;
     border-radius: 10px; border: 1px solid var(--line); color: var(--dim); background: rgba(22,20,31,.8); }
   #mode.live { color: #7be0a0; border-color: #2f6b47; }
   #mode.demo { color: #f0c36a; border-color: #6b5527; }
-  #side { width: 290px; flex: none; border-left: 1px solid var(--line); background: var(--panel);
+  #mode.stale, #mode.error { color:#ffd874; border-color:#8e7029; }
+  #side { width: 360px; max-width:48%; flex: none; border-left: 1px solid var(--line); background: var(--panel);
     display: flex; flex-direction: column; }
   #side h1 { font-size: 13px; margin: 0; padding: 12px 14px 4px; font-weight: 600; }
   #counts { padding: 0 14px 10px; color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--line); }
-  #list { flex: 1; overflow-y: auto; padding: 6px; }
-  .row { padding: 8px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+  #list { flex: 1; overflow-y: auto; padding: 8px; }
+  .row { display:block; width:100%; text-align:left; color:inherit; font:inherit; padding: 10px; border-radius: 10px; cursor: pointer; border: 1px solid var(--line); background:#262438; margin:5px 0; }
+  .row:focus-visible { outline:2px solid #d5c1ff; outline-offset:2px; }
   .row:hover { background: rgba(255,255,255,.04); }
   .row.sel { border-color: #6f66a8; background: rgba(120,110,190,.12); }
   .row .top { display: flex; align-items: center; gap: 8px; }
@@ -33,26 +35,30 @@
   .chip.thinking { background: #2c3a5e; color: #a9c4ff; }
   .chip.waiting { background: #5c4a14; color: #ffd874; }
   .chip.idle { background: #33304a; color: #b3adcf; }
+  .chip.stopped, .chip.unknown { background: #39384a; color: #e1dced; }
   .chip.done { background: #24473a; color: #a4e8c2; }
   .chip.failed { background: #5a2330; color: #ff9db0; }
   .title { color: var(--dim); font-size: 12px; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2;
     -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-  .meta { color: #6f6a8c; font-size: 11px; margin-top: 2px; }
+  .meta { display:block; color: #bbb6d0; font-size: 11px; margin-top: 4px; overflow-wrap:anywhere; }
+  .section-title { color:#d5c1ff; font-size:11px; font-weight:700; letter-spacing:.04em; padding:12px 4px 4px; }
+  .provider { padding:8px 10px; margin:5px 0; border:1px solid var(--line); border-radius:10px; background:#262438; }
+  .provider strong { color:var(--text); }
   #empty { color: var(--dim); padding: 18px 14px; }
   #legend { border-top: 1px solid var(--line); padding: 8px 14px; color: var(--dim); font-size: 11px; }
-  @media (max-width: 720px) { #side { display: none; } }
+  @media (max-width: 720px) { html,body { overflow:auto; } #app { height:auto; min-height:100%; flex-direction:column; } #stage { flex:none; height:240px; min-height:0; overflow:hidden; } #side { width:100%; max-width:none; min-height:320px; border-left:0; border-top:1px solid var(--line); } #list { overflow:visible; } }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="stage">
-    <div id="mode">...</div>
-    <canvas id="c" width="480" height="270" aria-label="Bureau des agents"></canvas>
+    <div id="mode" role="status" aria-live="polite">Chargement...</div>
+    <canvas id="c" width="480" height="270" role="img" aria-label="Illustration des agents et boucles actives; details dans la liste"></canvas>
   </div>
   <aside id="side">
     <h1>Bureau des agents</h1>
-    <div id="counts"></div>
-    <div id="list"></div>
+    <div id="counts" aria-live="polite">Chargement des etats...</div>
+    <div id="list" aria-label="Etat des agents et des fournisseurs"></div>
     <div id="legend">Point jaune: attend une reponse. Points gris: reflechit. Coche: termine. Croix: echec.</div>
   </aside>
 </div>
@@ -77,7 +83,9 @@
     codex:       { body: '#2fa58a', hair: '#1d2b33', name: 'Codex' },
     gemini:      { body: '#4f7fe0', hair: '#2b2350', name: 'Gemini' },
     'gemini-api':{ body: '#4f7fe0', hair: '#2b2350', name: 'Gemini' },
-    qwen:        { body: '#8e63d6', hair: '#33204f', name: 'Qwen' },
+    qwen:        { body: '#8e63d6', hair: '#33204f', name: 'Qwen Code' },
+    'ollama-mind': { body: '#a47be0', hair: '#33204f', name: 'Qwen Mind local' },
+    'symphonee-qwen-mind': { body: '#a47be0', hair: '#33204f', name: 'Qwen Mind local' },
     grok:        { body: '#8d94a3', hair: '#22252b', name: 'Grok' },
     copilot:     { body: '#d268a8', hair: '#4a2238', name: 'Copilot' },
     jules:       { body: '#d9b84a', hair: '#4a3a16', name: 'Jules' },
@@ -85,9 +93,9 @@
   };
   var DEFAULT_PAL = { body: '#9aa0b5', hair: '#33354a', name: 'Agent' };
   var SKINS = ['#f1c9a5', '#d9a379', '#b97f56', '#8b5a3c'];
-  var STATE_LABEL = { working: 'travaille', thinking: 'reflechit', waiting: 'attend', idle: 'au repos', done: 'termine', failed: 'echec' };
+  var STATE_LABEL = { working: 'travaille', thinking: 'reflechit', waiting: 'attend', idle: 'au repos', done: 'termine', failed: 'echec', stopped: 'arrete', unknown: 'etat inconnu' };
 
-  function palFor(cli) { return CLI_PAL[String(cli || '').toLowerCase()] || DEFAULT_PAL; }
+  function palFor(cli) { return CLI_PAL[String(cli || '').toLowerCase()] || { body: DEFAULT_PAL.body, hair: DEFAULT_PAL.hair, name: String(cli || 'Agent').slice(0, 50) }; }
   function hash(s) { var h = 2166136261; s = String(s); for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 
   // ---------------------------------------------------------------------
@@ -97,14 +105,18 @@
   var WAIT_RE = /(do you want to|would you like to|\(y\/n\)|\[y\/n\]|allow this|approve|waiting for (your )?(input|approval)|press enter to)/i;
 
   function taskTitle(t) {
-    var raw = String(t._originalPrompt || t.prompt || '').replace(/\s+/g, ' ').trim();
-    return raw.length > 140 ? raw.slice(0, 139) + '...' : raw;
+    // Prompts can contain secrets and private context. Show structured task fields only.
+    var parts = [t.taskClass && ('Type: ' + String(t.taskClass).slice(0, 40)), t.selectedRole && ('Role: ' + String(t.selectedRole).slice(0, 40)),
+      t.from && ('Origine: ' + String(t.from).slice(0, 60)), t.space && ('Espace: ' + String(t.space).slice(0, 60)), t.id && ('Tache: ' + String(t.id).slice(0, 16))].filter(Boolean);
+    return parts.join(' · ') || 'Tache sans description publique';
   }
 
   function taskState(t, hb, now) {
     var s = String(t.state || '').toLowerCase();
     if (s === 'completed' || s === 'done' || s === 'success') return 'done';
     if (s === 'failed' || s === 'error' || s === 'timeout' || s === 'timed_out' || s === 'cancelled' || s === 'canceled' || s === 'killed') return 'failed';
+    if (s === 'pending' || s === 'queued' || s === 'waiting') return 'waiting';
+    if (s !== 'running') return 'unknown';
     if (hb && typeof hb.lastActivity === 'number' && now - hb.lastActivity > THINK_AFTER_MS) return 'thinking';
     return 'working';
   }
@@ -112,10 +124,28 @@
   // tasks: /api/orchestrator/tasks, heartbeats: /api/orchestrator/heartbeats,
   // terms: /api/terminals/diag .terminals, aiByTerm: detect-ai .byTerm,
   // termActivity: { termId: { lastChange, tail } }
-  function buildAgents(tasks, heartbeats, terms, aiByTerm, termActivity, now) {
+  function buildAgents(tasks, heartbeats, terms, aiByTerm, termActivity, now, loops, activity) {
     var out = [];
     var hbById = {};
     (heartbeats || []).forEach(function (h) { if (h && h.taskId) hbById[h.taskId] = h; });
+    var absorbed = {};
+    var loopList = loops ? (loops.loops || []).concat(loops.services || []) : [];
+    loopList.forEach(function (l) {
+      if (!l || !l.id) return;
+      var task = l.taskId && (tasks || []).find(function (t) { return t && t.id === l.taskId; });
+      if (task && l.status === 'working') absorbed[task.id] = true;
+      var actualCli = task && (task.cli || task.selectedProvider);
+      var loopState = l.status === 'working' ? 'working' : l.status === 'resting' ? 'idle' : l.status === 'error' ? 'failed' : 'stopped';
+      if (l.status === 'working' && l.taskId && (!task || !/^(running|pending)$/i.test(String(task.state || '')))) loopState = 'unknown';
+      else if (l.status === 'working' && task && String(task.state || '').toLowerCase() === 'pending') loopState = 'waiting';
+      out.push({ id: 'loop:' + l.id, kind: 'loop', cli: String(actualCli || (l.status === 'working' ? l.cli : '') || 'script'),
+        name: String(l.label || l.id), model: task && task.model || '', title: String(l.detail || l.statusLabel || ''),
+        state: loopState, since: now, endedAt: null, statusLabel: loopState === 'unknown' || loopState === 'waiting' ? '' : l.statusLabel || '' });
+    });
+    if (activity && Number.isFinite(activity.activeCount) && activity.activeCount > 0) {
+      out.push({ id: 'brain:direct-local-ask', kind: 'brain', cli: 'ollama-mind', model: '', name: 'Cerveau local',
+        title: activity.activeCount + ' demande(s) directe(s) en cours', state: 'working', since: activity.startedAt || now, endedAt: null, locality: 'local' });
+    }
 
     (terms || []).forEach(function (t) {
       if (!t || !t.id) return;
@@ -124,10 +154,10 @@
       if (typeof cli === 'object') cli = cli.cli || cli.name || 'agent';
       var act = (termActivity && termActivity[t.id]) || {};
       var silent = act.lastChange ? now - act.lastChange : 0;
-      var state = 'working';
-      if (act.tail && WAIT_RE.test(act.tail)) state = 'waiting';
-      else if (silent > IDLE_AFTER_MS) state = 'idle';
-      else if (silent > THINK_AFTER_MS) state = 'thinking';
+      var state = act.lastChange && !act.failed ? 'working' : 'unknown';
+      if (state !== 'unknown' && act.tail && WAIT_RE.test(act.tail)) state = 'waiting';
+      else if (state !== 'unknown' && silent > IDLE_AFTER_MS) state = 'idle';
+      else if (state !== 'unknown' && silent > THINK_AFTER_MS) state = 'thinking';
       out.push({
         id: 'term:' + t.id, kind: 'terminal', cli: String(cli), model: '',
         title: t.label ? 'Terminal ' + t.label : (t.id === 'main' ? 'Terminal principal' : 'Terminal ' + t.id),
@@ -136,14 +166,14 @@
     });
 
     (tasks || []).forEach(function (t) {
-      if (!t || !t.id) return;
+      if (!t || !t.id || absorbed[t.id]) return;
       var st = taskState(t, hbById[t.id], now);
       var ended = t.completedAt || null;
       if (st === 'done' && (!ended || now - ended > DONE_LINGER_MS)) return;
       if (st === 'failed' && (!ended || now - ended > FAILED_LINGER_MS)) return;
       out.push({
         id: 'task:' + t.id, kind: 'task', cli: String(t.cli || t.selectedProvider || 'agent'),
-        model: String(t.model || ''), title: taskTitle(t), state: st,
+        model: String(t.model || ''), title: taskTitle(t), state: st, locality: t.execution && t.execution.locality || t.locality || '',
         since: t.startedAt || t.createdAt || now, endedAt: ended
       });
     });
@@ -156,9 +186,60 @@
   var termActivity = {};
   var aiByTerm = {};
   var lastDetect = 0;
+  var detectPartial = true;
+  var auxiliary = { providers: null, brain: null, loops: null, lastAttempt: 0, loopsAttempt: 0, checkedAt: 0, stale: true, loopsStale: true };
+  var lastSuccessAt = 0;
+  var liveSourcesPartial = false;
 
   function getJson(url) {
-    return fetch(url, { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error(url + ' -> ' + r.status); return r.json(); });
+    var controller = new AbortController(), timer = setTimeout(function () { controller.abort(); }, 8000);
+    return fetch(url, { cache: 'no-store', signal: controller.signal }).then(function (r) { if (!r.ok) throw new Error(url + ' -> ' + r.status); return r.json(); }).finally(function () { clearTimeout(timer); });
+  }
+
+  function refreshAuxiliary(now) {
+    var pending = [];
+    if (now - auxiliary.lastAttempt >= 30000) {
+      auxiliary.lastAttempt = now;
+      pending.push(Promise.allSettled([getJson('/api/orchestrator/providers'), getJson('/api/symphonee/status')]).then(function (r) {
+        var keys = ['providers', 'brain'], allOk = true;
+        r.forEach(function (entry, i) { if (entry.status === 'fulfilled') auxiliary[keys[i]] = entry.value; else { auxiliary[keys[i]] = null; allOk = false; } });
+        auxiliary.checkedAt = Date.now(); auxiliary.stale = !allOk;
+      }));
+    }
+    if (now - auxiliary.loopsAttempt >= 9000) {
+      auxiliary.loopsAttempt = now;
+      pending.push(getJson('/api/automation/loops').then(function (data) { auxiliary.loops = data; auxiliary.loopsStale = false; }, function () { auxiliary.loops = null; auxiliary.loopsStale = true; }));
+    }
+    return Promise.all(pending);
+  }
+
+  function providerRows(providers, brain) {
+    var rows = [], entries = providers && typeof providers === 'object' ? Object.entries(providers) : [];
+    entries.forEach(function (pair) {
+      var id = pair[0], p = pair[1] || {};
+      if (id === 'symphonee-qwen-mind' || id === 'ollama-mind') return;
+      var state = p.enabled === false ? 'desactive' : p.available === false ? 'indisponible' : 'configure - disponibilite a verifier';
+      rows.push({ id: id, name: palFor(id).name, state: state, locality: p.locality === 'local' ? 'local' : p.locality === 'cloud' ? 'cloud' : '' });
+    });
+    var setup = brain && brain.setup, model = brain && (brain.reasoningModel || brain.triageModel);
+    rows.unshift({ id: 'ollama-mind', name: model && /^qwen/i.test(model) ? 'Qwen / cerveau local' : 'Cerveau local', state: !setup ? 'etat indisponible' : setup.ready ? 'service pret' : 'service indisponible', locality: 'local', model: model || '' });
+    return rows;
+  }
+
+  function mergeTasks(recent, status) {
+    var all = new Map();
+    (Array.isArray(recent) ? recent : []).forEach(function (t) { if (t && t.id) all.set(t.id, t); });
+    if (status && Array.isArray(status.tasks)) status.tasks.forEach(function (t) {
+      if (!t || !t.id) return;
+      var earlier = all.get(t.id);
+      // The endpoints are fetched in parallel; a task can finish between them.
+      // Neither response has an ordering token, so avoid claiming it is active
+      // until a later poll resolves the conflict.
+      if (earlier && /^(completed|done|success|failed|error|timeout|timed_out|cancelled|canceled|killed)$/i.test(String(earlier.state || ''))) {
+        all.set(t.id, Object.assign({}, earlier, { state: 'unknown' }));
+      } else all.set(t.id, t);
+    });
+    return Array.from(all.values());
   }
 
   function pollLive() {
@@ -167,16 +248,21 @@
     if (now - lastDetect > 30000) {
       lastDetect = now;
       // Reads the Windows process tree: keep it rare.
-      detect = fetch('/api/term/detect-ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (d) { if (d && d.byTerm) aiByTerm = d.byTerm; })
-        .catch(function () { /* keep the previous detection */ });
+      var detector = new AbortController(), timer = setTimeout(function () { detector.abort(); }, 8000);
+      detect = fetch('/api/term/detect-ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: detector.signal })
+        .then(function (r) { if (!r.ok) throw new Error('detection indisponible'); return r.json(); })
+        .then(function (d) { if (!d || !d.byTerm) throw new Error('detection incomplete'); aiByTerm = d.byTerm; detectPartial = false; })
+        .catch(function () { aiByTerm = {}; detectPartial = true; })
+        .finally(function () { clearTimeout(timer); });
     }
-    return detect.then(function () {
+    return Promise.all([detect, refreshAuxiliary(now)]).then(function () {
+      liveSourcesPartial = detectPartial;
       return Promise.all([
         getJson('/api/orchestrator/tasks'),
-        getJson('/api/orchestrator/heartbeats').catch(function () { return []; }),
-        getJson('/api/terminals/diag').catch(function () { return { terminals: [] }; })
+        getJson('/api/orchestrator/heartbeats').catch(function () { liveSourcesPartial = true; return []; }),
+        getJson('/api/terminals/diag').catch(function () { liveSourcesPartial = true; return { terminals: [] }; }),
+        getJson('/api/symphonee/activity').catch(function () { liveSourcesPartial = true; return null; }),
+        getJson('/api/orchestrator/status').catch(function () { liveSourcesPartial = true; return null; })
       ]);
     }).then(function (res) {
       var terms = (res[2] && res[2].terminals) || [];
@@ -189,9 +275,10 @@
           var sig = total + ':' + tail.length + ':' + hash(tail);
           if (sig !== a.sig) { a.sig = sig; a.lastChange = Date.now(); }
           a.tail = tail.slice(-600);
-        }).catch(function () {});
+          a.failed = false;
+        }).catch(function () { liveSourcesPartial = true; var a = termActivity[t.id] || (termActivity[t.id] = {}); a.failed = true; });
       })).then(function () {
-        return buildAgents(res[0], res[1], terms, aiByTerm, termActivity, Date.now());
+        return buildAgents(mergeTasks(res[0], res[4]), res[1], terms, aiByTerm, termActivity, Date.now(), auxiliary.loops, res[3]);
       });
     });
   }
@@ -453,23 +540,32 @@
     return s + ' s';
   }
   function renderRoster(list) {
-    var now = Date.now(), order = { waiting: 0, working: 1, thinking: 2, failed: 3, idle: 4, done: 5 };
+    var now = Date.now(), order = { waiting: 0, working: 1, thinking: 2, failed: 3, idle: 4, stopped: 5, unknown: 6, done: 7 };
     var sorted = list.slice().sort(function (a, b) { return (order[a.state] - order[b.state]) || (a.since - b.since); });
     var active = list.filter(function (a) { return a.state === 'working' || a.state === 'thinking' || a.state === 'waiting'; }).length;
     var waiting = list.filter(function (a) { return a.state === 'waiting'; }).length;
     document.getElementById('counts').textContent = active + ' actif(s)' + (waiting ? ', ' + waiting + ' en attente de reponse' : '') +
       (overflow ? ', ' + overflow + ' sans bureau' : '');
     var el = document.getElementById('list');
-    if (!sorted.length) { el.innerHTML = '<div id="empty">Aucun agent au bureau pour le moment.</div>'; return; }
-    el.innerHTML = sorted.map(function (a) {
+    var focused = document.activeElement && el.contains(document.activeElement) ? document.activeElement.getAttribute('data-id') : null;
+    var agentHtml = sorted.length ? sorted.map(function (a) {
       var pal = palFor(a.cli), end = a.endedAt || now;
-      var when = (a.state === 'done' || a.state === 'failed') ? 'duree ' + dur(end - a.since) : 'depuis ' + dur(now - a.since);
-      return '<div class="row' + (a.id === selectedId ? ' sel' : '') + '" data-id="' + esc(a.id) + '">' +
-        '<div class="top"><span class="sw" style="background:' + pal.body + '"></span><span class="name">' + esc(pal.name) + '</span>' +
+      var when = a.kind === 'loop' ? 'boucle automatique' : (a.state === 'done' || a.state === 'failed') ? 'duree ' + dur(end - a.since) : 'depuis ' + dur(now - a.since);
+      return '<button type="button" class="row' + (a.id === selectedId ? ' sel' : '') + '" aria-pressed="' + (a.id === selectedId) + '" data-id="' + esc(a.id) + '">' +
+        '<span class="top"><span class="sw" style="background:' + pal.body + '"></span><span class="name">' + esc(a.name || pal.name) + '</span>' +
         '<span class="model">' + esc(a.model || (a.kind === 'terminal' ? 'terminal' : '')) + '</span>' +
-        '<span class="chip ' + a.state + '">' + STATE_LABEL[a.state] + '</span></div>' +
-        '<div class="title">' + esc(a.title) + '</div><div class="meta">' + when + '</div></div>';
+        '<span class="chip ' + esc(a.state) + '">' + esc(a.statusLabel || STATE_LABEL[a.state] || 'inconnu') + '</span></span>' +
+        '<span class="title">' + esc(a.title) + '</span><span class="meta">' + esc(when + (a.locality ? ' · ' + a.locality : '')) + '</span></button>';
+    }).join('') : '<div id="empty">Aucune tache ou boucle visible pour le moment.</div>';
+    var providers = providerRows(auxiliary.providers, auxiliary.brain);
+    var providerHtml = providers.map(function (p) {
+      return '<div class="provider"><strong>' + esc(p.name) + '</strong><div class="meta">' + esc([p.model, p.locality, p.state].filter(Boolean).join(' · ')) + '</div></div>';
     }).join('');
+    el.innerHTML = '<div class="section-title">ACTIVITE</div>' + agentHtml + '<div class="section-title">AGENTS CONFIGURES</div>' + providerHtml;
+    if (focused) {
+      var next = Array.from(el.querySelectorAll('[data-id]')).find(function (e) { return e.getAttribute('data-id') === focused; });
+      if (next) next.focus({ preventScroll: true });
+    }
   }
   document.getElementById('list').addEventListener('click', function (e) {
     var row = e.target.closest ? e.target.closest('.row') : null;
@@ -487,7 +583,7 @@
     mode = m;
     var el = document.getElementById('mode');
     el.className = m;
-    el.textContent = m === 'live' ? 'EN DIRECT' : 'DEMO' + (detail ? ' - ' + detail : '');
+    el.textContent = m === 'live' ? 'EN DIRECT' : m === 'demo' ? 'DEMO' + (detail ? ' - ' + detail : '') : (m === 'stale' ? 'ETAT PARTIEL' : 'HORS LIGNE') + (detail ? ' - ' + detail : '');
   }
 
   var forcedDemo = /[?&]demo=1/.test(location.search) || location.protocol === 'file:';
@@ -498,13 +594,12 @@
     // Live is retried on every tick, so the page recovers by itself when the
     // server comes back. Simulated data is never shown without the DEMO badge.
     var src = forcedDemo ? pollDemo() : pollLive().then(function (list) {
-      failures = 0; setMode('live'); return list;
+      failures = 0; lastSuccessAt = Date.now(); setMode(auxiliary.stale || auxiliary.loopsStale || liveSourcesPartial ? 'stale' : 'live', auxiliary.stale || auxiliary.loopsStale || liveSourcesPartial ? 'certaines sources indisponibles' : ''); return list;
     }, function (err) {
       failures++;
       if (window.console) console.warn('[agent-office] poll failed:', err && err.message);
-      if (failures < 3) return lastList;
-      setMode('demo', 'serveur injoignable');
-      return pollDemo();
+      setMode(lastSuccessAt ? 'stale' : 'error', lastSuccessAt ? 'derniere lecture ' + new Date(lastSuccessAt).toLocaleTimeString() : 'serveur injoignable');
+      return lastList;
     });
     src.then(function (list) {
       lastList = list; syncActors(list); renderRoster(list);
@@ -516,7 +611,9 @@
 
   function fit() {
     var st = document.getElementById('stage');
-    var s = Math.max(1, Math.floor(Math.min(st.clientWidth / W, st.clientHeight / H)));
+    var s = Math.min(st.clientWidth / W, st.clientHeight / H);
+    if (s >= 1) s = Math.floor(s);
+    s = Math.max(0.2, s);
     cv.style.width = (W * s) + 'px'; cv.style.height = (H * s) + 'px';
   }
   window.addEventListener('resize', fit);
@@ -529,7 +626,7 @@
   }
 
   // Exposed for tests only.
-  window.__agentOffice = { buildAgents: buildAgents, taskState: taskState, taskTitle: taskTitle };
+  window.__agentOffice = { buildAgents: buildAgents, taskState: taskState, taskTitle: taskTitle, providerRows: providerRows, mergeTasks: mergeTasks };
 
   fit(); poll(); setInterval(poll, 3000); setInterval(function () { renderRoster(lastList); }, 1000);
   requestAnimationFrame(frame);

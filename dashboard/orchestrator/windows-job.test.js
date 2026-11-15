@@ -1,0 +1,54 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { prepareWindowsJob, readProof } = require('./windows-job');
+const { trackProcess, ensureTerminated } = require('./process-termination');
+
+test('Windows Job waits for surviving native grandchild and preserves streams/exit code', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+  const root = path.resolve(__dirname, '../../.ai-workspace');
+  fs.mkdirSync(root, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, 'job-test-'));
+  const child = path.join(dir, 'child.js');
+  const parent = path.join(dir, 'parent.js');
+  const marker = path.join(dir, 'grandchild-finished');
+  fs.writeFileSync(child, `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'done'), 250);`);
+  fs.writeFileSync(parent, `const p=require('child_process').spawn(process.execPath,[${JSON.stringify(child)}],{stdio:'ignore',detached:true});p.unref();process.stdout.write('stream-ok');process.exitCode=7;`);
+  const job = prepareWindowsJob({ command: process.execPath, args: [parent], cwd: dir, shell: false, storageDir: dir });
+  const p = spawn(job.command, job.args, { stdio: ['pipe','pipe','pipe'], windowsHide: true });
+  const task = { id: 'controlled-native-job' }; trackProcess(task,p,job);
+  let out='', err=''; p.stdout.on('data',x=>out+=x); p.stderr.on('data',x=>err+=x); p.stdin.end();
+  const code = await new Promise((resolve,reject)=>{p.once('close',resolve);p.once('error',reject);});
+  assert.equal(code,7,err); assert.equal(out,'stream-ok');
+  assert.equal(fs.readFileSync(marker,'utf8'),'done');
+  assert.equal(readProof(job,p.pid).terminated,true);
+  assert.equal((await ensureTerminated(task)).proven,true);
+});
+test('Windows shell job preserves stdin and quoting with spaces', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+  const root = path.resolve(__dirname, '../../.ai-workspace'); fs.mkdirSync(root,{recursive:true});
+  const dir=fs.mkdtempSync(path.join(root,'job-shell-'));
+  const script=path.join(dir,'input check.js');
+  fs.writeFileSync(script,"let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(s+process.argv[2]));");
+  const {quote}=require('./windows-job');
+  const job=prepareWindowsJob({command:quote(process.execPath),args:[quote(script),quote('space argument')],cwd:dir,shell:true,storageDir:dir});
+  const p=spawn(job.command,job.args,{stdio:['pipe','pipe','pipe'],windowsHide:true});
+  let out='',err='';p.stdout.on('data',x=>out+=x);p.stderr.on('data',x=>err+=x);p.stdin.end('stdin:');
+  const code=await new Promise((resolve,reject)=>{p.once('close',resolve);p.once('error',reject);});
+  assert.equal(code,0,err);assert.equal(out,'stdin:space argument');assert.equal(readProof(job,p.pid).terminated,true);
+});
+test('killing the owned Windows wrapper stops its native descendants but cannot manufacture completion proof', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+  const root=path.resolve(__dirname,'../../.ai-workspace');fs.mkdirSync(root,{recursive:true});
+  const dir=fs.mkdtempSync(path.join(root,'job-kill-'));
+  const script=path.join(dir,'wait.js');
+  fs.writeFileSync(script,"process.stdout.write('ready:'+process.pid+'\\n');setInterval(()=>{},1000);");
+  const job=prepareWindowsJob({command:process.execPath,args:[script],cwd:dir,shell:false,storageDir:dir});
+  const p=spawn(job.command,job.args,{stdio:['pipe','pipe','pipe'],windowsHide:true});
+  const task={id:'controlled-kill'};trackProcess(task,p,job);p.stdin.end();
+  let childPid=null,out='';p.stdout.on('data',chunk=>{out+=chunk;const m=out.match(/ready:(\d+)/);if(m&&!childPid){childPid=Number(m[1]);p.kill();}});
+  p.stderr.resume();
+  await new Promise((resolve,reject)=>{p.once('close',resolve);p.once('error',reject);});
+  assert.ok(childPid);assert.throws(()=>process.kill(childPid,0));
+  assert.equal(readProof(job,p.pid),null);assert.equal((await ensureTerminated(task)).proven,false);
+});
