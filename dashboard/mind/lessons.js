@@ -249,6 +249,9 @@ function validationProblems(ev, checkerVersion, key) {
   if (!ev.blocked || !isStr(ev.blocked.signature, 3, 600) || !Number.isInteger(ev.blocked.failedAttempts) || ev.blocked.failedAttempts < 2) p.push('no repeated blockage recorded');
   if (ev.afterTeaching !== true) p.push('the validating attempt did not come after the teaching');
   if (!isStr(ev.family, 2, 40)) p.push('family missing');
+  // Stress evidence: when the family defines a wide check it is mandatory and must show zero mismatches on enough inputs.
+  if (ev.wideRequired === true && !ev.wide) p.push('wide check missing');
+  if (ev.wide && (!Number.isInteger(ev.wide.inputs) || ev.wide.inputs < 100 || ev.wide.mismatches !== 0)) p.push('wide check not passed');
   return p;
 }
 function findEntry(data, scope, key) { return data.lessons.find((x) => x.scope === scope && x.key === key); }

@@ -59,3 +59,10 @@ Cost of the valid runs: Claude teacher about 23k tokens in total, Codex 6,570 to
 - NOT shown: that memory improves results. On the unseen analogous task, with and without memory, 0 of the valid runs succeeded; memory changed the shape of the attempts but not the outcome. n is 1 to 3 per arm, so there are no rates and the single success (B2) is not evidence of causality.
 - A lesson validated on `average` is literal (its traces name `average`); transfer to `meanAbs` needs more general lessons or more teachings.
 - Fixture only. Production Mind, real repos and autopilot are untouched; the real-project lock is unchanged. A GO here is not authorization for autonomous development.
+
+## Follow-up after the independent review (2026-11-15, no new AI calls)
+
+- Mind write is now a separate step after local validation. If it fails, the lesson is recorded as pending (`state.mindSyncPending`), the log says "VALIDATED locally, Mind write FAILED", never "not validated"; `syncPendingMind()` retries (also before each recall) and the Mind upsert is idempotent per run id, so no duplicates.
+- Stress evidence before promotion: when the family defines a wide check (`average` now has one, like `meanAbs`), the lesson is promoted only if it ran on at least 100 inputs with 0 mismatches. A check that cannot run blocks the promotion. The earlier B2 lesson was validated BEFORE this rule (its `wideCheck` was null), so it counts as unproven by the new rule.
+- Not done yet: splitting each teaching into a general principle and an `average`-specific application, and a comparative experiment over several unseen tasks with identical conditions with and without memory. Raw session files stay local (gitignored), so the published numbers cannot be replayed from GitHub.
+- Tests: 282 total, 280 pass, 0 fail, 2 skipped.

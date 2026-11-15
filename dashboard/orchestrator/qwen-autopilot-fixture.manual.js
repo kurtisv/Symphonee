@@ -44,6 +44,18 @@ function makeFixture(temp) {
   return { root, git };
 }
 
+// Stress check of the final code against a host reference, in an offline container (used by the loop before a lesson is promoted, and by the report).
+function wideCheckOf(code) {
+  const argsList = TASK.stress.args();
+    const run = cp.spawnSync('docker', ['run', '--rm', '-i', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--user', '65534:65534', '--memory', '256m', '--pids-limit', '32', '--pull', 'never', '--entrypoint', 'node',
+      'ghcr.io/qwenlm/qwen-code:0.27.3', '-e', "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const {code,fn,list}=JSON.parse(d);const vm=require('vm');const m={exports:{}};vm.runInNewContext(code,{module:m,exports:m.exports},{timeout:3000});console.log(JSON.stringify(list.map(a=>{try{const v=vm.runInNewContext('f(...a)',{f:m.exports[fn],a},{timeout:1000});return v===undefined?'undefined':v}catch(e){return 'throws'}})))})"],
+      { input: JSON.stringify({ code, fn: TASK.fn, list: argsList }), encoding: 'utf8', timeout: 60000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    let got = null; try { got = JSON.parse(String(run.stdout).trim().split('\n').pop()); } catch (_) {}
+    const close = (w, g) => JSON.stringify(w) === JSON.stringify(g) || (TASK.stress.tolerance && typeof w === 'number' && typeof g === 'number' && Math.abs(w - g) <= TASK.stress.tolerance * Math.max(1, Math.abs(w)));
+    const wrong = got ? argsList.map((a, i) => ({ a, want: TASK.stress.ref(a), got: got[i] })).filter(x => !close(x.want, x.got)) : null;
+    return { note: 'offline container, host reference', inputs: argsList.length, mismatches: wrong ? wrong.length : 'container run failed', firstMismatches: wrong ? wrong.slice(0, 3) : null };
+}
+
 async function main() {
   const runId = crypto.randomBytes(16).toString('hex');
   const before = { containers: list(['ps', '-a', '--format', '{{.Names}}']), networks: list(['network', 'ls', '--format', '{{.Name}}']), codex: codexPids() };
@@ -70,7 +82,7 @@ async function main() {
       def: { limits: { repairs: 5 }, stepMinutes: 15 },
       qwenFixture: { capability: sup.QWEN_DEVELOPER_FIXTURE, root, files: [NAME, 'test.js'], editable: [NAME], assertions: CASES, requirements: REQUIREMENTS, reviewerModel: REVIEWER_MODEL, developerModel: DEVELOPER_MODEL,
         // Persistent across runs: this is where the developer's verified lessons accumulate.
-        name: TASK.id + '-subset3', lessonsRoot: LESSONS_ROOT, family: TASK.id, teacher: { enabled: TEACHER }, ...(USE_MIND ? { mind } : {}) } });
+        name: TASK.id + '-subset3', lessonsRoot: LESSONS_ROOT, family: TASK.id, teacher: { enabled: TEACHER }, ...(TASK.stress ? { wideCheck: (code) => wideCheckOf(code) } : {}), ...(USE_MIND ? { mind } : {}) } });
     pilot.startFixtureTask({ title: 'Fictional ' + TASK.fn + ' function', objective: `Implement ${TASK.fn}(${TASK.params}) in ${NAME} so that it meets the requirements.` });
     // A killed parent skips cleanup (observed 2026-11-15): keep the run inside its caller's limit.
     const deadline = Date.now() + Math.min(80, Math.max(3, Number(process.env.QWEN_FIXTURE_DEADLINE_MIN) || 80)) * 60000; let lastEvent = 0, tickNo = 0; const startedMs = Date.now();
@@ -103,14 +115,7 @@ async function main() {
       if (TASK.stress) {
         const { reconstructProposal } = require('./qwen-git-snapshot');
         const code = Buffer.from(reconstructProposal(root, [NAME, 'test.js'], approved.diff, [NAME]).files.find(f => f.path === NAME).content, 'base64').toString('utf8');
-        const argsList = TASK.stress.args();
-        const run = cp.spawnSync('docker', ['run', '--rm', '-i', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--user', '65534:65534', '--memory', '256m', '--pids-limit', '32', '--pull', 'never', '--entrypoint', 'node',
-          'ghcr.io/qwenlm/qwen-code:0.27.3', '-e', "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const {code,fn,list}=JSON.parse(d);const vm=require('vm');const m={exports:{}};vm.runInNewContext(code,{module:m,exports:m.exports},{timeout:3000});console.log(JSON.stringify(list.map(a=>{try{const v=vm.runInNewContext('f(...a)',{f:m.exports[fn],a},{timeout:1000});return v===undefined?'undefined':v}catch(e){return 'throws'}})))})"],
-          { input: JSON.stringify({ code, fn: TASK.fn, list: argsList }), encoding: 'utf8', timeout: 60000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-        let got = null; try { got = JSON.parse(String(run.stdout).trim().split('\n').pop()); } catch (_) {}
-        const close = (w, g) => JSON.stringify(w) === JSON.stringify(g) || (TASK.stress.tolerance && typeof w === 'number' && typeof g === 'number' && Math.abs(w - g) <= TASK.stress.tolerance * Math.max(1, Math.abs(w)));
-        const wrong = got ? argsList.map((a, i) => ({ a, want: TASK.stress.ref(a), got: got[i] })).filter(x => !close(x.want, x.got)) : null;
-        report.wideCheck = { note: 'informational, offline container, host reference', inputs: argsList.length, mismatches: wrong ? wrong.length : 'container run failed', firstMismatches: wrong ? wrong.slice(0, 3) : null };
+        report.wideCheck = wideCheckOf(code);
       }
     }
     // Measured, not estimated.

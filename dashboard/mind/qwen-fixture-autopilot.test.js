@@ -466,3 +466,39 @@ test('a blockage with many failing cases (long failure text) is still validated:
   assert.match(lesson.validation.blocked.signature, /^result:wrong-values:[a-f0-9]{16}$/); assert.equal(lesson.validation.independent.executed, 8);
   assert.equal(s.mind.listLessons().length, 1);
 });
+
+test('a lesson is promoted only if the wide check passes when the family defines one', async t => {
+  for (const [mismatches, expected] of [[3, 'teaching'], [0, 'validated']]) {
+    const s = teachSetup(t, { wideCheck: () => ({ inputs: 1500, mismatches }) });
+    const h = harness(t, { sources: [wrongWith(0, 'a'), wrongWith(0, 'b'), SAFE], reviews: [{ decision: 'GO', corrections: [] }], teachings: [TEACH], extra: s.extra });
+    start(h); await run(h.pilot);
+    assert.equal(h.pilot.state.history.at(-1).outcome, 'fixture-approved');
+    const states = lessonsMod.all(s.lessonsRoot).map(x => lessonsMod.statusOf(x));
+    assert.ok(states.includes(expected), 'mismatches ' + mismatches + ' -> ' + states.join());
+    assert.equal(states.includes('validated'), expected === 'validated');
+    assert.equal(s.mind.listLessons().length, expected === 'validated' ? 1 : 0);
+  }
+});
+
+test('a wide check that cannot run (no result) blocks the promotion', async t => {
+  const s = teachSetup(t, { wideCheck: () => ({ inputs: 'container run failed', mismatches: 'container run failed' }) });
+  const h = harness(t, { sources: [wrongWith(0, 'a'), wrongWith(0, 'b'), SAFE], reviews: [{ decision: 'GO', corrections: [] }], teachings: [TEACH], extra: s.extra });
+  start(h); await run(h.pilot);
+  assert.ok(!lessonsMod.all(s.lessonsRoot).some(x => lessonsMod.statusOf(x) === 'validated'));
+  assert.equal(s.mind.listLessons().length, 0);
+});
+
+test('a Mind write that fails after local validation is pending, then synced once without duplicates', async t => {
+  const s = teachSetup(t); let fail = true; const real = s.mind;
+  const flaky = { ...real, recallLessons: real.recallLessons, recordLessonUse: real.recordLessonUse, upsertLesson: (x) => { if (fail) throw new Error('disk full'); return real.upsertLesson(x); } };
+  const h = harness(t, { sources: [wrongWith(0, 'a'), wrongWith(0, 'b'), SAFE], reviews: [{ decision: 'GO', corrections: [] }], teachings: [TEACH], extra: { ...s.extra, mind: flaky } });
+  start(h); await run(h.pilot);
+  assert.ok(lessonsMod.all(s.lessonsRoot).some(x => lessonsMod.statusOf(x) === 'validated'), 'validated locally');
+  const log = h.pilot.state.events.map(e => e.msg).join('\n');
+  assert.match(log, /Mind write FAILED \(pending sync/); assert.doesNotMatch(log, /Not validated, stays TEACHING/);
+  assert.equal(h.pilot.state.mindSyncPending.length, 1); assert.equal(real.listLessons().length, 0);
+  fail = false;
+  assert.equal(h.pilot.syncPendingMind(), 1); assert.equal(h.pilot.syncPendingMind(), 0);
+  assert.equal(h.pilot.state.mindSyncPending.length, 0);
+  assert.equal(real.listLessons().length, 1); assert.equal(real.listLessons()[0].validation.evidenceCount, 1);
+});

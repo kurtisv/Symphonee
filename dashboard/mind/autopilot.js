@@ -375,6 +375,7 @@ class MindAutopilot {
       // Teaching: Claude explains a repeated blockage; Mind keeps what was validated. Both optional.
       if (f.family !== undefined && !/^[a-z0-9-]{2,40}$/.test(f.family)) throw new Error('Invalid Qwen fixture family');
       if (f.teacher !== undefined && (!f.teacher || typeof f.teacher.enabled !== 'boolean' || (f.teacher.enabled && (!f.lessonsRoot || !f.family)))) throw new Error('Invalid Qwen fixture teacher');
+      if (f.wideCheck !== undefined && typeof f.wideCheck !== 'function') throw new Error('Invalid Qwen fixture wide check');
       if (f.mind !== undefined && !['recallLessons', 'upsertLesson', 'recordLessonUse'].every(k => typeof f.mind?.[k] === 'function')) throw new Error('Invalid Qwen fixture Mind');
       this.qwenFixture = Object.freeze({ ...f });
     } else this.qwenFixture = null;
@@ -1112,6 +1113,7 @@ class MindAutopilot {
   // durable store, also after a restart), else from the lessons file. Only current
   // validated lessons; unvalidated teachings and observations are never returned.
   recallMethods() {
+    this.syncPendingMind(); // a Mind write that failed earlier is retried before recalling
     const f = this.qwenFixture, a = this.state.active, question = [a.plan.objective, f.requirements].join(' ');
     try {
       if (f.mind) return f.mind.recallLessons({ question, checkerVersion: CHECKER_VERSION, limit: 3 }).map(r => ({ key: r.key, mindId: r.id, errorClass: r.errorClass, teaching: r.teaching, source: 'mind', provenance: r.provenance,
@@ -1183,20 +1185,42 @@ class MindAutopilot {
       codex: { decision: review.decision, taskId: t.id, diffHash: review.diffHash, reviewer: { provider: 'codex', cleanup: ex.cleanup, tools: ex.reviewer.tools, version: ex.reviewer.version } },
       codeHash: sha(tq.codeOf(a.diff)), assertionsHash: a.technical && a.technical.assertionsHash, shown: last ? last.shown : [],
       blocked: { signature: a.teaching.errorClass + ':' + sha(a.teaching.signature).slice(0, 16), failedAttempts: a.teaching.failedAttempts }, afterTeaching: Boolean(last && last.attempt > a.teaching.afterAttempt) };
+    if (typeof f.wideCheck === 'function') {
+      ev.wideRequired = true;
+      try { const w = f.wideCheck(tq.codeOf(a.diff)); if (w && Number.isInteger(w.inputs) && Number.isInteger(w.mismatches)) ev.wide = { inputs: w.inputs, mismatches: w.mismatches }; } catch (e) { this.log('lesson', 'Wide check failed to run: ' + String(e.message || e).slice(0, 120)); }
+    }
+    let r;
     try {
-      const r = lessons.validate(f.lessonsRoot, this.fixtureLessonScope(), a.teaching.key, ev, { checkerVersion: CHECKER_VERSION });
+      r = lessons.validate(f.lessonsRoot, this.fixtureLessonScope(), a.teaching.key, ev, { checkerVersion: CHECKER_VERSION });
       this.log('lesson', 'VALIDATED' + (r.merged ? ' (merged into an existing method)' : '') + ' [' + r.entry.errorClass + '] after the independent checks and a real Codex GO');
-      if (f.mind) {
-        const m = f.mind.upsertLesson({ key: a.teaching.key, checkerVersion: CHECKER_VERSION, evidence: ev,
-          teaching: { ...r.taught.teaching, errorClass: r.taught.errorClass, family: r.taught.family } });
-        this.log('lesson', 'Kept in Mind: ' + m.id + (m.merged ? ' (evidence ' + m.evidenceCount + ')' : ''));
-        a.mindLesson = m;
-      }
-      return r;
     } catch (e) {
       this.log('lesson', 'Not validated, stays TEACHING: ' + String(e.message || e).slice(0, 200));
       return null;
     }
+    // Validated locally; the Mind write is a separate step. If it fails the lesson is recorded as pending, never reported as not validated.
+    if (f.mind) {
+      const job = { key: a.teaching.key, checkerVersion: CHECKER_VERSION, evidence: ev, teaching: { ...r.taught.teaching, errorClass: r.taught.errorClass, family: r.taught.family } };
+      try { this.syncOneToMind(job); } catch (e) {
+        this.state.mindSyncPending = [...(this.state.mindSyncPending || []).filter(x => x.key !== job.key), job].slice(-10);
+        this.log('lesson', 'VALIDATED locally, Mind write FAILED (pending sync, retried later, no duplicate): ' + String(e.message || e).slice(0, 160));
+        this.save();
+      }
+    }
+    return r;
+  }
+  syncOneToMind(job) {
+    const a = this.state.active, m = this.qwenFixture.mind.upsertLesson(job); // idempotent: the same run id is never counted twice
+    this.log('lesson', 'Kept in Mind: ' + m.id + (m.merged ? ' (evidence ' + m.evidenceCount + ')' : ''));
+    if (a) a.mindLesson = m;
+    this.state.mindSyncPending = (this.state.mindSyncPending || []).filter(x => x.key !== job.key);
+    return m;
+  }
+  // Retries Mind writes that failed after a local validation. Safe to call at any time.
+  syncPendingMind() {
+    const f = this.qwenFixture; if (!f || !f.mind) return 0; let done = 0;
+    for (const job of [...(this.state.mindSyncPending || [])]) { try { this.syncOneToMind(job); done++; } catch (e) { this.log('lesson', 'Pending Mind sync still failing: ' + String(e.message || e).slice(0, 120)); } }
+    if (done) this.save();
+    return done;
   }
   // Counters only (a lesson shown before a success is not thereby proven useful).
   recordFixtureUses(outcome) {
