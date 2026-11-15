@@ -107,3 +107,25 @@ Replication plan, fixed BEFORE the run `mem-e2` (same 12-run design as `mem-e1`,
 - H1, diagnosis fix: GO only if naming-slip failed attempts per run are at most 0.25 (baseline 9/12 = 0.75) and the share of repeated identical submissions is not higher than the baseline (20/47).
 - H2, outcome: no claim unless total approvals are at least 4 of 12 (baseline 2 of 12); a memory gain is reported as repeated only if both `mem-e1` and `mem-e2` satisfy the earlier rule (memory at least 2 approvals above no-memory, not worse on any task).
 - Anything else is reported as not demonstrated, whatever the trend.
+
+### Result of the replication `mem-e2` (2026-11-15; data in `QWEN_MEMORY_EXPERIMENT_E2_RESULTS.json`)
+
+Same design as `mem-e1`, fresh runs, same certified lesson in Mind, no Claude, Codex only after the independent checks passed. 313 tests passed before the run (311 pass, 0 fail, 2 skipped).
+
+| | No memory | Memory |
+|---|---|---|
+| Approved | 0 / 6 | 2 / 6 |
+| `meanAbs` | 0 / 2 | 2 / 2 (first attempt each time) |
+| `midRange` | 0 / 2 | 0 / 2 (one run passed the checks and was refused by Codex) |
+| `meanPositive` | 0 / 2 | 0 / 2 |
+| Mean attempts / seconds | 4.7 / 52 | 3.0 / 58 |
+| Qwen tokens / peak RAM | 22,194 / 4,508 MB | 26,328 / 4,722 MB |
+
+Cloud use of `mem-e2`: Claude 0, Codex 3 reviews / 20,176 tokens, Qwen 48,522 tokens.
+
+Against the criteria fixed before the run:
+- H1 (diagnosis fix): the naming-slip rate fell from 0.75 to 0.17 failed attempts per run (criterion <= 0.25: met). The share of unchanged re-submissions did not fall (19 of 43 = 0.44 versus 20 of 47 = 0.43; criterion "not higher": NOT met). H1 is therefore a NO-GO as written: the placeholder bug is fixed, but Qwen still re-submits unchanged code about as often.
+- H2 (outcome): 2 approvals of 12 where at least 4 were required: NOT met. Fixing the hints did not raise the number of approved tasks.
+- Replication of the memory effect: both experiments satisfy the earlier rule (memory 2 approvals above no memory, not worse on any task). Pooled, `meanAbs` is 4 of 4 with memory and 0 of 4 without (every success on the first attempt); overall 4 of 12 versus 0 of 12 (one-sided exact test p = 0.047, exploratory and driven by one task). `midRange` and `meanPositive` are 0 of 8 in both arms.
+
+Reading. The effect is reproducible but narrow: Mind lets Qwen solve a close analogue of the task its lesson came from. It does not show transfer to structurally different problems, and the fixes of this round did not move the approval count. No saving of cloud tokens is demonstrated: the four approvals so far (all `meanAbs`, `mem-e1` + `mem-e2`) cost on average 8,388 Codex tokens each for the reviews, or 14,020 cloud tokens each when the preparation (15,931 Claude + 6,596 Codex) is included, and there is no measured baseline of cloud tokens per task without the local developer to compare with.
