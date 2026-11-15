@@ -14,12 +14,12 @@ const { validateAssertions } = require('./qwen-assertions');
 
 const OUT = path.resolve(__dirname, '..', '..', '.ai-workspace', 'model-eval');
 const { MAX, c, TASKS } = require('./qwen-fixture-tasks');
-const SUBSET = "one function declaration with plain parameters followed by module.exports = { name }; a body made of if statements, return statements and single-assignment `const name = expression;` declarations (no let, no var, no reassignment, no loops); expressions limited to numbers, strings, booleans, null, parameters and consts, + - * / %, comparisons (=== !== < <= > >=), && || !, ?:, .length, indexing v[i] with an integer index in range, exactly Math.abs(x), Math.max(a, b) and Math.min(a, b), and arr.reduce((a, b) => expression, initial) with an expression body. No loops, no Math.floor/ceil/sqrt, no other calls.";
+const SUBSET = "one function declaration with plain parameters followed by module.exports = { name }; a body made of if statements, return statements and single-assignment `const name = expression;` declarations (no let, no var, no reassignment, no loops); expressions limited to numbers, strings, booleans, null, parameters and consts, + - * / %, comparisons (=== !== < <= > >=), && || !, ?:, .length, indexing v[i] with an integer index in range, exactly Math.abs(x), Math.max(a, b) and Math.min(a, b), and, called on the array parameter that is in your function signature, .reduce((a, b) => expression, initial) with an expression body (no braces). No loops, no Math.floor/ceil/sqrt, no other calls.";
 const MAX_ATTEMPTS = 4;
 // The checker's messages name AST nodes; measured 2026-11-15 that a 4B model
 // cannot act on "CallExpression". Same plain hints for every model.
 const HINTS = [
-  [/CallExpression/, 'the only call allowed is arr.reduce((a, b) => expression, initial) with exactly two arguments: always pass the initial value; no other function or method calls'],
+  [/CallExpression/, 'the only call allowed is .reduce((a, b) => expression, initial) on the array parameter of your function signature, with exactly two arguments: always pass the initial value; no other function or method calls'],
   [/VariableDeclaration/, 'only a new single-assignment const with a value is allowed (no let, var, reassignment or several declarators)'],
   [/(For|While|DoWhile|ForOf|ForIn)Statement|ExpressionStatement|Unsupported statement/, 'no loops, assignments or other statements: only if and return, and reduce for iteration'],
   [/MemberExpression|Unsupported expression: (Computed|Update|Assignment)/, 'only .length may be read from a value; no v[i] indexing, no ++ or assignment'],

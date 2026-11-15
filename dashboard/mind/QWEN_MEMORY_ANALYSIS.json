@@ -1,0 +1,456 @@
+{
+ "generatedFrom": "QWEN_MEMORY_EXPERIMENT_RESULTS.json",
+ "offline": true,
+ "aiCalls": 0,
+ "taxonomy": {
+  "overall": {
+   "verifier-restriction": 18,
+   "reasoning": 12,
+   "naming-slip": 9,
+   "lesson-adaptation": 8
+  },
+  "memory": {
+   "verifier-restriction": 5,
+   "naming-slip": 6,
+   "lesson-adaptation": 8
+  },
+  "noMemory": {
+   "verifier-restriction": 13,
+   "reasoning": 12,
+   "naming-slip": 3
+  },
+  "byTask": {
+   "meanabs": {
+    "verifier-restriction": 1,
+    "reasoning": 6
+   },
+   "midrange": {
+    "verifier-restriction": 9,
+    "naming-slip": 7,
+    "reasoning": 3
+   },
+   "meanpos": {
+    "verifier-restriction": 8,
+    "lesson-adaptation": 8,
+    "naming-slip": 2,
+    "reasoning": 3
+   }
+  },
+  "repeatedSubmissions": 20,
+  "failedAttempts": 47
+ },
+ "perRun": [
+  {
+   "step": "E-meanabs-1-nomem",
+   "task": "meanabs",
+   "arm": "nomem",
+   "outcome": "stalled",
+   "counts": {
+    "verifier-restriction": 1,
+    "reasoning": 3
+   },
+   "repeatedSubmissions": 2,
+   "attempts": 4
+  },
+  {
+   "step": "E-meanabs-1-mem",
+   "task": "meanabs",
+   "arm": "mem",
+   "outcome": "fixture-approved",
+   "counts": {},
+   "repeatedSubmissions": 0,
+   "attempts": 1
+  },
+  {
+   "step": "E-midrange-1-nomem",
+   "task": "midrange",
+   "arm": "nomem",
+   "outcome": "stalled",
+   "counts": {
+    "verifier-restriction": 2,
+    "naming-slip": 1,
+    "reasoning": 3
+   },
+   "repeatedSubmissions": 2,
+   "attempts": 6
+  },
+  {
+   "step": "E-midrange-1-mem",
+   "task": "midrange",
+   "arm": "mem",
+   "outcome": "stalled",
+   "counts": {
+    "verifier-restriction": 1,
+    "naming-slip": 3
+   },
+   "repeatedSubmissions": 2,
+   "attempts": 4
+  },
+  {
+   "step": "E-meanpos-1-nomem",
+   "task": "meanpos",
+   "arm": "nomem",
+   "outcome": "stalled",
+   "counts": {
+    "verifier-restriction": 4
+   },
+   "repeatedSubmissions": 2,
+   "attempts": 4
+  },
+  {
+   "step": "E-meanpos-1-mem",
+   "task": "meanpos",
+   "arm": "mem",
+   "outcome": "stalled",
+   "counts": {
+    "lesson-adaptation": 2,
+    "verifier-restriction": 3
+   },
+   "repeatedSubmissions": 3,
+   "attempts": 5
+  },
+  {
+   "step": "E-meanabs-2-mem",
+   "task": "meanabs",
+   "arm": "mem",
+   "outcome": "fixture-approved",
+   "counts": {},
+   "repeatedSubmissions": 0,
+   "attempts": 1
+  },
+  {
+   "step": "E-meanabs-2-nomem",
+   "task": "meanabs",
+   "arm": "nomem",
+   "outcome": "stalled",
+   "counts": {
+    "reasoning": 3
+   },
+   "repeatedSubmissions": 1,
+   "attempts": 3
+  },
+  {
+   "step": "E-midrange-2-mem",
+   "task": "midrange",
+   "arm": "mem",
+   "outcome": "stalled",
+   "counts": {
+    "verifier-restriction": 1,
+    "naming-slip": 3
+   },
+   "repeatedSubmissions": 2,
+   "attempts": 4
+  },
+  {
+   "step": "E-midrange-2-nomem",
+   "task": "midrange",
+   "arm": "nomem",
+   "outcome": "stalled",
+   "counts": {
+    "verifier-restriction": 5
+   },
+   "repeatedSubmissions": 2,
+   "attempts": 5
+  },
+  {
+   "step": "E-meanpos-2-mem",
+   "task": "meanpos",
+   "arm": "mem",
+   "outcome": "stalled",
+   "counts": {
+    "lesson-adaptation": 6
+   },
+   "repeatedSubmissions": 3,
+   "attempts": 6
+  },
+  {
+   "step": "E-meanpos-2-nomem",
+   "task": "meanpos",
+   "arm": "nomem",
+   "outcome": "checks-failed",
+   "counts": {
+    "naming-slip": 2,
+    "verifier-restriction": 1,
+    "reasoning": 3
+   },
+   "repeatedSubmissions": 1,
+   "attempts": 6
+  }
+ ],
+ "gateReplay": [
+  {
+   "task": "clamp",
+   "hazard": "none",
+   "kind": "unknown",
+   "applicable": false,
+   "reasons": [
+    "different hazard (intermediate-overflow vs none)"
+   ]
+  },
+  {
+   "task": "leap",
+   "hazard": "none",
+   "kind": "scalar-predicate",
+   "applicable": false,
+   "reasons": [
+    "different hazard (intermediate-overflow vs none)"
+   ]
+  },
+  {
+   "task": "fizz",
+   "hazard": "none",
+   "kind": "scalar-classification",
+   "applicable": false,
+   "reasons": [
+    "different hazard (intermediate-overflow vs none)"
+   ]
+  },
+  {
+   "task": "max",
+   "hazard": "none",
+   "kind": "numeric-array-aggregate",
+   "applicable": false,
+   "reasons": [
+    "different hazard (intermediate-overflow vs none)"
+   ]
+  },
+  {
+   "task": "countpos",
+   "hazard": "none",
+   "kind": "numeric-array-aggregate",
+   "applicable": false,
+   "reasons": [
+    "different hazard (intermediate-overflow vs none)"
+   ]
+  },
+  {
+   "task": "average",
+   "hazard": "intermediate-overflow",
+   "kind": "numeric-array-aggregate",
+   "applicable": true,
+   "reasons": [
+    "same hazard, input kind and kind of task"
+   ]
+  },
+  {
+   "task": "meanabs",
+   "hazard": "intermediate-overflow",
+   "kind": "numeric-array-aggregate",
+   "applicable": true,
+   "reasons": [
+    "same hazard, input kind and kind of task"
+   ]
+  },
+  {
+   "task": "midrange",
+   "hazard": "intermediate-overflow",
+   "kind": "numeric-array-aggregate",
+   "applicable": true,
+   "reasons": [
+    "same hazard, input kind and kind of task"
+   ]
+  },
+  {
+   "task": "meanpos",
+   "hazard": "intermediate-overflow",
+   "kind": "numeric-array-aggregate",
+   "applicable": true,
+   "reasons": [
+    "same hazard, input kind and kind of task"
+   ]
+  }
+ ],
+ "indicators": {
+  "1_categoriesMastered": {
+   "mastered": 0,
+   "covered": 1,
+   "total": 10,
+   "detail": [
+    {
+     "id": "bug-fixing",
+     "label": "Bug fixing",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "feature-development",
+     "label": "Feature development",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "refactoring",
+     "label": "Refactoring",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "testing",
+     "label": "Unit and integration tests",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "code-analysis",
+     "label": "Code analysis",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "debugging",
+     "label": "Debugging",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "files-and-modules",
+     "label": "File and module handling",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "algorithms",
+     "label": "Algorithms (single pure functions)",
+     "covered": true,
+     "tasksMeasured": 3,
+     "runs": 12,
+     "approved": 2,
+     "autonomousApprovalRate": 0.167,
+     "mastered": false,
+     "why": "needs 3+ unseen tasks, 2+ trials each and >= 70% autonomous approvals, currently 3 tasks and 17%"
+    },
+    {
+     "id": "performance",
+     "label": "Performance optimisation",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    },
+    {
+     "id": "integration",
+     "label": "Integration between components",
+     "covered": false,
+     "tasksMeasured": 0,
+     "runs": 0,
+     "approved": 0,
+     "autonomousApprovalRate": null,
+     "mastered": false,
+     "why": "no measurement yet"
+    }
+   ]
+  },
+  "2_unseenTasksSolvedAutonomously": {
+   "overall": {
+    "runs": 12,
+    "approved": 2,
+    "rate": 0.167
+   },
+   "withMemory": {
+    "runs": 6,
+    "approved": 2,
+    "rate": 0.333
+   },
+   "withoutMemory": {
+    "runs": 6,
+    "approved": 0,
+    "rate": 0
+   }
+  },
+  "3_tasksApprovedWithoutClaude": {
+   "count": 2,
+   "claudeTokensInComparison": 0
+  },
+  "4_transferableSkillsInMind": {
+   "lessons": 1,
+   "withObservedNearTransfer": 1,
+   "withRepeatedTransferOnTwoOrMoreOtherTasks": 0,
+   "detail": [
+    {
+     "id": "qwen_lesson_963e0b1024f5be36bae1161524ae09258b2f71e151647ddd4ecddf89faf8ac64",
+     "family": "average",
+     "certified": true,
+     "shownOnOtherTasks": [
+      "meanabs",
+      "midrange",
+      "meanpos"
+     ],
+     "succeededOn": [
+      "meanabs"
+     ],
+     "transferStrength": "single-near-transfer"
+    }
+   ]
+  },
+  "5_cloudTokensPerApprovedTask": {
+   "approved": 2,
+   "comparisonOnly": 6689,
+   "includingPreparation": 17952,
+   "preparation": {
+    "claude": 15931,
+    "codex": 6596,
+    "cloudTotal": 22527
+   },
+   "netSaving": "not established: no measured baseline of cloud tokens per task without the local developer; with 0 approvals without memory there is nothing to compare against"
+  },
+  "6_reliabilitySafetyQuality": {
+   "runs": 12,
+   "cleanedUp": 12,
+   "sourcesUnchanged": 12,
+   "approvedWithStressZeroMismatch": 2,
+   "approvedTotal": 2
+  }
+ },
+ "performance": {
+  "qwenTokens": 53195,
+  "meanSeconds": 61,
+  "meanAttempts": 4.1,
+  "peakRamMB": 4422,
+  "note": "Qwen runs locally: its tokens are a measure, not a budget."
+ },
+ "scope": "fictional fixtures only; not an authorisation to work on real projects",
+ "reading": [
+  "Failures are dominated by verifier-restriction (18), reasoning (12), naming-slip (9), lesson-adaptation (8).",
+  "20 of 47 failed attempts re-submitted the previous code unchanged: that is the no-progress signal the loop already uses to stop.",
+  "The gate keeps the lesson for the four tasks that share its hazard (intermediate overflow of a numeric array aggregate) and removes it from the four that do not; it does not (and must not) decide transfer.",
+  "Nine of the ten requested skill categories have no measurement yet; the experiments so far cover only single pure functions."
+ ]
+}

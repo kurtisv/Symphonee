@@ -61,4 +61,20 @@ const TASKS = [
       ref: ([v]) => { const p = v.filter(x => x > 0); return p.length ? p.reduce((a, x) => a + x / p.length, 0) : null; } } },
 ];
 
+// What a lesson must match to be shown: declared here, never inferred from words.
+// hazard: the trap the task contains ('none' = no special trap); input / kind: what it works on.
+const STRICT_FEATURES = ['const', 'index', 'length', 'reduce', 'Math.abs', 'Math.max', 'Math.min', 'conditional', 'logical', 'comparison', 'arithmetic'];
+const OVERFLOW = 'a numeric aggregate whose intermediate value can leave the double range although the final value fits';
+const PROFILES = {
+  average: { hazard: 'intermediate-overflow', input: 'number-array', kind: 'numeric-array-aggregate', problem: OVERFLOW },
+  meanabs: { hazard: 'intermediate-overflow', input: 'number-array', kind: 'numeric-array-aggregate', problem: OVERFLOW },
+  midrange: { hazard: 'intermediate-overflow', input: 'number-array', kind: 'numeric-array-aggregate', problem: OVERFLOW },
+  meanpos: { hazard: 'intermediate-overflow', input: 'number-array', kind: 'numeric-array-aggregate', problem: OVERFLOW },
+  max: { hazard: 'none', input: 'number-array', kind: 'numeric-array-aggregate', problem: 'largest element of an array, all negative included' },
+  countpos: { hazard: 'none', input: 'number-array', kind: 'numeric-array-aggregate', problem: 'count of elements above zero' },
+  fizz: { hazard: 'none', input: 'integer', kind: 'scalar-classification', problem: 'classify an integer by divisibility' },
+  leap: { hazard: 'none', input: 'integer', kind: 'scalar-predicate', problem: 'calendar predicate on an integer' },
+};
+for (const t of TASKS) t.profile = { id: t.id, ...(PROFILES[t.id] || { hazard: 'none', input: 'unknown', kind: 'unknown', problem: 'unclassified task' }), features: STRICT_FEATURES.slice() };
+
 module.exports = { MAX, c, TASKS, rng };

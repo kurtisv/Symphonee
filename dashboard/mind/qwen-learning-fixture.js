@@ -136,7 +136,8 @@ function makeFixtureController({repoRoot,space,queueDir}) {
         reviewTaskId:ev.codex.taskId,reviewerVersion:ev.codex.reviewer.version,independent:{executed:ev.independent.executed,expected:ev.independent.expected},
         blocked:{signature:String(ev.blocked.signature).slice(0,600),failedAttempts:ev.blocked.failedAttempts},evidenceCount:1,wideRequired:ev.wideRequired,...(ev.wide?{wide:{inputs:ev.wide.inputs,mismatches:ev.wide.mismatches}}:{}),
         history:[{runId:ev.runId,at:now,codeHash:ev.codeHash,diffHash:ev.codex.diffHash,reviewTaskId:ev.codex.taskId,checkerVersion:input.checkerVersion,wideRequired:ev.wideRequired,...(ev.wide?{wide:{inputs:ev.wide.inputs,mismatches:ev.wide.mismatches}}:{})}]},
-      uses:0,usesSucceeded:0};
+      ...(ev.applicability?{applicability:ev.applicability}:{}),
+      uses:0,usesSucceeded:0,usage:{byTask:{}}};
   }
   function withGraph(fn){
     const releaseFixture=acquireFixtureLock(repoRoot,space); let held;
@@ -156,6 +157,7 @@ function makeFixtureController({repoRoot,space,queueDir}) {
         const c=twin.c, h=rec.validation.history[0];
         if(!c.validation.history.some(x=>x.runId===h.runId)){c.validation.history=[...c.validation.history,h].slice(-5);c.validation.evidenceCount+=1;}
         c.validation.validUntil=rec.validation.validUntil;
+        if(!c.applicability && rec.applicability) c.applicability=rec.applicability;
         if(!lessonsMod.wideCertified(c.validation) && lessonsMod.wideCertified(rec.validation)){c.validation.wideRequired=rec.validation.wideRequired;if(rec.validation.wide)c.validation.wide=rec.validation.wide;c.validation.certifiedBy=h.runId;}
         writeLesson(twin.n,c);
         return {id:twin.n.id,merged:true,superseded:[],evidenceCount:c.validation.evidenceCount};
@@ -181,15 +183,17 @@ function makeFixtureController({repoRoot,space,queueDir}) {
     const entries=[...byId.values()].map(({n,c})=>({scope:'mind@'+RECALL_SPACE,key:n.id,kind:c.errorClass,text:c.teaching.cause+' '+(c.teaching.principle||'')+' '+c.teaching.strategy,count:c.validation.evidenceCount,lastAt:c.validation.history.at(-1).at}));
     return retrieveLessons({all:()=>entries},repoRoot,RECALL_SPACE,Math.min(5,limit),String(question||'')).map(p=>{
       const {n,c}=byId.get(p.id);
-      return {id:n.id,key:c.key,errorClass:c.errorClass,family:c.family,teaching:c.teaching,
+      return {id:n.id,key:c.key,errorClass:c.errorClass,family:c.family,teaching:c.teaching,applicability:c.applicability||null,usage:{uses:c.uses||0,usesSucceeded:c.usesSucceeded||0,byTask:(c.usage&&c.usage.byTask)||{}},
         provenance:{nodeId:n.id,validatedAt:new Date(c.validation.at).toISOString(),reviewTaskId:c.validation.reviewTaskId,reviewerVersion:c.validation.reviewerVersion,diffHash:c.validation.diffHash,codeHash:c.validation.codeHash,
           checkerVersion:c.validation.checkerVersion,evidenceCount:c.validation.evidenceCount,uses:c.uses,usesSucceeded:c.usesSucceeded,proofLevel:PROOF['codex-fixture']}};
     });
   }
   // Counters only: a lesson shown before a success is NOT thereby proven useful.
-  function recordLessonUse(id,success){
-    if(!/^qwen_lesson_[a-f0-9]{64}$/.test(id) || typeof success!=='boolean') throw Error('Invalid lesson use');
-    withGraph(graph=>{const n=lessonNodes(graph).find(x=>x.id===id),c=n&&lessonParse(n);if(!c)throw Error('Lesson not found');c.uses+=1;if(success)c.usesSucceeded+=1;writeLesson(n,c);});
+  // task (optional): the task family the lesson was shown on. Counters are ASSOCIATIONS, never proof of causality.
+  function recordLessonUse(id,success,task){
+    if(!/^qwen_lesson_[a-f0-9]{64}$/.test(id) || typeof success!=='boolean' || (task!==undefined && !/^[a-z0-9-]{2,40}$/.test(task))) throw Error('Invalid lesson use');
+    withGraph(graph=>{const n=lessonNodes(graph).find(x=>x.id===id),c=n&&lessonParse(n);if(!c)throw Error('Lesson not found');c.uses+=1;if(success)c.usesSucceeded+=1;
+      if(task){c.usage=c.usage||{byTask:{}};const t=c.usage.byTask[task]=c.usage.byTask[task]||{uses:0,ok:0};t.uses+=1;if(success)t.ok+=1;}writeLesson(n,c);});
   }
   function retireLesson(id,reason){
     if(!/^qwen_lesson_[a-f0-9]{64}$/.test(id)) throw Error('Invalid lesson id');

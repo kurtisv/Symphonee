@@ -216,6 +216,7 @@ const statusOf = (e) => (e && STATUSES.includes(e.status) ? e.status : 'observat
 const sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
 const HEX64 = /^[a-f0-9]{64}$/;
 const ERROR_CLASS = /^[a-z]{3,12}:[A-Za-z0-9_.-]{2,40}$/;
+const applic = require('./lesson-applicability');
 const isStr = (x, lo, hi) => typeof x === 'string' && x.trim().length >= lo && x.length <= hi;
 const digestOf = (strategy) => sha([...words(strategy)].sort().join(' '));
 
@@ -253,6 +254,7 @@ function validationProblems(ev, checkerVersion, key) {
   // Stress evidence: when the family defines a wide check it is mandatory and must show zero mismatches on enough inputs.
   if (typeof ev.wideRequired !== 'boolean') p.push('wide requirement not declared');
   if (ev.wideRequired === true && !ev.wide) p.push('wide check missing');
+  if (ev.applicability !== undefined && ev.applicability !== null) { const ap = applic.applicabilityProblems(ev.applicability); if (ap.length) p.push('applicability invalid: ' + ap.join(',')); }
   if (ev.wide && (!Number.isInteger(ev.wide.inputs) || ev.wide.inputs < 100 || ev.wide.mismatches !== 0)) p.push('wide check not passed');
   return p;
 }
@@ -286,6 +288,7 @@ function validate(root, scope, key, ev, { checkerVersion, now = Date.now() } = {
     // Same method again: one lesson, more independent evidence (a run counts once).
     if (!twin.validation.history.some((h) => h.runId === ev.runId)) { twin.validation.history = [...twin.validation.history, item].slice(-5); twin.validation.evidenceCount += 1; }
     twin.validation.validUntil = now + VALID_DAYS * DAY;
+    if (!twin.applicability && ev.applicability) twin.applicability = ev.applicability; // old lessons gain structured metadata, nothing else changes
     // A new proven run upgrades a legacy lesson that never had the stress proof (its history is kept).
     if (!wideCertified(twin.validation) && wideCertified(item)) { twin.validation.wideRequired = item.wideRequired; if (item.wide) twin.validation.wide = item.wide; twin.validation.certifiedBy = ev.runId; }
     e.status = 'obsolete'; e.obsoleteReason = 'duplicate'; e.mergedInto = twin.key; e.obsoleteAt = now;
@@ -297,6 +300,7 @@ function validate(root, scope, key, ev, { checkerVersion, now = Date.now() } = {
     reviewTaskId: ev.codex.taskId, reviewerVersion: ev.codex.reviewer.version, independent: { executed: ev.independent.executed, expected: ev.independent.expected },
     blocked: { signature: String(ev.blocked.signature).slice(0, 600), failedAttempts: ev.blocked.failedAttempts }, family: ev.family, evidenceCount: 1, history: [item],
     wideRequired: ev.wideRequired, ...(ev.wide ? { wide: { inputs: ev.wide.inputs, mismatches: ev.wide.mismatches } } : {}) };
+  if (ev.applicability) e.applicability = ev.applicability;
   e.status = 'validated'; e.confidence = clamp(Math.max(confidenceOf(e, now), .7));
   save(root, data, 'serveur');
   return { entry: e, merged: false, superseded, taught: e };
@@ -333,15 +337,20 @@ function relevantTo(text, question) {
 // What a developer may be shown for a task: validated, current, relevant methods
 // (instructions) and unverified observations (hints only). A teaching that is not
 // validated is never in either list.
-function selectForTask(root, scope, { checkerVersion, question = '', maxMethods = 3, maxHints = 2, now = Date.now() } = {}) {
+function selectForTask(root, scope, { checkerVersion, question = '', maxMethods = 3, maxHints = 2, now = Date.now(), profile = null } = {}) {
   const mine = all(root).filter((x) => x.scope === scope && !x.disabled);
-  const methods = mine.filter((x) => isCurrent(x, checkerVersion, now)).map((x) => ({ x, r: relevantTo(x.teaching.cause + ' ' + x.teaching.strategy, question) }))
-    .filter((m) => m.r > 0).sort((a, b) => b.r - a.r || b.x.validation.evidenceCount - a.x.validation.evidenceCount).slice(0, maxMethods).map((m) => m.x);
+  const cur = mine.filter((x) => isCurrent(x, checkerVersion, now)), word = (x) => relevantTo(x.teaching.cause + ' ' + (x.teaching.principle || '') + ' ' + x.teaching.strategy, question);
+  let methods, decisions = null;
+  if (profile) { // structured gate: hazard, input, kind, syntax; legacy-format lessons only by the old word rule and only if nothing structured applies
+    const s = applic.select(cur.map((x) => ({ id: x.key, lesson: x, usage: {} })), profile, { max: maxMethods, legacyWordRelevant: (c) => word(c.lesson) > 0 });
+    methods = s.kept.map((k) => k.lesson); decisions = s.decisions;
+  } else methods = cur.map((x) => ({ x, r: word(x) })).filter((m) => m.r > 0).sort((a, b) => b.r - a.r || b.x.validation.evidenceCount - a.x.validation.evidenceCount).slice(0, maxMethods).map((m) => m.x);
   const hints = mine.filter((x) => statusOf(x) === 'observation').sort((a, b) => confidenceOf(b, now) - confidenceOf(a, now) || b.count - a.count).slice(0, maxHints);
-  return { methods, hints };
+  return { methods, hints, decisions };
 }
-const methodLine = (m) => '- [' + m.errorClass + '] Cause: ' + m.teaching.cause + (m.teaching.principle ? ' General principle (applies to other problems too): ' + m.teaching.principle + ' Application to the problem it was taught on (adapt it, do not copy it): ' : ' Strategy: ') + m.teaching.strategy
-  + (m.teaching.pitfalls.length ? ' Avoid: ' + m.teaching.pitfalls.join(' / ') : '') + ' Check: ' + m.teaching.verify
+const methodLine = (m) => '- [' + m.errorClass + ']' + (m.applicability ? ' Problem it solves: ' + m.applicability.problem + '.' : '') + ' Cause: ' + m.teaching.cause + (m.teaching.principle ? ' General principle (applies to other problems too): ' + m.teaching.principle + ' Application to the problem it was taught on (adapt it, do not copy it): ' : ' Strategy: ') + m.teaching.strategy
+  + (m.teaching.pitfalls.length ? ' Avoid: ' + (m.applicability ? m.teaching.pitfalls.slice(0, 2) : m.teaching.pitfalls).join(' / ') : '') + ' Check: ' + m.teaching.verify.slice(0, 300)
+  + (m.applicability ? ' Limits: ' + m.applicability.limits[0] + '.' : '')
   + ' (validated ' + new Date(m.validation.at).toISOString().slice(0, 10) + ', ' + m.validation.evidenceCount + ' independent run(s), real review ' + m.validation.reviewTaskId + ', checker ' + m.validation.checkerVersion + ')';
 function methodsText({ methods = [], hints = [] } = {}) {
   const out = [];

@@ -82,7 +82,7 @@ async function main() {
       def: { limits: { repairs: 5 }, stepMinutes: 15 },
       qwenFixture: { capability: sup.QWEN_DEVELOPER_FIXTURE, root, files: [NAME, 'test.js'], editable: [NAME], assertions: CASES, requirements: REQUIREMENTS, reviewerModel: REVIEWER_MODEL, developerModel: DEVELOPER_MODEL,
         // Persistent across runs: this is where the developer's verified lessons accumulate.
-        name: TASK.id + '-subset3', lessonsRoot: LESSONS_ROOT, family: TASK.id, teacher: { enabled: TEACHER }, ...(TASK.stress ? { wideCheck: (code) => wideCheckOf(code) } : {}), ...(USE_MIND ? { mind } : {}) } });
+        name: TASK.id + '-subset3', lessonsRoot: LESSONS_ROOT, family: TASK.id, taskProfile: TASK.profile, teacher: { enabled: TEACHER }, ...(TASK.stress ? { wideCheck: (code) => wideCheckOf(code) } : {}), ...(USE_MIND ? { mind } : {}) } });
     pilot.startFixtureTask({ title: 'Fictional ' + TASK.fn + ' function', objective: `Implement ${TASK.fn}(${TASK.params}) in ${NAME} so that it meets the requirements.` });
     // A killed parent skips cleanup (observed 2026-11-15): keep the run inside its caller's limit.
     const deadline = Date.now() + Math.min(80, Math.max(3, Number(process.env.QWEN_FIXTURE_DEADLINE_MIN) || 80)) * 60000; let lastEvent = 0, tickNo = 0; const startedMs = Date.now();

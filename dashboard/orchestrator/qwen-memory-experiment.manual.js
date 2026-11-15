@@ -90,4 +90,10 @@ function summary(id) {
 
 const [cmd, id] = process.argv.slice(2);
 if (!/^[a-z0-9-]{3,40}$/.test(id || '')) { process.stderr.write('usage: prep|compare|summary <id>\n'); process.exit(2); }
-if (cmd === 'prep') prep(id); else if (cmd === 'compare') compare(id); else if (cmd === 'summary') summary(id); else { process.stderr.write('usage: prep|compare|summary <id>\n'); process.exit(2); }
+// clone <newId> <fromId>: a fresh run set that reuses the Mind space and the prepared lesson of an earlier experiment (replication; nothing is taught again).
+if (cmd === 'clone') {
+  const from = load(process.argv[4]);
+  if (!from.prepared || !from.prepared.length) { process.stderr.write('Nothing to clone\n'); process.exit(2); }
+  const st = { id, space: from.space, prepared: from.prepared, clonedFrom: from.id, runs: {} };
+  save(st); process.stdout.write(JSON.stringify({ cloned: from.id, prepared: st.prepared.length }) + '\n');
+} else if (cmd === 'prep') prep(id); else if (cmd === 'compare') compare(id); else if (cmd === 'summary') summary(id); else { process.stderr.write('usage: prep|compare|summary <id>\n'); process.exit(2); }

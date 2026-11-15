@@ -14,6 +14,8 @@ const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
 const tq = require('./qwen-teaching');
+const applicability = require('./lesson-applicability');
+const failures = require('./qwen-failure-analysis');
 const { CHECKER_VERSION } = require('../orchestrator/qwen-pure-assertions');
 // Optional Sentry reporting (window check-ins, completions, halts). Never throws.
 let sentry = null;
@@ -147,31 +149,34 @@ const ENV_FAILURE = /^(Insufficient free RAM|LM Studio unavailable|.* context is
 const CHECK_HINTS = Object.freeze([
   [/VariableDeclaration/, 'Only a new single-assignment const with a value is allowed (no let, var, reassignment, destructuring or several declarators).'],
   [/MemberExpression/, 'Only .length, v[i] indexing and Math.abs, Math.max, Math.min can be read: Number.MAX_VALUE, Number.MAX_SAFE_INTEGER, Infinity, Math.floor and every other property are unavailable. Write a numeric constant as a literal, for example 1.7976931348623157e308.'],
-  [/CallExpression|Unsupported expression/, 'The only calls allowed are arr.reduce((a, b) => expression, initial) and Math.abs(x), Math.max(a, b), Math.min(a, b) with exactly those arguments; no other function or method. For the largest or smallest value of a whole array write arr.reduce((m, x) => Math.max(m, x), start) and never list array positions by hand.'],
+  [/CallExpression|Unsupported expression/, 'The only calls allowed are {ARR}.reduce((a, b) => expression, initial) and Math.abs(x), Math.max(a, b), Math.min(a, b) with exactly two arguments for max and min: Math.min(...{ARR}) and Math.max(...{ARR}) with a spread are refused. For the largest or smallest value of a whole array write {ARR}.reduce((m, x) => Math.max(m, x), start) and never list array positions by hand.'],
   [/Unknown identifier/, 'Only the parameters, your consts and the reduce callback parameters exist: no Infinity, NaN, undefined, Number or other globals.'],
   [/Unsupported result/, 'For one of the inputs the result was not a finite number (Infinity, -Infinity or NaN) or nothing was returned: an intermediate value overflows or a branch has no return.'],
-  [/Unsupported reduce callback/, 'reduce needs exactly (a, b) => expression, with an expression body (no braces) and an initial value.'],
+  [/Unsupported reduce callback/, 'reduce needs exactly (a, b) => expression, with an expression body: no braces, no if statement and no return inside it. To treat some elements differently use a conditional expression, for example (a, b) => b > 0 ? a + b : a, and give the initial value as the second argument.'],
   [/Index out of range|Index requires/, 'An index must be an integer inside the array; guard the empty array first.'],
-  [/Unsupported statement/, 'Only if, return and const statements are allowed: no loops, assignments or other statements.'],
+  [/Unsupported statement/, 'Only if, return and const statements are allowed: no for or while loops, assignments or other statements. Do the repetition with {ARR}.reduce(...).'],
 ]);
-const hintFor = (text) => (CHECK_HINTS.find(([re]) => re.test(String(text))) || [])[1];
+const hintFor = (text, param) => { const h = (CHECK_HINTS.find(([re]) => re.test(String(text))) || [])[1]; return h && h.split('{ARR}').join(param || 'the array parameter'); };
 // Collapses the per-assertion syntax refusals into one plain instruction each;
 // wrong results and everything else pass through unchanged.
-function explainChecks(observations) {
-  const hints = new Set(), rest = [];
+// param / code: the array parameter and the latest code, so the hints use the REAL names (a hint once said `arr` and the developer copied it, 3 failures measured).
+function explainChecks(observations, ctx = {}) {
+  const hints = new Set(), rest = [], param = ctx.param || failures.paramOf(ctx.code);
   for (const o of observations) {
     const wrong = /^Assertion \d+ \((.*) expected (.*)\): Supervisor refused: verification refused: Expected values to be strictly deep-equal: (.*) !== (.*)$/.exec(String(o).trim());
     if (wrong) { rest.push(`${wrong[1]} returned ${wrong[3]}, but it must return ${wrong[2]}.`); continue; }
     const m = /verification refused: ([^|]+)/.exec(String(o));
-    const h = m && hintFor(m[1]);
+    const h = m && hintFor(m[1], param);
     if (h) hints.add(h); else rest.push(String(o));
   }
-  return [...[...hints].map(h => 'The checker refused your syntax. ' + h), ...rest];
+  const slips = ctx.code && observations.some(o => /Unknown identifier/.test(String(o))) ? failures.unknownNames(ctx.code).filter(n => failures.HINT_PLACEHOLDERS.includes(n)) : [];
+  const naming = slips.map(n => 'You wrote `' + n + '` but there is no such name: the array parameter of your function is `' + (param || 'the one in its signature') + '`. Use that name.');
+  return [...naming, ...[...hints].map(h => 'The checker refused your syntax. ' + h), ...rest];
 }
 const ENV_RETRIES = 8, ENV_WAIT_MS = 60_000, MAX_EXTRA_CASES = 6;
 // The pure subset accepted by the fixture's independent checker, told to both
 // the developer and the reviewer so that corrections stay implementable.
-const FIXTURE_SUBSET = "one function declaration with plain parameters followed by module.exports = { name }; a body made of if statements, return statements and single-assignment `const name = expression;` declarations (no let, no var, no reassignment, no loops); expressions limited to numbers, strings, booleans, null, parameters and consts, + - * / %, comparisons (=== !== < <= > >=), && || !, ?:, .length, indexing v[i] with an integer index in range, exactly Math.abs(x), Math.max(a, b) and Math.min(a, b), and arr.reduce((a, b) => expression, initial) with an expression body. No loops, no Math.floor/ceil/sqrt, no other calls.";
+const FIXTURE_SUBSET = "one function declaration with plain parameters followed by module.exports = { name }; a body made of if statements, return statements and single-assignment `const name = expression;` declarations (no let, no var, no reassignment, no loops); expressions limited to numbers, strings, booleans, null, parameters and consts, + - * / %, comparisons (=== !== < <= > >=), && || !, ?:, .length, indexing v[i] with an integer index in range, exactly Math.abs(x), Math.max(a, b) and Math.min(a, b), and, called on the array parameter that is in your function signature, .reduce((a, b) => expression, initial) with an expression body (no braces). No loops, no Math.floor/ceil/sqrt, no other calls.";
 const CODE_QUALITY_POLICY = [
   'Correctness: prioritize reproducible defects, regressions, and failing tests.',
   'Performance: optimize only demonstrated bottlenecks. Record a reproducible baseline (command, metric, environment), compare before and after using comparable workloads, and reject regressions.',
@@ -376,6 +381,7 @@ class MindAutopilot {
       if (f.family !== undefined && !/^[a-z0-9-]{2,40}$/.test(f.family)) throw new Error('Invalid Qwen fixture family');
       if (f.teacher !== undefined && (!f.teacher || typeof f.teacher.enabled !== 'boolean' || (f.teacher.enabled && (!f.lessonsRoot || !f.family)))) throw new Error('Invalid Qwen fixture teacher');
       if (f.wideCheck !== undefined && typeof f.wideCheck !== 'function') throw new Error('Invalid Qwen fixture wide check');
+      if (f.taskProfile !== undefined && (!f.taskProfile || !/^[a-z0-9-]{2,40}$/.test(f.taskProfile.id || '') || !f.taskProfile.hazard || !f.taskProfile.input || !f.taskProfile.kind)) throw new Error('Invalid Qwen fixture task profile');
       if (f.mind !== undefined && !['recallLessons', 'upsertLesson', 'recordLessonUse'].every(k => typeof f.mind?.[k] === 'function')) throw new Error('Invalid Qwen fixture Mind');
       this.qwenFixture = Object.freeze({ ...f });
     } else this.qwenFixture = null;
@@ -1116,7 +1122,7 @@ class MindAutopilot {
     this.syncPendingMind(); // a Mind write that failed earlier is retried before recalling
     const f = this.qwenFixture, a = this.state.active, question = [a.plan.objective, f.requirements].join(' ');
     try {
-      if (f.mind) return f.mind.recallLessons({ question, checkerVersion: CHECKER_VERSION, limit: 3 }).map(r => ({ key: r.key, mindId: r.id, errorClass: r.errorClass, teaching: r.teaching, source: 'mind', provenance: r.provenance,
+      if (f.mind) return this.gateRecalled(f.mind.recallLessons({ question, checkerVersion: CHECKER_VERSION, limit: 5 })).map(r => ({ key: r.key, mindId: r.id, errorClass: r.errorClass, teaching: r.teaching, applicability: r.applicability || null, source: 'mind', provenance: r.provenance,
         validation: { at: Date.parse(r.provenance.validatedAt), evidenceCount: r.provenance.evidenceCount, reviewTaskId: r.provenance.reviewTaskId, checkerVersion: r.provenance.checkerVersion } }));
       if (f.lessonsRoot) {
         lessons.expireStale(f.lessonsRoot, this.fixtureLessonScope(), CHECKER_VERSION);
@@ -1125,6 +1131,17 @@ class MindAutopilot {
       }
     } catch (e) { this.log('lesson', 'Recall failed, continuing without validated methods: ' + String(e.message || e).slice(0, 100)); }
     return [];
+  }
+  lastAttemptCode() { const a = this.state.active, l = a && a.attempts && a.attempts[a.attempts.length - 1]; return l ? tq.codeOf(l.diff) : ''; }
+  // Structural applicability gate (hazard, input kind, task kind, syntax, per-task track record). Nothing applicable: the developer works without extra memory.
+  // Every decision is kept in the run record. Without a task profile the historical behaviour is unchanged.
+  gateRecalled(recalled) {
+    const f = this.qwenFixture, a = this.state.active;
+    if (!f.taskProfile) return recalled.slice(0, 3);
+    const cands = recalled.map(r => ({ id: r.id, lesson: { key: r.key, applicability: r.applicability }, usage: r.usage, raw: r }));
+    const s = applicability.select(cands, f.taskProfile, { max: 2, legacyWordRelevant: () => true }); // retrieval already ranked by words: legacy-format lessons keep that rule
+    a.recallDecisions = s.decisions; this.log('lesson', 'Recall gate: ' + s.kept.length + ' of ' + recalled.length + ' method(s) applicable' + (s.kept.length ? '' : ': working without extra memory'));
+    return s.kept.map(k => k.raw);
   }
   // At most perTask teacher calls per task, one per distinct blockage, and only for
   // an equivalent failure that just repeated.
@@ -1187,9 +1204,11 @@ class MindAutopilot {
       blocked: { signature: a.teaching.errorClass + ':' + sha(a.teaching.signature).slice(0, 16), failedAttempts: a.teaching.failedAttempts }, afterTeaching: Boolean(last && last.attempt > a.teaching.afterAttempt) };
     // Fail closed: a family that defines a stress check requires it, even if the harness forgot to configure it.
     ev.wideRequired = typeof f.wideCheck === 'function' || require('../orchestrator/qwen-fixture-tasks').TASKS.some(x => x.id === f.family && x.stress);
+    if (f.taskProfile) { const ap = applicability.buildApplicability({ profile: f.taskProfile, code: tq.codeOf(a.diff), family: f.family, wide: null }); if (ap) ev.applicability = ap; }
     if (typeof f.wideCheck === 'function') {
       try { const w = f.wideCheck(tq.codeOf(a.diff)); if (w && Number.isInteger(w.inputs) && Number.isInteger(w.mismatches)) ev.wide = { inputs: w.inputs, mismatches: w.mismatches }; } catch (e) { this.log('lesson', 'Wide check failed to run: ' + String(e.message || e).slice(0, 120)); }
     }
+    if (ev.applicability && ev.wide) { ev.applicability.limits[1] = 'stress-checked on ' + ev.wide.inputs + ' inputs with ' + ev.wide.mismatches + ' mismatches'; ev.applicability.level = 'independent-checks+codex-review+stress'; }
     let r;
     try {
       r = lessons.validate(f.lessonsRoot, this.fixtureLessonScope(), a.teaching.key, ev, { checkerVersion: CHECKER_VERSION });
@@ -1227,7 +1246,7 @@ class MindAutopilot {
   recordFixtureUses(outcome) {
     const f = this.qwenFixture, a = this.state.active;
     if (!f.mind || !a) return;
-    for (const m of a.shownMethods || []) if (m.source === 'mind') { try { f.mind.recordLessonUse(m.mindId, outcome === 'fixture-approved'); } catch (_) { /* counters are best effort */ } }
+    for (const m of a.shownMethods || []) if (m.source === 'mind') { try { f.mind.recordLessonUse(m.mindId, outcome === 'fixture-approved', f.taskProfile ? f.taskProfile.id : undefined); } catch (_) { /* counters are best effort */ } }
   }
   envWaitMs() { const w = this.qwenFixture.envWaitMs; return Number.isInteger(w) && w >= 0 && w <= ENV_WAIT_MS ? w : ENV_WAIT_MS; }
   qwenAttemptSettled(t, now = Date.now()) {
@@ -1280,11 +1299,11 @@ class MindAutopilot {
     a.repeatCount = sameAgain ? (a.repeatCount || 0) + 1 : 0;
     a.review = 'Independent checks (not a review): ' + (sameAgain ? (sameCode ? 'You sent exactly the same code as your previous attempt and it fails the same way: change the approach.\n'
         : 'Your new code fails exactly the same cases as your previous attempt: renaming or rearranging did not fix the logic, rethink it from the requirements.\n') : '')
-      + explainChecks(observations).join('\n');
+      + explainChecks(observations, { code: this.lastAttemptCode() }).join('\n');
     a.repairs++;
     this.log('decision', 'Developer attempt rejected by independent checks: ' + observations.join(' | ').slice(0, 300));
     // Equivalent failure twice in a row: one bounded teacher call, then the standard repair.
-    if (this.shouldTeach(sameAgain && a.repeatCount === 1, 'checks:' + signature)) return this.startTeaching({ kind: 'checks', signature: 'checks:' + signature, observations: explainChecks(observations), raw: observations, failedAttempts: a.repeatCount + 1 }, now);
+    if (this.shouldTeach(sameAgain && a.repeatCount === 1, 'checks:' + signature)) return this.startTeaching({ kind: 'checks', signature: 'checks:' + signature, observations: explainChecks(observations, { code: this.lastAttemptCode() }), raw: observations, failedAttempts: a.repeatCount + 1 }, now);
     // No progress: the same refused code three times in a row. Stop now instead
     // of spending the remaining attempts on a model that will not change.
     if (a.repeatCount >= 2) { this.log('decision', 'Stopped without progress: the same refused code three times in a row'); return this.complete('stalled', a.review); }
@@ -1351,7 +1370,7 @@ class MindAutopilot {
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
       ...(this.qwenFixture ? { attempts: a.attempts || [], scope: 'fictional-fixture', runId: a.runId || null, teachings: a.teachings || 0, teacherTokens: a.teacherTokens || 0, teachingLog: a.teachingLog || [],
-        shownMethods: (a.shownMethods || []).map(m => ({ key: m.key, source: m.source, errorClass: m.errorClass, provenance: m.provenance || null })), mindLesson: a.mindLesson || null } : {}),
+        shownMethods: (a.shownMethods || []).map(m => ({ key: m.key, source: m.source, errorClass: m.errorClass, provenance: m.provenance || null })), mindLesson: a.mindLesson || null, recallDecisions: a.recallDecisions || null } : {}),
       at: new Date().toISOString() });
     if (this.qwenFixture) this.state.enabled = false; // one fixture task, never a discovery afterwards
     this.state.history = this.state.history.slice(-100);

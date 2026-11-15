@@ -103,11 +103,12 @@ function harness(t, { sources, reviews = [], reviewExecution = {}, extra = {}, t
       tasks.set(id, task); return task;
     },
   };
-  const pilot = new MindAutopilot({ repoRoot: state, orchestrator: orch, getUiContext: () => ({}), getRepoPath: () => null, autoTimer: false, id: 'qwen-fixture',
+  const ctor = (over = {}) => ({ repoRoot: state, orchestrator: orch, getUiContext: () => ({}), getRepoPath: () => null, autoTimer: false, id: 'qwen-fixture',
     def: { limits: { repairs: 5 } }, qwenFixture: { capability: sup.QWEN_DEVELOPER_FIXTURE, root, files: [NAME, 'test.js'], editable: [NAME], assertions: CASES,
-      requirements: 'Return null for an empty array; otherwise the arithmetic mean, without intermediate overflow.', reviewerModel: 'gpt-6.1-sol', ...extra } });
+      requirements: 'Return null for an empty array; otherwise the arithmetic mean, without intermediate overflow.', reviewerModel: 'gpt-6.1-sol', ...extra, ...over } });
+  const pilot = new MindAutopilot(ctor());
   pilot.learn = (() => { const orig = pilot.learn.bind(pilot); return (...a) => { spawns.push({ stage: 'learn' }); return orig(...a); }; })();
-  return { root, orch, pilot, spawns };
+  return { root, orch, pilot, spawns, reopen: (over) => new MindAutopilot(ctor(over)) };
 }
 async function run(pilot) {
   for (let i = 0; i < 400 && pilot.state.active && pilot.state.enabled; i++) { await new Promise(r => setTimeout(r, 15)); await pilot.tick(); }
@@ -520,4 +521,82 @@ test('the stress proof of a promoted lesson is stored in the local lessons and i
   assert.deepEqual([l.validation.wideRequired, l.validation.wide], [true, { inputs: 1500, mismatches: 0 }]);
   const m = s.mind.listLessons()[0]; assert.equal(m.certified, true); assert.deepEqual(m.validation.wide, { inputs: 1500, mismatches: 0 });
   assert.equal(l.teaching.principle, TEACH.principle, 'the principle is kept'); assert.equal(m.teaching.principle, TEACH.principle);
+});
+
+// ---- applicability gate, hints with real names, restart-safe Mind sync
+const PROFILE_OVERFLOW = { id: 'average', hazard: 'intermediate-overflow', input: 'number-array', kind: 'numeric-array-aggregate', problem: 'a numeric aggregate whose intermediate value can leave the double range although the final value fits', features: ['const', 'index', 'length', 'reduce', 'Math.abs', 'Math.max', 'Math.min', 'conditional', 'logical', 'comparison', 'arithmetic'] };
+const seedLesson = (over = {}) => ({ key: 'blockage:seed', checkerVersion: CHECKER_VERSION,
+  teaching: { ...TEACH, source: 'claude', model: 'sonnet', tokens: 1700, errorClass: 'result:wrong-values', family: 'average', cause: 'The intermediate sum of very large values exceeds the double range before the final division happens.', strategy: '1. Divide each element by the length before adding. 2. Keep the running total bounded.' },
+  evidence: { runId: 'f'.repeat(32), family: 'average', checkerVersion: CHECKER_VERSION, independent: { passed: true, executed: 7, expected: 7 }, shown: ['blockage:seed'], blocked: { signature: 'checks:x', failedAttempts: 2 }, afterTeaching: true, wideRequired: true, wide: { inputs: 1500, mismatches: 0 },
+    applicability: require('./lesson-applicability').buildApplicability({ profile: PROFILE_OVERFLOW, code: 'function average(v){return v.reduce((a,b)=>a+b/v.length,0)}', family: 'average', wide: { inputs: 1500, mismatches: 0 } }),
+    codex: { decision: 'GO', taskId: 'task-seed-1', diffHash: 'd'.repeat(64), reviewer: { provider: 'codex', cleanup: 'verified-no-descendants', tools: ['functions.request_user_input'], version: 'codex-cli 0.169.0' } }, codeHash: 'c'.repeat(64), assertionsHash: 'e'.repeat(64), ...over } });
+
+test('recall gate: a lesson whose hazard does not match the task is not sent, the decision is recorded, and the developer works without extra memory', async t => {
+  const s = teachSetup(t, { teacher: { enabled: false }, taskProfile: { ...PROFILE_OVERFLOW, id: 'fizz', hazard: 'none', input: 'integer', kind: 'scalar-classification' } });
+  s.mind.upsertLesson(seedLesson());
+  const h = harness(t, { sources: [SAFE], reviews: [{ decision: 'GO', corrections: [] }], extra: s.extra });
+  start(h, 'Implement average(v) in average.js; it must not overflow on very large values: the intermediate sum exceeds the double range.'); await run(h.pilot);
+  assert.doesNotMatch(h.spawns.find(x => x.stage === 'qwen').prompt, /VALIDATED METHODS/, 'word overlap alone never makes a structured lesson applicable');
+  const rec = h.pilot.state.history.at(-1);
+  assert.equal(rec.shownMethods.length, 0); assert.equal(rec.recallDecisions.length, 1); assert.equal(rec.recallDecisions[0].shown, false); assert.match(rec.recallDecisions[0].reasons.join(), /different hazard/);
+  assert.match(h.pilot.state.events.map(e => e.msg).join('\n'), /Recall gate: 0 of 1 method\(s\) applicable: working without extra memory/);
+});
+
+test('recall gate: a lesson with the same hazard, input and kind is sent, with its problem and limits, and the decision is recorded', async t => {
+  const s = teachSetup(t, { teacher: { enabled: false }, taskProfile: { ...PROFILE_OVERFLOW, id: 'meanabs' } });
+  s.mind.upsertLesson(seedLesson());
+  const h = harness(t, { sources: [SAFE], reviews: [{ decision: 'GO', corrections: [] }], extra: s.extra });
+  start(h); await run(h.pilot);
+  const p = h.spawns.find(x => x.stage === 'qwen').prompt;
+  assert.match(p, /Problem it solves: a numeric aggregate whose intermediate value can leave the double range[\s\S]*Limits: validated on "average" only; applying it to another function is a transfer that is not established/);
+  const rec = h.pilot.state.history.at(-1); assert.equal(rec.shownMethods.length, 1); assert.equal(rec.recallDecisions[0].shown, true);
+  const u = s.mind.recallLessons({ question: 'average very large values intermediate sum overflow', checkerVersion: CHECKER_VERSION })[0].usage;
+  assert.deepEqual([u.uses, u.usesSucceeded, u.byTask.meanabs], [1, 1, { uses: 1, ok: 1 }], 'the use is counted per task as an association');
+});
+
+test('recall gate: a lesson shown twice on a task without ever being followed by a success is hidden there, and kept elsewhere', async t => {
+  const s = teachSetup(t, { teacher: { enabled: false }, taskProfile: { ...PROFILE_OVERFLOW, id: 'midrange' } });
+  const m = s.mind.upsertLesson(seedLesson());
+  s.mind.recordLessonUse(m.id, false, 'midrange'); s.mind.recordLessonUse(m.id, false, 'midrange');
+  const h = harness(t, { sources: [SAFE], reviews: [{ decision: 'GO', corrections: [] }], extra: s.extra });
+  start(h); await run(h.pilot);
+  assert.doesNotMatch(h.spawns.find(x => x.stage === 'qwen').prompt, /VALIDATED METHODS/);
+  assert.match(h.pilot.state.history.at(-1).recallDecisions[0].reasons.join(), /never followed by a success: hidden here/);
+  const l = s.mind.listLessons()[0]; assert.equal(l.status, 'validated', 'nothing is deleted'); assert.equal(l.usage.byTask.midrange.uses, 2);
+  const h2 = harness(t, { sources: [SAFE], reviews: [{ decision: 'GO', corrections: [] }], extra: { ...s.extra, taskProfile: { ...PROFILE_OVERFLOW, id: 'meanabs' } } });
+  start(h2); await run(h2.pilot);
+  assert.match(h2.spawns.find(x => x.stage === 'qwen').prompt, /VALIDATED METHODS/, 'still available for a task where it was not disproved');
+});
+
+test('a hint no longer hands over a placeholder name: the developer is told the real parameter name', async t => {
+  const SLIP = 'function average(v){if(v.length===0)return null;return arr.reduce((a,b)=>a+b/v.length,0)}\nmodule.exports={average};\n';
+  const h = harness(t, { sources: [SLIP, SAFE], reviews: [{ decision: 'GO', corrections: [] }], extra: { teacher: { enabled: false } } });
+  start(h); await run(h.pilot);
+  const second = h.spawns.filter(x => x.stage === 'qwen')[1].prompt;
+  assert.match(second, /You wrote `arr` but there is no such name: the array parameter of your function is `v`\. Use that name\./);
+  assert.doesNotMatch(second, /arr\.reduce\(\(a, b\) => expression/, 'the hint no longer teaches the placeholder arr');
+});
+
+test('the syntax hints use the real parameter name and explain the refused spread', async t => {
+  const SPREAD = 'function average(v){if(v.length===0)return null;return Math.max(...v)}\nmodule.exports={average};\n';
+  const h = harness(t, { sources: [SPREAD, SAFE], reviews: [{ decision: 'GO', corrections: [] }], extra: { teacher: { enabled: false } } });
+  start(h); await run(h.pilot);
+  const second = h.spawns.filter(x => x.stage === 'qwen')[1].prompt;
+  assert.match(second, /v\.reduce\(\(a, b\) => expression, initial\)/);
+  assert.match(second, /Math\.min\(\.\.\.v\) and Math\.max\(\.\.\.v\) with a spread are refused/);
+  assert.doesNotMatch(second, /arr\.reduce\(/);
+});
+
+test('after a restart, a Mind write that failed is still pending, is synced once, and the new session recalls it', async t => {
+  const s = teachSetup(t); let fail = true; const real = s.mind;
+  const flaky = { ...real, upsertLesson: (x) => { if (fail) throw new Error('disk full'); return real.upsertLesson(x); } };
+  const h = harness(t, { sources: [wrongWith(0, 'a'), wrongWith(0, 'b'), SAFE], reviews: [{ decision: 'GO', corrections: [] }], teachings: [TEACH], extra: { ...s.extra, mind: flaky } });
+  start(h); await run(h.pilot);
+  assert.equal(h.pilot.state.mindSyncPending.length, 1); assert.equal(real.listLessons().length, 0);
+  fail = false;
+  const reopened = h.reopen({ ...s.extra, mind: real }); // a brand new process reads the saved state
+  assert.equal(reopened.state.mindSyncPending.length, 1, 'the pending sync survived the restart');
+  assert.equal(reopened.syncPendingMind(), 1); assert.equal(reopened.syncPendingMind(), 0);
+  assert.equal(real.listLessons().length, 1); assert.equal(real.listLessons()[0].certified, true);
+  const third = h.reopen({ ...s.extra, mind: real }); assert.equal(third.state.mindSyncPending.length, 0, 'and the sync was saved');
 });
