@@ -31,7 +31,7 @@ module.exports = {
   isQwenRepoEnabled() { return this.getConfig && this.getConfig()?.QwenRepo?.enabled === true; },
 
   // existingWorktree: continue in the worktree of an earlier Qwen stage (resume or repair).
-  spawnQwenInWorktree({ repoPath, branch, startPoint, existingWorktree = null, task, verify, protectedPatterns, skipDirs, model = DEFAULT_MODEL, memoryText = '', sessionFile, deadlineAt, from, space, taskId, timeout, onEvent, onWorktree }) {
+  spawnQwenInWorktree({ repoPath, branch, startPoint, existingWorktree = null, task, verify, protectedPatterns, skipDirs, model = DEFAULT_MODEL, memoryText = '', sessionFile, deadlineAt, from, space, taskId, timeout, onEvent, onWorktree, dependencies }) { // `dependencies`: injection point for tests (fetch, freemem, sleep), never set by the autopilot
     if (!this.isQwenRepoEnabled()) throw new Error('Qwen repository developer is disabled (QwenRepo.enabled)');
     const profile = PROFILES[model];
     if (!profile || profile.mode !== 'text') throw new Error('Unsupported Qwen developer model');
@@ -56,7 +56,7 @@ module.exports = {
     this._broadcastTaskUpdate(t);
     (async () => {
       try {
-        const out = await runRepoWorker({ worktree: wt.path, base, task, verify, protectedPatterns, skipDirs, model, profile, signal: abort.signal, deadlineAt, sessionFile, memoryText, onEvent });
+        const out = await runRepoWorker({ worktree: wt.path, base, task, verify, protectedPatterns, skipDirs, model, profile, signal: abort.signal, deadlineAt, sessionFile, memoryText, onEvent, dependencies });
         if (t.state !== STATE.RUNNING) return;
         Object.assign(t.execution, { changedFiles: out.changed, turns: out.turns, switches: out.switches, agentUsage: { input_tokens: out.usage.input, output_tokens: out.usage.output, total_tokens: out.usage.input + out.usage.output, calls: out.usage.calls },
           notes: out.notes, plan: out.plan, strategies: out.strategies, events: out.events.slice(-20), log: out.log.slice(-40), verified: out.verified ? out.verified.results.map((r) => r.name) : null });

@@ -49,6 +49,8 @@ function setup({ qwenReplies = [], evidence = ['index.js:2 carries a TODO asking
     proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter(); proc.kill = () => {};
     return proc;
   };
+  // The tests must not depend on how much memory the machine has while 600 other tests run in parallel.
+  const realSpawn = orch.spawnQwenInWorktree.bind(orch); orch.spawnQwenInWorktree = (o) => realSpawn({ ...o, dependencies: { freemem: () => 8 * 1024 ** 3, sleep: async () => {} } });
   const lm = { prompts: [], replies: [...qwenReplies], down: false };
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
