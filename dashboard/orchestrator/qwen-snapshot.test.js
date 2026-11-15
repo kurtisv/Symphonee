@@ -17,6 +17,9 @@ test('copies selected files and accepts a bounded proposal without changing the 
   assert.deepEqual(validateProposal(before, after, ['app.js']).map(x => x.path), ['app.js']);
   assert.equal(fs.readFileSync(path.join(dir, 'app.js'), 'utf8'), 'old');
   assert.throws(() => validateProposal(before, after, []), /outside allowed/);
+  const testEdited = before.map(x => ({ ...x }));
+  testEdited[1].content = Buffer.from('altered test').toString('base64');
+  assert.throws(() => validateProposal(before, testEdited, ['app.js']), /outside allowed/);
   after[1].path = '../outside';
   assert.throws(() => validateProposal(before, after, ['app.js']), /Invalid relative/);
 });

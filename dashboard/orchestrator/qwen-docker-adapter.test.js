@@ -81,7 +81,9 @@ test('Docker startup, network, timeout and crash failures remove every created r
     };
     const run = async cmd => { if (cmd === 'git') { const e=Error('not a git repository'); e.stderr='not a git repository'; throw e; } return JSON.stringify({ engines:[{name:'vulkan',hardwareSurvey:{gpuSurveyResult:{result:{code:'success'},gpuInfo:[{}]}}}] }); };
     const fetch = async () => ({ok:true,json:async()=>({data:[{id:'qwen3-4b-instruct-2507',state:'loaded',loaded_context_length:12288}]})});
-    await assert.rejects(runQwenDocker({root:dir,files:['app.js','test.js'],editable:['app.js'],prompt:'fix'}, {docker:fake,run,fetch}), undefined, failure);
+    const gitSnapshot = (root, files) => ({root, commit:'fixture', files:require('./qwen-snapshot').snapshotFiles(root, files)});
+    const assertions = [{file:'app.js',export:'answer',args:[],expected:1}];
+    await assert.rejects(runQwenDocker({root:dir,files:['app.js','test.js'],editable:['app.js'],assertions,prompt:'fix'}, {docker:fake,run,fetch,gitSnapshot,freemem:()=>8e9}), undefined, failure);
     assert.equal(containers.size, 0, failure); assert.equal(networks.size, 0, failure);
   }
 });
@@ -93,4 +95,43 @@ test('tool audit rejects edits outside selection even if later restored', () => 
   assert.deepEqual(validateToolEvents(events, ['app.js','test.js'], ['app.js']), ['read_file','edit','run_shell_command']);
   assert.throws(() => validateToolEvents([...events, call('4','edit',{file_path:'/workspace/test.js'}),done('4')], ['app.js','test.js'], ['app.js']), /outside its selection/);
   assert.throws(() => validateToolEvents([...events, call('5','run_shell_command',{command:'node other.js'}),done('5')], ['app.js','test.js'], ['app.js']), /Unexpected shell/);
+});
+
+test('a failed permitted call is tolerated, a failed forbidden call or a missing result is not', () => {
+  const call = (id, name, input) => ({ message: { content: [{ type: 'tool_use', id, name, input }] } });
+  const done = (id, is_error = false) => ({ message: { content: [{ type: 'tool_result', tool_use_id: id, is_error }] } });
+  const ok = [call('1','read_file',{file_path:'/workspace/app.js'}),done('1'),call('2','edit',{file_path:'/workspace/app.js'}),done('2'),call('3','run_shell_command',{command:'node test.js'}),done('3')];
+  assert.deepEqual(validateToolEvents([call('0','edit',{file_path:'/workspace/app.js'}),done('0',true),...ok], ['app.js','test.js'], ['app.js']).length, 4);
+  assert.throws(() => validateToolEvents([call('0','edit',{file_path:'/workspace/test.js'}),done('0',true),...ok], ['app.js','test.js'], ['app.js']), /outside its selection/, 'a refused attempt outside the selection still voids the proposal');
+  assert.throws(() => validateToolEvents([call('0','run_shell_command',{command:'cat /etc/passwd'}),done('0',true),...ok], ['app.js','test.js'], ['app.js']), /Unexpected shell/);
+  assert.throws(() => validateToolEvents([...ok, call('4','read_file',{file_path:'/workspace/app.js'})], ['app.js','test.js'], ['app.js']), /no result/);
+  const onlyFailedEdit = [call('1','read_file',{file_path:'/workspace/app.js'}),done('1'),call('2','edit',{file_path:'/workspace/app.js'}),done('2',true),call('3','run_shell_command',{command:'node test.js'}),done('3')];
+  assert.throws(() => validateToolEvents(onlyFailedEdit, ['app.js','test.js'], ['app.js']), /successful read, edit and test/);
+});
+
+test('developer model comes from a fixed profile list; only the 9B relay sets reasoning_effort none', async t => {
+  const vm = require('node:vm');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-profile-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'app.js'), 'old'); fs.writeFileSync(path.join(dir, 'test.js'), 'test');
+  const assertions = [{file:'app.js',export:'answer',args:[],expected:1}];
+  const gitSnapshot = (root, files) => ({root, commit:'fixture', files:require('./qwen-snapshot').snapshotFiles(root, files)});
+  await assert.rejects(runQwenDocker({root:dir,files:['app.js','test.js'],editable:['app.js'],assertions,prompt:'fix',model:'qwen/other'}, {gitSnapshot}), /Unsupported Qwen developer model/);
+  for (const [model, ctx, effort, wall] of [['qwen3-4b-instruct-2507', 12288, false, '240s'], ['qwen/qwen3.5-9b', 16384, true, '480s']]) {
+    let relayCode = null, qwenArgs = null;
+    const fake = async args => {
+      if (args[0] === 'create' && args.at(-2) === '-e') { relayCode = args.at(-1); throw Error('stop after relay create'); }
+      if (args[0] === 'network' && args[1] === 'inspect') return JSON.stringify([{ Internal:true }]);
+      return '';
+    };
+    const run = async () => JSON.stringify({ engines:[{name:'vulkan',hardwareSurvey:{gpuSurveyResult:{result:{code:'success'},gpuInfo:[{}]}}}] });
+    const fetchSmall = async () => ({ok:true,json:async()=>({data:[{id:model,state:'loaded',loaded_context_length:ctx - 1}]})});
+    await assert.rejects(runQwenDocker({root:dir,files:['app.js','test.js'],editable:['app.js'],assertions,prompt:'fix',model}, {docker:fake,run,fetch:fetchSmall,gitSnapshot,freemem:()=>8e9}), /context is not loaded/, model);
+    const fetch = async () => ({ok:true,json:async()=>({data:[{id:model,state:'loaded',loaded_context_length:ctx}]})});
+    await assert.rejects(runQwenDocker({root:dir,files:['app.js','test.js'],editable:['app.js'],assertions,prompt:'fix',model}, {docker:fake,run,fetch,gitSnapshot,freemem:()=>8e9}), /stop after relay/);
+    new vm.Script(relayCode); // the generated relay is valid JavaScript
+    assert.equal(/reasoning_effort=effort/.test(relayCode) && relayCode.includes('const effort="none"'), effort, model);
+    assert.ok(relayCode.includes('2097152'), 'body size limit kept');
+    void qwenArgs; void wall;
+  }
 });

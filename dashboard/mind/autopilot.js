@@ -137,6 +137,39 @@ const CONTEXT_POLICY = 'Conserve tokens: inspect only relevant files (maximum ei
 const WORK_CATEGORIES = Object.freeze(['correctness', 'performance', 'quality', 'cleanup', 'testing']);
 const STAGES = Object.freeze(['discover', 'plan-review', 'implement', 'code-review', 'repair']);
 const PILOT_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
+// Fixture environment refusals that happen before the developer runs.
+const ENV_FAILURE = /^(Insufficient free RAM|LM Studio unavailable|.* context is not loaded|Vulkan GPU is not verified)/;
+// Plain-language meaning of the independent checker's messages. Measured
+// 2026-11-15: a 4B model resubmitted identical code three times after
+// "Unsupported expression: MemberExpression", which names an internal node.
+const CHECK_HINTS = Object.freeze([
+  [/VariableDeclaration/, 'Only a new single-assignment const with a value is allowed (no let, var, reassignment, destructuring or several declarators).'],
+  [/MemberExpression/, 'Only .length, v[i] indexing and Math.abs, Math.max, Math.min can be read: Number.MAX_VALUE, Number.MAX_SAFE_INTEGER, Infinity, Math.floor and every other property are unavailable. Write a numeric constant as a literal, for example 1.7976931348623157e308.'],
+  [/CallExpression|Unsupported expression/, 'The only calls allowed are arr.reduce((a, b) => expression, initial) and Math.abs(x), Math.max(a, b), Math.min(a, b) with exactly those arguments; no other function or method. For the largest or smallest value of a whole array write arr.reduce((m, x) => Math.max(m, x), start) and never list array positions by hand.'],
+  [/Unknown identifier/, 'Only the parameters, your consts and the reduce callback parameters exist: no Infinity, NaN, undefined, Number or other globals.'],
+  [/Unsupported result/, 'For one of the inputs the result was not a finite number (Infinity, -Infinity or NaN) or nothing was returned: an intermediate value overflows or a branch has no return.'],
+  [/Unsupported reduce callback/, 'reduce needs exactly (a, b) => expression, with an expression body (no braces) and an initial value.'],
+  [/Index out of range|Index requires/, 'An index must be an integer inside the array; guard the empty array first.'],
+  [/Unsupported statement/, 'Only if, return and const statements are allowed: no loops, assignments or other statements.'],
+]);
+const hintFor = (text) => (CHECK_HINTS.find(([re]) => re.test(String(text))) || [])[1];
+// Collapses the per-assertion syntax refusals into one plain instruction each;
+// wrong results and everything else pass through unchanged.
+function explainChecks(observations) {
+  const hints = new Set(), rest = [];
+  for (const o of observations) {
+    const wrong = /^Assertion \d+ \((.*) expected (.*)\): Supervisor refused: verification refused: Expected values to be strictly deep-equal: (.*) !== (.*)$/.exec(String(o).trim());
+    if (wrong) { rest.push(`${wrong[1]} returned ${wrong[3]}, but it must return ${wrong[2]}.`); continue; }
+    const m = /verification refused: ([^|]+)/.exec(String(o));
+    const h = m && hintFor(m[1]);
+    if (h) hints.add(h); else rest.push(String(o));
+  }
+  return [...[...hints].map(h => 'The checker refused your syntax. ' + h), ...rest];
+}
+const ENV_RETRIES = 8, ENV_WAIT_MS = 60_000, MAX_EXTRA_CASES = 6;
+// The pure subset accepted by the fixture's independent checker, told to both
+// the developer and the reviewer so that corrections stay implementable.
+const FIXTURE_SUBSET = "one function declaration with plain parameters followed by module.exports = { name }; a body made of if statements, return statements and single-assignment `const name = expression;` declarations (no let, no var, no reassignment, no loops); expressions limited to numbers, strings, booleans, null, parameters and consts, + - * / %, comparisons (=== !== < <= > >=), && || !, ?:, .length, indexing v[i] with an integer index in range, exactly Math.abs(x), Math.max(a, b) and Math.min(a, b), and arr.reduce((a, b) => expression, initial) with an expression body. No loops, no Math.floor/ceil/sqrt, no other calls.";
 const CODE_QUALITY_POLICY = [
   'Correctness: prioritize reproducible defects, regressions, and failing tests.',
   'Performance: optimize only demonstrated bottlenecks. Record a reproducible baseline (command, metric, environment), compare before and after using comparable workloads, and reject regressions.',
@@ -326,7 +359,19 @@ function localTriage(cwd, { exclude = [] } = {}) {
 
 class MindAutopilot {
   constructor({ repoRoot, orchestrator, getUiContext, getRepoPath, getRepos, broadcast, autoTimer = true,
-    id = 'default', def = {}, peers = null }) {
+    id = 'default', def = {}, peers = null, qwenFixture = null }) {
+    // Experimental: Qwen3 4B as developer on a FICTIONAL fixture, Codex as the
+    // tool-free reviewer. Only an in-process capability enables it; neither the
+    // routes nor the pilot definition file can, and real projects stay locked.
+    if (qwenFixture) {
+      const { QWEN_DEVELOPER_FIXTURE } = require('../orchestrator/qwen-supervision');
+      if (qwenFixture.capability !== QWEN_DEVELOPER_FIXTURE) throw new Error('Untrusted Qwen fixture');
+      const f = qwenFixture;
+      if (!f.root || !Array.isArray(f.files) || !Array.isArray(f.editable) || !Array.isArray(f.assertions) || typeof f.requirements !== 'string' || !/^[a-z0-9.-]{3,40}$/.test(f.reviewerModel || '')) throw new Error('Invalid Qwen fixture');
+      if ((f.lessonsRoot !== undefined && (typeof f.lessonsRoot !== 'string' || !path.isAbsolute(f.lessonsRoot))) || (f.name !== undefined && !/^[a-z0-9-]{1,40}$/.test(f.name))) throw new Error('Invalid Qwen fixture');
+      if (f.developerModel !== undefined &&!Object.hasOwn(require('../orchestrator/qwen-docker-adapter').PROFILES, f.developerModel)) throw new Error('Unsupported Qwen developer model');
+      this.qwenFixture = Object.freeze({ ...f });
+    } else this.qwenFixture = null;
     this.orch = orchestrator; this.repoRoot = repoRoot; this.getUiContext = getUiContext;
     this.getRepoPath = getRepoPath; this.getRepos = getRepos || (() => ({}));
     this.broadcast = broadcast || (() => {});
@@ -462,7 +507,7 @@ class MindAutopilot {
     return this.snapshot(now);
   }
   report(level, message, fingerprint, extra = {}) {
-    if (!sentry) return;
+    if (!sentry || this.qwenFixture) return; // a fictional fixture never reports outside
     sentry.event({ message, level, loop: 'autopilote', fingerprint: ['autopilote', this.id, ...fingerprint],
       tags: { pilote: this.id, depot: this.state.repoName || null }, extra }).catch(() => {});
   }
@@ -786,6 +831,7 @@ class MindAutopilot {
   // then teaches Mind what is not taught yet (gate lessons included). Never throws.
   lessonScope() { return lessons.scopeOf(this.id, this.state.repoName); }
   learn(kind, text, source) {
+    if (this.qwenFixture) return; // fixture observations go to an isolated Mind space, never to repository lessons
     try {
       const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source });
       if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon repetee (' + r.entry.count + ') ') + '[' + kind + '] ' + r.entry.text.slice(0, 160));
@@ -837,6 +883,7 @@ class MindAutopilot {
     // task begun inside it: it waits for the next window.
     // A task started by hand ("Lancer une tache maintenant") runs to its end.
     if (this.def.schedule && !this.inWindow(now) && !(a && a.manual)) return this.parkForWindow(stage, now);
+    if (this.qwenFixture) return this.dispatchQwenFixture(stage, now);
     const cli = ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
@@ -921,6 +968,216 @@ class MindAutopilot {
     this.log('dispatch', stage + ' -> ' + cli + ' (task ' + task.id + ')', { taskId: task.id, cli });
     this.save();
   }
+  // ── Qwen fixture mode: same implement / code-review / repair stages ─────
+  startFixtureTask(plan, now = Date.now()) {
+    if (!this.qwenFixture) throw new Error('Not a Qwen fixture pilot');
+    if (this.state.active) throw new Error('A task is already active');
+    if (!plan || typeof plan.title !== 'string' || typeof plan.objective !== 'string') throw new Error('Fixture plan required');
+    Object.assign(this.state, { enabled: true, error: null, repoName: 'qwen-fixture', repoPath: this.qwenFixture.root, nextAt: 0 });
+    this.state.active = { stage: 'implement', taskId: null, plan, review: '', planRevisions: 0, repairs: 0, baseSha: null, worktree: null,
+      budgetRef: null, waitingStage: null, manual: true, attempts: [], reviews: [], diff: null, technical: null, reviewRequest: null };
+    this.log('plan', '[fixture] ' + plan.title);
+    if (this.qwenFixture.lessonsRoot) { try { const n = lessons.consolidate(this.qwenFixture.lessonsRoot, this.fixtureLessonScope()); if (n) this.log('lesson', n + ' lecon(s) reformulee(s) fusionnee(s)'); } catch (_) {} }
+    this.dispatch('implement', now);
+    return this.snapshot(now);
+  }
+  // Fixture instincts: a persistent, isolated lesson store (never the repository's
+  // lecons.json, never Mind memory cards). Only verified evidence is recorded:
+  // the host's independent checks and real reviews, not developer self-reports.
+  fixtureLessonScope() { return lessons.scopeOf(this.id, 'fixture:' + (this.qwenFixture.name || 'qwen')); }
+  fixtureLearn(kind, text, { trigger, action, source } = {}) {
+    const f = this.qwenFixture;
+    if (!f.lessonsRoot || !text) return null;
+    try {
+      const r = lessons.record(f.lessonsRoot, { scope: this.fixtureLessonScope(), kind, text, trigger, action, source, evidence: 'verified' });
+      if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon renforcee ') + '[' + kind + '] ' + r.entry.text.slice(0, 140) + ' (confiance ' + r.entry.confidence + ')');
+      return r.entry;
+    } catch (_) { return null; }
+  }
+  fixtureConfirm(kinds) {
+    const f = this.qwenFixture, a = this.state.active;
+    if (!f.lessonsRoot) return;
+    for (const k of a.appliedLessons || []) if (!kinds || kinds.includes(k.split(':')[0])) { try { lessons.confirm(f.lessonsRoot, this.fixtureLessonScope(), k); } catch (_) {} }
+  }
+  // One verified observation -> one atomic lesson. Environment failures (RAM,
+  // Docker, model not loaded) are not the developer's mistakes and are skipped.
+  learnFromChecks(observations) {
+    for (const o of observations.slice(0, 3)) {
+      const s = String(o);
+      if (/Insufficient free RAM|not loaded|Docker|Vulkan|LM Studio|Cancelled|Snapshot/i.test(s)) continue;
+      // A wrong value for one input is task-specific, not a reusable lesson.
+      if (/strictly deep-equal/.test(s)) continue;
+      const core = (/verification refused: ([^|]+)/.exec(s) || /(Unexpected shell command[^|]*)/.exec(s) || /(Qwen did not demonstrate[^|]*)/.exec(s) || /(FatalBudgetExceededError)/.exec(s) || [null, s])[1].trim().slice(0, 200);
+      const action = hintFor(core)
+        || (/Unexpected shell command/.test(core) ? 'Run only the exact shell command: node test.js.'
+        : /FatalBudgetExceeded/.test(core) ? 'Finish in few tool calls: read the file once, edit once, run node test.js once.'
+        : undefined);
+      this.fixtureLearn('checks', core, { trigger: 'when writing ' + this.qwenFixture.editable.join(', '), action, source: 'independent checks' });
+      if (/verification refused/.test(s)) break; // one syntax lesson per attempt is enough
+    }
+  }
+  qwenPrompt(stage) {
+    const a = this.state.active, f = this.qwenFixture;
+    let learned = '';
+    if (f.lessonsRoot) {
+      try {
+        const list = lessons.top(f.lessonsRoot, this.fixtureLessonScope(), 5);
+        a.appliedLessons = list.map(x => x.key);
+        learned = lessons.promptText(list).slice(0, 1200);
+      } catch (_) { a.appliedLessons = []; }
+    }
+    const textMode = Boolean(f.developerModel) && require('../orchestrator/qwen-docker-adapter').PROFILES[f.developerModel]?.mode === 'text';
+    const parts = ['Task: ' + a.plan.objective, 'Requirements: ' + f.requirements,
+      'Edit only ' + f.editable.join(', ') + '. The checker accepts only: ' + FIXTURE_SUBSET + '',
+      textMode ? 'You have no tools: you only write the file content in your answer.'
+        : 'Tools: read files only with read_file and change average.js only with edit. The ONLY shell command allowed is exactly: node test.js (no ls, cat, node -e or any other command; any other command voids the attempt). The files are ' + f.files.join(' and ') + '.',
+      'Unrelated example of the accepted shape: function sum(v){if(v.length===0)return 0;return v.reduce((a,b)=>a+b,0)}\nmodule.exports={sum};'];
+    if (learned) parts.push(learned);
+    if (stage === 'repair') {
+      parts.push('Your previous proposal was REJECTED. Fix every observation below' + (textMode ? '' : ', starting again from the original file') + '. If a suggested fix needs syntax outside the accepted shape, reach the same result with an expression that stays inside it.',
+        'Observations:\n' + String(a.review || '').slice(0, 1400), 'Previous proposal (diff):\n' + String(a.diff || '').slice(0, 900));
+    }
+    return parts.join('\n\n').slice(0, textMode ? 5400 : 3900);
+  }
+  dispatchQwenFixture(stage, now) {
+    const a = this.state.active, f = this.qwenFixture;
+    if (!['implement', 'code-review', 'repair'].includes(stage)) throw new Error('Qwen fixture uses only implement, code-review and repair');
+    const cli = stage === 'code-review' ? 'codex' : 'qwen3-4b-docker';
+    const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
+    if (!charge) throw new Error('Fixture call budget reached');
+    let task;
+    if (stage === 'code-review') {
+      const { buildFixtureReviewRequest } = require('../orchestrator/qwen-supervision');
+      const reviewMs = Math.min(this.stepMs, 600000);
+      const { request, prompt } = buildFixtureReviewRequest({ technical: a.technical, requirements: f.requirements, cases: this.fixtureCases(), counterexamples: true, diff: a.diff, timeoutMs: reviewMs + 60000, constraints: FIXTURE_SUBSET });
+      a.reviewRequest = request;
+      task = this.orch.spawnHeadless({ cli: 'codex', model: f.reviewerModel, prompt, cwd: f.root, from: 'mind-autopilot-fixture', space: this.state.space,
+        timeout: reviewMs, cloudTimeoutMs: reviewMs, readOnly: true, noRetry: true, noFallback: true, compactContext: true, fixtureNoApiKeys: true, reviewerNoTools: true });
+    } else {
+      const { QWEN_DEVELOPER_FIXTURE } = require('../orchestrator/qwen-supervision');
+      task = this.orch.spawnQwenFixture({ prompt: this.qwenPrompt(stage), cwd: f.root, files: f.files, editable: f.editable, assertions: this.fixtureCases(),
+        from: 'mind-autopilot-fixture', space: this.state.space, ...(f.developerModel ? { model: f.developerModel } : {}),
+        ...(a.repeatCount ? { temperature: Math.min(0.9, Math.round((0.2 + 0.25 * a.repeatCount) * 100) / 100) } : {}) }, QWEN_DEVELOPER_FIXTURE);
+    }
+    if (!task?.id) throw new Error('No task ID from Orchestrator');
+    charge.taskId = task.id;
+    a.stage = stage; a.taskId = task.id; a.budgetRef = charge.ref; a.waitingStage = null; a.startedAt = now;
+    this.log('dispatch', stage + ' -> ' + cli + ' (task ' + task.id + ')', { taskId: task.id, cli });
+    this.save();
+  }
+  // One attempt of the developer, settled from its task (completed or failed).
+  // Every non-passing outcome becomes an observation for the next repair.
+  // Trusted cases plus reviewer counterexamples the host confirmed (bounded).
+  fixtureCases() { return [...this.qwenFixture.assertions, ...((this.state.active && this.state.active.extraCases) || [])]; }
+  // A counterexample is kept only if the reviewed code really fails it under the
+  // independent checker: a reviewer mistake never becomes a check.
+  async adoptCounterexamples(list) {
+    const a = this.state.active, f = this.qwenFixture, sup = require('../orchestrator/qwen-supervision');
+    const base = f.assertions[0], added = [];
+    for (const c of list.slice(0, 3)) {
+      if ((a.extraCases || []).length >= MAX_EXTRA_CASES) break;
+      const cand = { file: base.file, export: base.export, args: c.args, expected: c.expected };
+      if (this.fixtureCases().some(x => JSON.stringify([x.args, x.expected]) === JSON.stringify([cand.args, cand.expected]))) continue;
+      try {
+        require('../orchestrator/qwen-assertions').validateAssertions([cand], f.editable);
+        const r = await sup.assessReconstructedFixture(f.root, f.files, f.editable, a.diff, [cand]);
+        if (r.passed || r.unsupported) { this.log('verify', 'Counterexample ignored (the reviewed code passes it or it cannot be checked): ' + JSON.stringify(cand.args).slice(0, 80)); continue; }
+        a.extraCases = [...(a.extraCases || []), cand]; added.push(cand);
+        this.log('verify', 'Counterexample adopted as an independent check: ' + JSON.stringify(cand.args).slice(0, 80) + ' -> ' + JSON.stringify(cand.expected).slice(0, 40));
+      } catch (e) { this.log('verify', 'Counterexample rejected: ' + String(e.message || e).slice(0, 80)); }
+    }
+    return added;
+  }
+  envWaitMs() { const w = this.qwenFixture.envWaitMs; return Number.isInteger(w) && w >= 0 && w <= ENV_WAIT_MS ? w : ENV_WAIT_MS; }
+  qwenAttemptSettled(t, now = Date.now()) {
+    const a = this.state.active;
+    const technical = t.execution && t.execution.independentAssertions || null;
+    if (t.execution && t.execution.cleanup === 'unverified') throw new Error('Qwen Docker cleanup is not verified; stopped for inspection');
+    // Policy deviations already refused inside the container (another tool or
+    // command) are ordinary failures; signs of escape or tampering halt.
+    if (/isolation|outside its selection|links rejected|unexpected file|unsupported file|Untrusted|temporary repository|without remotes|Base changed|Snapshot|Git (state|conflicts)/i.test(String(t.error || ''))) {
+      throw new Error('Qwen fixture safety check failed: ' + String(t.error).slice(0, 300));
+    }
+    // Environment refusals before the developer even ran (free RAM, local model or
+    // Docker unavailable) are not attempts: wait and retry the same stage without
+    // using a repair (measured 2026-11-15: five RAM refusals ended a run in 15 s).
+    if (t.state !== 'completed' && !technical && ENV_FAILURE.test(String(t.error || ''))) {
+      a.envRetries = (a.envRetries || 0) + 1;
+      if (a.envRetries > ENV_RETRIES) return this.complete('environment-unavailable', String(t.error).slice(0, 300));
+      a.waitingStage = a.stage; a.stage = 'budget-wait'; a.taskId = null; a.parkReason = 'environment';
+      this.state.nextAt = now + this.envWaitMs();
+      this.log('environment', String(t.error).slice(0, 120) + ' : nouvel essai de ' + a.waitingStage + ' dans ' + this.envWaitMs() / 1000 + ' s (' + a.envRetries + '/' + ENV_RETRIES + '), aucune tentative consommee');
+      this.save();
+      return;
+    }
+    const passed = t.state === 'completed' && technical && technical.passed === true && technical.executed === technical.expected && typeof t.result === 'string' && t.result.length > 0;
+    const observations = passed ? [] : (technical && technical.errors && technical.errors.length ? technical.errors : [String(t.error || 'Developer produced no verifiable proposal').slice(0, 600)]);
+    a.attempts.push({ attempt: a.attempts.length + 1, stage: a.stage, taskId: t.id, at: new Date(now).toISOString(),
+      diff: typeof t.result === 'string' ? t.result.slice(0, 4000) : null, technical, developerError: passed ? null : observations.join(' | ').slice(0, 1200),
+      qwenUsage: t.execution && t.execution.agentUsage || null, agentDurationMs: t.execution && t.execution.agentDurationMs || null, review: null });
+    // A proposal the reviewer already refused is not paid for again.
+    const refused = passed && (a.refusedDiffs || []).includes(require('../orchestrator/qwen-supervision').digest(t.result));
+    if (refused) observations.push('Same proposal as one the reviewer already refused; it is not reviewed again. Change the code to fix: ' + String((a.reviews || []).at(-1)?.text || '').slice(0, 400));
+    if (passed && !refused) {
+      a.diff = t.result; a.technical = technical;
+      this.log('verify', 'Independent assertions ' + technical.executed + '/' + technical.expected + ' passed');
+      this.fixtureConfirm(['checks']); // the checks lessons shown were followed, verified by the host
+      return this.dispatch('code-review', now);
+    }
+    if (typeof t.result === 'string' && t.result) a.diff = t.result;
+    this.learnFromChecks(observations);
+    // Same code as the previous failed attempt: say so, the model does not notice it.
+    // "Same" is judged by outcome: identical code, or different code failing exactly
+    // the same cases (measured 2026-11-15: a model that only renamed a variable).
+    const signature = observations.join('|');
+    const sameCode = typeof t.result === 'string' && t.result && a.lastFailedDiff === t.result;
+    const sameAgain = Boolean(sameCode || (signature && a.lastFailureSignature === signature));
+    a.lastFailedDiff = typeof t.result === 'string' ? t.result : null;
+    a.lastFailureSignature = signature;
+    // A repeated proposal at a fixed temperature repeats forever: raise it for the
+    // next attempt (bounded), and return to the default as soon as the code changes.
+    a.repeatCount = sameAgain ? (a.repeatCount || 0) + 1 : 0;
+    a.review = 'Independent checks (not a review): ' + (sameAgain ? (sameCode ? 'You sent exactly the same code as your previous attempt and it fails the same way: change the approach.\n'
+        : 'Your new code fails exactly the same cases as your previous attempt: renaming or rearranging did not fix the logic, rethink it from the requirements.\n') : '')
+      + explainChecks(observations).join('\n');
+    a.repairs++;
+    this.log('decision', 'Developer attempt rejected by independent checks: ' + observations.join(' | ').slice(0, 300));
+    // No progress: the same refused code three times in a row. Stop now instead
+    // of spending the remaining attempts on a model that will not change.
+    if (a.repeatCount >= 2) { this.log('decision', 'Stopped without progress: the same refused code three times in a row'); return this.complete('stalled', a.review); }
+    if (a.repairs > this.limits.repairs) return this.complete('checks-failed', a.review);
+    return this.dispatch('repair', now);
+  }
+  async qwenReviewSettled(t, now = Date.now()) {
+    const a = this.state.active, f = this.qwenFixture;
+    const { parseReviewResponse, unfenceReview } = require('../orchestrator/qwen-supervision');
+    const { gitSnapshot } = require('../orchestrator/qwen-git-snapshot');
+    const last = a.attempts[a.attempts.length - 1];
+    const ex = t.execution || {};
+    if (t.state !== 'completed' || ex.cleanup !== 'verified-no-descendants' || !ex.reviewer || !Array.isArray(ex.reviewerItems) || ex.reviewerItems.some(x => !['agent_message', 'reasoning'].includes(x))) {
+      throw new Error('Codex review unusable (no verdict accepted): ' + String(t.error || ex.cleanup || t.state).slice(0, 400));
+    }
+    let review;
+    try { review = parseReviewResponse(unfenceReview(t.result), a.reviewRequest, now); }
+    catch (e) { throw new Error('Codex review rejected by the host: ' + e.message); }
+    if (gitSnapshot(f.root, f.files).commit !== a.technical.baseCommit) throw new Error('Fixture base changed during review');
+    const record = { at: new Date(now).toISOString(), taskId: t.id, decision: review.decision, corrections: review.corrections, diffHash: review.diffHash,
+      reviewer: { provider: 'codex', model: t.model, version: ex.reviewer.version, tools: ex.reviewer.tools, promptInputHash: ex.reviewer.promptInputHash, items: ex.reviewerItems, cleanup: ex.cleanup }, usage: t.usage || null };
+    if (last) last.review = record;
+    a.reviews = [...(a.reviews || []), { at: record.at, verdict: review.decision === 'GO' ? 'PASS' : 'FAIL', text: JSON.stringify(review.corrections).slice(0, 3000) }];
+    this.log('decision', 'Codex fixture review: ' + review.decision);
+    if (review.decision === 'GO') { this.fixtureConfirm(null); return this.complete('fixture-approved', JSON.stringify(record)); }
+    // A real, host-validated review is verified evidence: its first correction becomes a lesson.
+    this.fixtureLearn('revue', String(review.corrections[0] || '').slice(0, 300), { trigger: 'when writing ' + f.editable.join(', '), source: 'codex fixture review ' + t.id });
+    a.refusedDiffs = [...(a.refusedDiffs || []), review.diffHash].slice(-20);
+    const added = await this.adoptCounterexamples(review.counterexamples || []);
+    a.review = 'Independent Codex review (NO-GO):\n- ' + review.corrections.join('\n- ')
+      + (added.length ? '\nNew independent checks from the reviewer (they must pass from now on): '
+        + added.map(c => c.export + '(' + JSON.stringify(c.args).slice(1, -1) + ') must return ' + JSON.stringify(c.expected)).join('; ') : '');
+    a.repairs++;
+    if (a.repairs > this.limits.repairs) return this.complete('review-rejected', a.review);
+    return this.dispatch('repair', now);
+  }
   complete(outcome, reviewerEvidence = null) {
     const a = this.state.active;
     // The task's span ends now: it stays reserved until a reading taken after this.
@@ -944,7 +1201,9 @@ class MindAutopilot {
       worktree: a.worktree || null, commit: a.commit || null, baseSha: a.baseSha || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
+      ...(this.qwenFixture ? { attempts: a.attempts || [], scope: 'fictional-fixture' } : {}),
       at: new Date().toISOString() });
+    if (this.qwenFixture) this.state.enabled = false; // one fixture task, never a discovery afterwards
     this.state.history = this.state.history.slice(-100);
     this.unlinkActive(a);
     this.report(outcome === 'completed' ? 'info' : 'warning', 'Autopilote ' + this.id + ' : tache ' + outcome + ' : ' + (a.plan?.title || '(decouverte)'),
@@ -1100,6 +1359,16 @@ class MindAutopilot {
     this.busy = true;
     try {
       this.windowCheckIn(now);
+      if (!this.state.active && this.qwenFixture) return this.snapshot();
+      if (this.state.active && this.qwenFixture && !this.state.active.waitingStage) {
+        const a = this.state.active, t = this.orch.getTask(a.taskId);
+        if (!t) throw new Error('Orchestrator task not found: ' + a.taskId);
+        if (now - a.startedAt > this.stepMs + 120000) { this.orch.cancelTask(a.taskId); budget.settleCall(this.state, a.budgetRef, t); throw new Error('Stage timed out: ' + a.stage); }
+        if (['running', 'pending', 'queued'].includes(t.state)) return this.snapshot();
+        budget.settleCall(this.state, a.budgetRef, t); a.budgetRef = null; this.save();
+        if (a.stage === 'code-review') await this.qwenReviewSettled(t, now); else this.qwenAttemptSettled(t, now);
+        return this.snapshot();
+      }
       if (!this.state.active) {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
         if (now < this.state.nextAt || (!this.def.capacity && this.todayCompleted(now) >= this.limits.dailyCompletions)
