@@ -230,6 +230,16 @@ function parsePlan(raw) {
     objective: clip(p.objective.trim(), 2000), evidence, acceptance,
     baseline: p.category === 'performance' ? clip(p.baseline.trim(), 1000) : null };
 }
+// One discovery may return its first task at the top level and up to two more in "more". All of them go to the queue.
+function parsePlanList(raw) {
+  const main = parsePlan(raw);
+  if (!main || main.decision !== 'TASK') return main ? [main] : [];
+  let p = null;
+  try { p = JSON.parse(String(raw).trim()); }
+  catch (_) { const t = String(raw), first = t.indexOf('{'), last = t.lastIndexOf('}'); try { p = JSON.parse(t.slice(first, last + 1)); } catch (_2) { p = null; } }
+  const more = Array.isArray(p && p.more) ? p.more.slice(0, 2) : [];
+  return [main, ...more.map(x => parsePlan(JSON.stringify({ ...x, decision: 'TASK' }))).filter(x => x && x.decision === 'TASK')];
+}
 function verdict(raw) {
   const first = String(raw || '').trim().split(/\r?\n/)[0].trim();
   const match = /^VERDICT:\s*(PASS|FAIL)$/i.exec(first);
@@ -675,6 +685,7 @@ class MindAutopilot {
         implementer: a.implementer || null, qwenMemory: a.qwenMemory ? { ...a.qwenMemory, text: undefined } : null, trace: (a.trace || []).slice(-30) } : null,
       schedule: this.def.schedule, inWindow: this.inWindow(now), ambition: this.def.ambition, sources: this.def.sources,
       history: s.history.slice(-20).reverse(), events: s.events.slice(-30).reverse(),
+      queue: (s.queue || []).map(x => ({ key: x.key, title: x.plan.title, category: x.plan.category, discoveredAt: x.discoveredAt })),
       today: { completed: this.todayCompleted(now), discoveries: this.todayDiscoveries(now) },
       nextAt: s.nextAt, error: s.error, budget: budget.dailyUsage(s, now, this.limits),
       limits: { ...this.limits },
@@ -840,7 +851,7 @@ class MindAutopilot {
         + JSON.stringify(a.rejectedPlan) + '\nReviewer feedback: ' + String(a.review || '').slice(0, 2000) : '',
       RULES, 'Never invent work or repeat a completed objective.',
       'Limits: title 8-180 chars, objective 15-2000, 1-8 evidence items of 12-' + MAX_EVIDENCE_CHARS + ' chars each, 1-8 acceptance items of at most ' + MAX_ACCEPTANCE_CHARS + ' chars each. Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
-      'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].filter(Boolean).join('\n\n');
+      'Optionally add "more": an array of up to 2 other justified tasks in the same format, only if they are truly separate and worth doing now. They are kept in a queue and the next ones are NOT rediscovered until the queue is empty.', 'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].filter(Boolean).join('\n\n');
   }
   reviewPrompt(stage) {
     const a = this.state.active;
@@ -1606,6 +1617,32 @@ class MindAutopilot {
     this.state.nextAt = Date.now() + (outcome === 'completed' ? 10 : 30) * 60_000;
     this.save();
   }
+  enqueue(plans, now = Date.now()) {
+    const q = this.state.queue = this.state.queue || [];
+    for (const p of plans || []) {
+      if (q.length >= 6) break;
+      const key = taskKey(p);
+      if (q.some(x => x.key === key) || this.state.history.some(h => h.key === key && h.outcome === 'completed')) continue;
+      q.push({ key, plan: p, discoveredAt: new Date(now).toISOString() });
+    }
+    this.save();
+    return q.length;
+  }
+  // Starts the next queued task (its plan is reviewed by Codex as usual). Returns false when nothing is queued.
+  popQueued(now = Date.now()) {
+    const q = this.state.queue = this.state.queue || [], a = this.state.active;
+    while (q.length && a) {
+      const item = q.shift();
+      if (this.state.history.some(h => h.key === item.key && h.outcome === 'completed')) continue;
+      a.plan = item.plan; a.stage = 'plan-review';
+      this.log('queue', 'Tache deja decouverte reprise sans nouvelle decouverte (' + q.length + ' en attente) : ' + String(item.plan.title).slice(0, 100));
+      this.save();
+      this.dispatch('plan-review', now);
+      return true;
+    }
+    this.save();
+    return false;
+  }
   advance(raw, now = Date.now()) {
     const a = this.state.active;
     if (a.stage === 'discover') {
@@ -1641,6 +1678,7 @@ class MindAutopilot {
       if (plan.decision === 'NO_TASK') return this.complete('no-task');
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
       a.plan = plan;
+      this.enqueue(parsePlanList(raw).slice(1), now);
       this.log('plan', '[' + plan.category + '] ' + plan.title);
       return this.dispatch('plan-review', now);
     }
@@ -1657,6 +1695,7 @@ class MindAutopilot {
       // the pilot stays enabled and moves on after its cooldown. Only safety
       // violations (tampering, writes outside the worktree, protected paths) halt.
       if (a.planRevisions > this.limits.planRevisions) return this.complete('plan-rejected', raw);
+      if (this.state.queue && this.state.queue.length) return this.complete('plan-rejected', raw);
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
       return this.dispatch('discover', now);
     }
@@ -1911,7 +1950,7 @@ class MindAutopilot {
           this.state.active.localBrief = b;
           this.log('triage', 'Pre-tri local : ' + b.lines + ' ligne(s) P0/P1' + (b.hints ? ', ' + b.hints.length + ' piste(s) par ' + b.model + ' en ' + Math.round(b.ms / 1000) + ' s' : '') + (b.skipped ? ' (' + b.skipped + ')' : ''));
         }
-        this.dispatch('discover', now);
+        if (!this.popQueued(now)) this.dispatch('discover', now);
       } else {
         const a = this.state.active;
         if (a.waitingStage) {
@@ -2058,5 +2097,5 @@ function mountMindAutopilot(addRoute, json, deps) {
   });
   return pilots.get('default');
 }
-module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, verdict, taskKey, changedFiles,
+module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
   localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };
