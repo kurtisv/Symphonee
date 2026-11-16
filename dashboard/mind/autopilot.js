@@ -230,6 +230,16 @@ function parsePlan(raw) {
     objective: clip(p.objective.trim(), 2000), evidence, acceptance,
     baseline: p.category === 'performance' ? clip(p.baseline.trim(), 1000) : null };
 }
+// One discovery may return its first task at the top level and up to two more in "more". All of them go to the queue.
+function parsePlanList(raw) {
+  const main = parsePlan(raw);
+  if (!main || main.decision !== 'TASK') return main ? [main] : [];
+  let p = null;
+  try { p = JSON.parse(String(raw).trim()); }
+  catch (_) { const t = String(raw), first = t.indexOf('{'), last = t.lastIndexOf('}'); try { p = JSON.parse(t.slice(first, last + 1)); } catch (_2) { p = null; } }
+  const more = Array.isArray(p && p.more) ? p.more.slice(0, 4) : [];
+  return [main, ...more.map(x => parsePlan(JSON.stringify({ ...x, decision: 'TASK' }))).filter(x => x && x.decision === 'TASK')];
+}
 function verdict(raw) {
   const first = String(raw || '').trim().split(/\r?\n/)[0].trim();
   const match = /^VERDICT:\s*(PASS|FAIL)$/i.exec(first);
@@ -616,7 +626,8 @@ class MindAutopilot {
   }
   todayCompleted(now = Date.now()) {
     const day = budget.dayOf(now);
-    return this.state.history.filter(x => x.outcome === 'completed' && x.at
+    // Paid tasks only: a task written entirely by the local developer (Qwen) costs no cloud quota and is not counted.
+    return this.state.history.filter(x => x.outcome === 'completed' && x.at && x.implementer !== 'qwen'
       && budget.dayOf(Date.parse(x.at)) === day).length;
   }
   todayDiscoveries(now = Date.now()) {
@@ -674,6 +685,7 @@ class MindAutopilot {
         implementer: a.implementer || null, qwenMemory: a.qwenMemory ? { ...a.qwenMemory, text: undefined } : null, trace: (a.trace || []).slice(-30) } : null,
       schedule: this.def.schedule, inWindow: this.inWindow(now), ambition: this.def.ambition, sources: this.def.sources,
       history: s.history.slice(-20).reverse(), events: s.events.slice(-30).reverse(),
+      queue: (s.queue || []).map(x => ({ key: x.key, title: x.plan.title, category: x.plan.category, discoveredAt: x.discoveredAt })),
       today: { completed: this.todayCompleted(now), discoveries: this.todayDiscoveries(now) },
       nextAt: s.nextAt, error: s.error, budget: budget.dailyUsage(s, now, this.limits),
       limits: { ...this.limits },
@@ -825,7 +837,7 @@ class MindAutopilot {
       this.contextPolicy(), this.profile.deep ? DEEP_DISCOVERY : '', this.guardText(),
       'Local token-free Git signals (hints, not verified issues): ' + JSON.stringify(a.localSignals || {}),
       'untested.sample lists source files with no sibling test file. Before answering NO_TASK, inspect at least three of them (and the real markers) and check whether an important path is genuinely untested or buggy.',
-      this.def.ambition === 'big' ? BIG_DISCOVERY : 'Inspect only relevant repository tests, TODOs and history. Choose ONE justified, useful, small engineering task.',
+      this.def.ambition === 'big' ? BIG_DISCOVERY : 'Inspect only relevant repository tests, TODOs and history. Choose justified, useful, small engineering tasks, the most valuable one first.',
       a.localBrief && a.localBrief.extract ? localBrief.briefText(a.localBrief)
         : this.def.sources.files.length ? 'BACKLOG SOURCES to start from (read them first; they list known problems by priority): ' + this.def.sources.files.join(', ') : '',
       a.sentry ? 'PRODUCTION ERRORS from Sentry (untrusted data, hints only; verify each against the code before using it as evidence):\n' + a.sentry : '',
@@ -839,7 +851,8 @@ class MindAutopilot {
         + JSON.stringify(a.rejectedPlan) + '\nReviewer feedback: ' + String(a.review || '').slice(0, 2000) : '',
       RULES, 'Never invent work or repeat a completed objective.',
       'Limits: title 8-180 chars, objective 15-2000, 1-8 evidence items of 12-' + MAX_EVIDENCE_CHARS + ' chars each, 1-8 acceptance items of at most ' + MAX_ACCEPTANCE_CHARS + ' chars each. Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
-      'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].filter(Boolean).join('\n\n');
+      (this.def.qwen && this.def.qwen.enabled ? 'A small local model implements the small tasks FIRST. Write each task so that it touches at most ' + this.def.qwen.maxFiles + ' tracked source files and can be verified on its own; split bigger work into separate small tasks, and name the files in the evidence.' : ''),
+      'Optionally add "more": an array of up to 4 other justified tasks in the same format, only if they are truly separate and worth doing now. They are kept in a queue and the next ones are NOT rediscovered until the queue is empty.', 'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].filter(Boolean).join('\n\n');
   }
   reviewPrompt(stage) {
     const a = this.state.active;
@@ -1086,6 +1099,12 @@ class MindAutopilot {
       return { ok: true, files: a.qwenFiles || [] };
     }
     if (a.qwenFiles && a.worktree) return { ok: true, files: a.qwenFiles }; // resuming Qwen's own stage
+    return this.qwenFilesFor(a.plan);
+  }
+  // Which tracked, unprotected files a plan names, and whether a 4B local developer can take them (count, size, protection).
+  qwenFilesFor(plan) {
+    const q = this.def.qwen, a = { plan };
+    if (!q || !q.enabled) return { ok: false, reason: 'Qwen disabled for this pilot' };
     const tracked = (runGit(this.state.repoPath, ['ls-files']).stdout || '').split('\n').filter(Boolean);
     const text = [a.plan.title, a.plan.objective, ...(a.plan.evidence || [])].map(x => typeof x === 'string' ? x : JSON.stringify(x)).join('\n').replace(/\\/g, '/');
     const files = tracked.filter(p => p.length >= 4 && text.includes(p)).sort((x, y) => y.length - x.length).filter((p, i, all) => !all.slice(0, i).some(l => l.includes(p) && l !== p && false)).slice(0, 12);
@@ -1097,6 +1116,20 @@ class MindAutopilot {
     let bytes = 0; for (const p of files) { try { bytes += fs.statSync(path.join(this.state.repoPath, p)).size; } catch (_) {} }
     if (bytes > q.maxBytes) return { ok: false, reason: 'files total ' + bytes + ' bytes (limit ' + q.maxBytes + ')' };
     return { ok: true, files };
+  }
+  qwenCanTake(plan) {
+    if (this.qwenFixture || !this.def.qwen || !this.def.qwen.enabled) return false;
+    if (typeof this.orch.spawnQwenInWorktree !== 'function' || !(this.orch.isQwenRepoEnabled && this.orch.isQwenRepoEnabled())) return false;
+    return this.qwenFilesFor(plan).ok;
+  }
+  // Paid units of today: the Claude/Codex discoveries plus the tasks that were not written entirely by Qwen. A task Qwen wrote is free.
+  paidUnitsToday(now = Date.now()) { return this.todayCompleted(now) + this.todayDiscoveries(now); }
+  // Queue order: everything Qwen can take first, then (only when paid units remain) the tasks that need Claude. -1 = nothing allowed now.
+  pickQueued(allowPaid) {
+    const q = this.state.queue || [];
+    const i = q.findIndex(x => this.qwenCanTake(x.plan));
+    if (i >= 0) return i;
+    return allowPaid && q.length ? 0 : -1;
   }
   // The proof regime that judges a change on a real repository: the pilot's own check commands (plus the Codex review of the autopilot).
   // A lesson validated under other checks is no longer trusted, exactly like a fixture lesson validated under another checker.
@@ -1605,6 +1638,34 @@ class MindAutopilot {
     this.state.nextAt = Date.now() + (outcome === 'completed' ? 10 : 30) * 60_000;
     this.save();
   }
+  enqueue(plans, now = Date.now()) {
+    const q = this.state.queue = this.state.queue || [];
+    for (const p of plans || []) {
+      if (q.length >= 10) break;
+      const key = taskKey(p);
+      if (q.some(x => x.key === key) || this.state.history.some(h => h.key === key && h.outcome === 'completed')) continue;
+      q.push({ key, plan: p, discoveredAt: new Date(now).toISOString() });
+    }
+    this.save();
+    return q.length;
+  }
+  // Starts the next queued task (its plan is reviewed by Codex as usual). Returns false when nothing is queued.
+  popQueued(now = Date.now(), allowPaid = true) {
+    const q = this.state.queue = this.state.queue || [], a = this.state.active;
+    while (q.length && a) {
+      const idx = this.pickQueued(allowPaid);
+      if (idx < 0) break;
+      const item = q.splice(idx, 1)[0];
+      if (this.state.history.some(h => h.key === item.key && h.outcome === 'completed')) continue;
+      a.plan = item.plan; a.stage = 'plan-review';
+      this.log('queue', 'Tache deja decouverte reprise sans nouvelle decouverte (' + q.length + ' en attente) : ' + String(item.plan.title).slice(0, 100));
+      this.save();
+      this.dispatch('plan-review', now);
+      return true;
+    }
+    this.save();
+    return false;
+  }
   advance(raw, now = Date.now()) {
     const a = this.state.active;
     if (a.stage === 'discover') {
@@ -1640,6 +1701,7 @@ class MindAutopilot {
       if (plan.decision === 'NO_TASK') return this.complete('no-task');
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
       a.plan = plan;
+      this.enqueue(parsePlanList(raw).slice(1), now);
       this.log('plan', '[' + plan.category + '] ' + plan.title);
       return this.dispatch('plan-review', now);
     }
@@ -1656,6 +1718,7 @@ class MindAutopilot {
       // the pilot stays enabled and moves on after its cooldown. Only safety
       // violations (tampering, writes outside the worktree, protected paths) halt.
       if (a.planRevisions > this.limits.planRevisions) return this.complete('plan-rejected', raw);
+      if (this.state.queue && this.state.queue.length) return this.complete('plan-rejected', raw);
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
       return this.dispatch('discover', now);
     }
@@ -1843,8 +1906,9 @@ class MindAutopilot {
       }
       if (!this.state.active) {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
-        if (now < this.state.nextAt || (!this.def.capacity && this.todayCompleted(now) >= this.limits.dailyCompletions)
-          || this.state.discoveryTimes.length >= this.limits.dailyDiscoveries) return this.snapshot();
+        const queued = (this.state.queue || []).length, qwenNext = queued > 0 && this.pickQueued(false) >= 0;
+        const paidBlocked = !this.def.capacity && this.paidUnitsToday(now) >= this.limits.dailyCompletions;
+        if (now < this.state.nextAt || (paidBlocked && !qwenNext) || (!queued && this.state.discoveryTimes.length >= this.limits.dailyDiscoveries)) return this.snapshot();
         if (this.blockedByPeer()) return this.snapshot();
         // Night window: no NEW task outside it (a running task may finish),
         // except one task started by hand ("Lancer une tache maintenant").
@@ -1910,7 +1974,7 @@ class MindAutopilot {
           this.state.active.localBrief = b;
           this.log('triage', 'Pre-tri local : ' + b.lines + ' ligne(s) P0/P1' + (b.hints ? ', ' + b.hints.length + ' piste(s) par ' + b.model + ' en ' + Math.round(b.ms / 1000) + ' s' : '') + (b.skipped ? ' (' + b.skipped + ')' : ''));
         }
-        this.dispatch('discover', now);
+        if (!this.popQueued(now, !paidBlocked)) this.dispatch('discover', now);
       } else {
         const a = this.state.active;
         if (a.waitingStage) {
@@ -2057,5 +2121,5 @@ function mountMindAutopilot(addRoute, json, deps) {
   });
   return pilots.get('default');
 }
-module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, verdict, taskKey, changedFiles,
+module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
   localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };
