@@ -243,8 +243,9 @@ async function pass(policy, state, io) {
     for (const [k, c] of Object.entries(state.candidates)) {
       if (c.repo === repo.name && c.status === 'new' && !live.has(k)) {
         // A withdrawn candidate is kept ONLY if its tested merge really is in the base (an accepted push to reconcile); otherwise it is dropped, never revived.
-        let landed = false; try { landed = Boolean(c.pushIntent && c.pushIntent === c.evaluatedMerge && io.isAncestor(repo.path, c.evaluatedMerge, baseSha)); } catch (_) { landed = false; }
-        if (landed) continue;
+        // isAncestor: true / false (definitely not) / null (could not tell). Only a definite 'no' (or a week of doubt) lets the intent go.
+        let r = false; try { r = c.pushIntent && c.pushIntent === c.evaluatedMerge ? io.isAncestor(repo.path, c.evaluatedMerge, baseSha) : false; } catch (_) { r = null; }
+        if (r === true || (r === null && io.now() - (c.updatedAt || 0) < 7 * 86400000)) continue;
         delete state.candidates[k]; io.log('candidate remplacee ' + k); }
     }
     for (const c of found) {

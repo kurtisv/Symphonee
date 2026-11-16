@@ -518,7 +518,11 @@ test('a candidate holding a push intent is neither dropped when its branch disap
   io.isAncestor = () => false; // push definitively rejected: the withdrawn candidate is DROPPED, never revived
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
   assert.equal(Object.keys(state.candidates).length, 0, 'withdrawn and not landed: dropped'); assert.equal(w.pushes.filter((p) => p.includes('refs/heads/integration')).length, 0);
-  state.candidates[c.key] = c; c.status = 'new'; io.isAncestor = (cwd, a) => a === M; // the same, but the push DID land
+  state.candidates[c.key] = c; c.status = 'new'; c.updatedAt = w.now; io.isAncestor = () => null; // could not tell: kept (for a week), not discarded
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(Object.keys(state.candidates).length, 1, 'indeterminate: kept');
+  w.now += 8 * 86400000; c.status = 'new'; await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(Object.keys(state.candidates).length, 0, 'a week of doubt: released'); state.candidates[c.key] = c; c.status = 'new'; io.isAncestor = (cwd, a) => a === M; // the push DID land
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
   assert.equal(Object.keys(state.candidates).length, 1, 'kept: its push landed');
   state.merges = []; c.status = 'refused'; io.isAncestor = (cwd, a) => a === M; // refused after an accepted push

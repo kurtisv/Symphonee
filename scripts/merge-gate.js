@@ -41,7 +41,7 @@ function git(cwd, args) {
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
 }
 function isAncestor(cwd, a, b) {
-  try { execFileSync('git', ['merge-base', '--is-ancestor', a, b], { cwd, windowsHide: true, stdio: 'ignore' }); return true; } catch (_) { return false; }
+  try { execFileSync('git', ['merge-base', '--is-ancestor', a, b], { cwd, windowsHide: true, stdio: 'ignore' }); return true; } catch (e) { return e && e.status === 1 ? false : null; } // true / false (definitely not) / null (could not tell: unknown object, git error)
 }
 function api(method, p, body) {
   return new Promise((ok, ko) => {
