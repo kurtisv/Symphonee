@@ -295,3 +295,20 @@ test('review round 11: every finding of a rejecting review is kept (production c
     assert.equal(f.pilot.admission(plan({ newEvidence: 'Finding 2: the checkpoint file is read before it is written during resume' })).code, 'blocked');
   } finally { f.cleanup(); }
 });
+
+test('review round 12: terminal rejections keep their findings too; a finding late in a long line is kept; sentences are separate items', () => {
+  const long = 'Context sentence about the scheduler and why it was designed that way, repeated to make the line long. '.repeat(4) + 'The checkpoint file is read before it is written during resume.';
+  const items = B.reviewItems('VERDICT: FAIL\n' + long + '\nSecond line finding: the timer resets on every tick of the loop');
+  assert.ok(items.some((x) => /checkpoint file is read before it is written/.test(x)), 'late finding kept');
+  assert.ok(items.some((x) => /^The checkpoint file is read before it is written during resume\.$/.test(x)), 'as its own sentence');
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    f.pilot.state.queue = [{ key: 'z', plan: plan({ title: 'Another queued task about the exporter' }), score: 1, baseSha: null, discoveredAt: new Date().toISOString() }];
+    f.pilot.state.active = { stage: 'plan-review', plan: plan({ title: 'Fix the stuck resume of the video loop' }), planRevisions: 0, repairs: 0 };
+    f.pilot.dispatch = () => ({});
+    f.pilot.advance(['VERDICT: FAIL', long, 'Another unrelated finding about colours of the dashboard header'].join('\n')); // takes the "another task queued" early return
+    assert.equal(f.pilot.state.rejectedPlans.length, 1, 'the terminal path remembers the plan too');
+    assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume.' })).code, 'blocked');
+  } finally { f.cleanup(); }
+});

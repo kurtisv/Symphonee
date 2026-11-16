@@ -861,6 +861,13 @@ class MindAutopilot {
     this.report('error', 'Autopilote ' + this.id + ' arrete sur erreur : ' + this.state.error.slice(0, 300), ['halt']);
     this.save();
   }
+  // Every rejection keeps its plan and every finding (line, sentence, late part of a long line) so the same line cannot come back dressed as new.
+  rememberRejected(plan, raw) {
+    if (!plan) return;
+    const rp = this.state.rejectedPlans = this.state.rejectedPlans || [];
+    rp.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])], at: new Date().toISOString() });
+    this.state.rejectedPlans = rp.slice(-30);
+  }
   backlogCtx() {
     const gatePath = path.join(this.repoRoot, '.ai-workspace', 'merge-gate', 'state.json');
     let branches = [];
@@ -1815,9 +1822,9 @@ class MindAutopilot {
       // An ordinary failure ends the TASK, not the loop: archived (lesson kept),
       // the pilot stays enabled and moves on after its cooldown. Only safety
       // violations (tampering, writes outside the worktree, protected paths) halt.
+      this.rememberRejected(a.plan, raw);
       if (a.planRevisions > this.limits.planRevisions) return this.complete('plan-rejected', raw);
       if (this.state.queue && this.state.queue.length) return this.complete('plan-rejected', raw);
-      if (a.plan) { const rp = this.state.rejectedPlans = this.state.rejectedPlans || []; rp.push({ title: a.plan.title, objective: a.plan.objective, items: [...String(raw || '').split(/\n+/).map((x) => x.trim().slice(0, 300)).filter((x) => x.length > 20).slice(0, 14), ...(a.plan.evidence || [])], at: new Date().toISOString() }); this.state.rejectedPlans = rp.slice(-30); }
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
       return this.dispatch('discover', now);
     }
