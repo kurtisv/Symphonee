@@ -1817,7 +1817,7 @@ class MindAutopilot {
       // violations (tampering, writes outside the worktree, protected paths) halt.
       if (a.planRevisions > this.limits.planRevisions) return this.complete('plan-rejected', raw);
       if (this.state.queue && this.state.queue.length) return this.complete('plan-rejected', raw);
-      if (a.plan) { const rp = this.state.rejectedPlans = this.state.rejectedPlans || []; rp.push({ title: a.plan.title, objective: a.plan.objective, items: [lessons.firstFinding(raw) || String(raw || '').slice(0, 400), ...(a.plan.evidence || [])], at: new Date().toISOString() }); this.state.rejectedPlans = rp.slice(-30); }
+      if (a.plan) { const rp = this.state.rejectedPlans = this.state.rejectedPlans || []; rp.push({ title: a.plan.title, objective: a.plan.objective, items: [...String(raw || '').split(/\n+/).map((x) => x.trim().slice(0, 300)).filter((x) => x.length > 20).slice(0, 14), ...(a.plan.evidence || [])], at: new Date().toISOString() }); this.state.rejectedPlans = rp.slice(-30); }
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
       return this.dispatch('discover', now);
     }

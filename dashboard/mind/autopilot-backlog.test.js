@@ -282,3 +282,16 @@ test('review round 10: a short original observation is not new evidence even whe
   assert.equal(B.admit(plan({ newEvidence: 'ECONNRESET at worker.js:42' }), rej).code, 'blocked');
   assert.equal(B.admit(plan({ newEvidence: 'A new deterministic failing test in resume.test.js reproduces the loop without any network' }), rej).ok, true);
 });
+
+test('review round 11: every finding of a rejecting review is kept (production collection), so a later one cannot be passed off as new', () => {
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    f.pilot.state.active = { stage: 'plan-review', plan: plan({ title: 'Fix the stuck resume of the video loop' }), planRevisions: 0, repairs: 0 };
+    f.pilot.state.queue = []; f.pilot.dispatch = () => ({});
+    const raw = ['VERDICT: FAIL', 'Finding 1: the timer is reset by the scheduler on every tick of the loop', 'Finding 2: the checkpoint file is read before it is written during resume'].join('\n');
+    f.pilot.advance(raw); // the PRODUCTION path that records a rejected plan
+    assert.equal(f.pilot.state.rejectedPlans.length, 1);
+    assert.equal(f.pilot.admission(plan({ newEvidence: 'Finding 2: the checkpoint file is read before it is written during resume' })).code, 'blocked');
+  } finally { f.cleanup(); }
+});
