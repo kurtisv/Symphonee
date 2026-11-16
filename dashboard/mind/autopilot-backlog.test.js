@@ -197,7 +197,7 @@ test('review round 2: gate state with the wrong shape fails closed; a plan rejec
   const dirty = path.join(d, 'dirty.json'); fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: null, y: { repo: 'R', status: 'refused', history: 5 } }, stopped: { at: 'never' }, merges: [null] }));
   assert.doesNotThrow(() => B.collectBacklog({ history: [], gatePath: dirty, repoName: 'R' })); assert.doesNotThrow(() => B.admit(plan(), { ...base, gatePath: dirty }));
   assert.equal(B.admit(plan(), { ...base, gatePath: dirty }).code, 'unverifiable', 'a damaged candidate entry fails closed');
-  for (const bad of [{}, [], { status: 'pr-open', branch: 'b' }, { repo: 'R', status: 5, branch: 'b' }, { repo: 'R', status: 'pr-open', branch: 'mind-autopilot/fix-resume', origin: { pilot: 'default' } }]) { fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: bad }, merges: [] })); assert.equal(B.admit(plan(), { ...base, gatePath: dirty, repoName: 'R' }).code, 'unverifiable', JSON.stringify(bad)); }
+  for (const bad of [{}, [], { status: 'pr-open', branch: 'b' }, { repo: 'R', status: 5, branch: 'b' }, { repo: 'R', source: 'autopilot', status: 'pr-open', branch: 'mind-autopilot/fix-resume', origin: { pilot: 'default' } }]) { fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: bad }, merges: [] })); assert.equal(B.admit(plan(), { ...base, gatePath: dirty, repoName: 'R' }).code, 'unverifiable', JSON.stringify(bad)); }
   fs.writeFileSync(dirty, JSON.stringify({ candidates: {}, stopped: { at: 1e20, reason: 'x' }, merges: [] })); assert.doesNotThrow(() => B.collectBacklog({ history: [], gatePath: dirty }));
   const fails3 = ['a', 'b', 'c'].map((x) => H('Fix durations in the exporter module ' + x, 'verify-failed'));
   assert.equal(B.admit(plan({ title: 'Fix durations in the exporter module', newEvidence: 'the checkpoint file is read before it is written (seen in resume.js)' }), { ...base, history: fails3, rejected: [{ title: 'Fix durations in the exporter module', evidence: 'the checkpoint file is read before it is written (seen in resume.js)' }] }).code, 'blocked', 'a blocked task must not reuse a rejected finding as new evidence');
@@ -244,4 +244,14 @@ test('review round 6: names with tabs or quotes are matched as written (git -z),
   const name = 'agent\t"x".js'; fs.writeFileSync(path.join(d, name), 'const ok = permGate(req);\nif (!ok) return;\n'); sh(d, 'add', '-A'); sh(d, 'commit', '-qm', 'base');
   const base = sh(d, 'rev-parse', 'HEAD'); fs.writeFileSync(path.join(d, name), 'const ok = permGate(req);\n');
   assert.deepEqual(guard.changedPaths(d, base), [name]); assert.ok(guard.diffLint(d, base, { selfProtect: true }).some((x) => /hosts a permission/.test(x)));
+});
+
+test('review round 7: valid candidates of other sources or repositories (PleinSens loop has no title) never block admission', (t) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-bl7-')); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  const f = path.join(d, 'state.json');
+  fs.writeFileSync(f, JSON.stringify({ merges: [], candidates: {
+    p: { repo: 'R', source: 'pleinsens-loop', status: 'pr-open', branch: 'codex/pleinsens-boucle-3', origin: { run: 'gr_1', cycle: 3 } },
+    o: { repo: 'Other', source: 'autopilot', status: 'pr-open', branch: 'mind-autopilot/x', origin: { pilot: 'gas-saver' } } } }));
+  const ctx = { history: [], queue: [], gatePath: f, repoName: 'R', branches: [], signals: [], opts: { strict: true } };
+  assert.equal(B.admit(plan(), ctx).ok, true);
 });
