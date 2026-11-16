@@ -300,6 +300,20 @@ async function refuse(c, repo, reasons, io) {
 
 async function step(c, repo, baseSha, state, io) {
   const source = repo.sources.find((s) => s.type === c.source);
+  // Reconciliation after an interruption: the process can die between the push that lands the tested merge and the write of its state.
+  // If that exact merge commit is already in the base, the work is done: record it (never push, merge or open a PR a second time).
+  if (pushesMerge(repo) && c.evaluatedMerge && ['pr-open', 'ci-green', 'waiting-governance', 'waiting-pace'].includes(c.status)
+      && !state.merges.some((m) => m.key === c.key && m.sha === c.evaluatedMerge)) {
+    let landed = false;
+    try { landed = Boolean(io.isAncestor(repo.path, c.evaluatedMerge, baseSha)); } catch (_) { landed = false; }
+    if (landed) {
+      c.mergeSha = c.evaluatedMerge;
+      setStatus(c, 'merged', 'reconciliation : la fusion testee est deja dans ' + repo.base + ' (interruption avant l enregistrement)', io);
+      state.merges.push({ repo: repo.name, key: c.key, at: io.now(), sha: c.evaluatedMerge, pr: c.pr, prUrl: c.prUrl, verified: c.sha,
+        base: c.evaluatedBase || null, tree: c.evaluatedTree || null, status: 'merged', reconciled: true });
+      return;
+    }
+  }
   if (c.status === 'new') {
     const reasons = proofReasons(c, repo, io, source);
     if (!c.branch.startsWith(source.branchPrefix)) reasons.push('prefixe de branche non autorise');

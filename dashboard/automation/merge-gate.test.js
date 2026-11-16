@@ -453,6 +453,28 @@ test('push-tested: PR from porte/<branch> at the tested merge; CI on that head; 
   assert.equal(only(st).status, 'refused');
 });
 
+test('interruption: the tested merge already landed but was never recorded -> recorded once, no second push, no second PR', async () => {
+  const PT = { ...REPO, mergeMode: 'push-tested', base: 'integration' };
+  const { w, io } = world(); w.marker = true;
+  const M = 'm'.repeat(40);
+  w.headSha = M; w.checks = [{ name: 'verify', status: 'completed', conclusion: 'success', startedAt: '2026-11-13T10:00:00Z' }];
+  const git = io.git;
+  io.git = (cwd, args) => { const a = args.join(' ');
+    if (a === 'rev-parse origin/integration') return w.base;
+    if (a.startsWith('show origin/integration:AGENTS.md')) return '... ' + gate.MARK;
+    return git(cwd, args); };
+  const state = {};
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(only(state).status, 'pr-open');
+  // the process died right after the push: master holds the tested merge, the state still says pr-open
+  io.isAncestor = (cwd, a) => a === M;
+  const pushesBefore = w.pushes.length, prsBefore = w.prs.length;
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(only(state).status, 'merged'); assert.equal(state.merges.length, 1); assert.equal(state.merges[0].reconciled, true); assert.equal(state.merges[0].sha, M);
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(state.merges.length, 1, 'recorded once'); assert.equal(w.pushes.length, pushesBefore, 'no second push'); assert.equal(w.prs.length, prsBefore, 'no second PR'); assert.equal(w.merges.length, 0);
+});
+
 test('regenerate without a mode that pushes the tested merge: the repository is skipped', async () => {
   const { w, io } = world(); w.marker = true;
   await gate.pass({ enabled: true, repos: [{ ...REPO, regenerate: [{ cmd: ['node', 'x'] }] }] }, {}, io);
