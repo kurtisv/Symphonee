@@ -291,7 +291,7 @@ test('review round 11: every finding of a rejecting review is kept (production c
     f.pilot.state.queue = []; f.pilot.dispatch = () => ({});
     const raw = ['VERDICT: FAIL', 'Finding 1: the timer is reset by the scheduler on every tick of the loop', 'Finding 2: the checkpoint file is read before it is written during resume'].join('\n');
     f.pilot.advance(raw); // the PRODUCTION path that records a rejected plan
-    assert.equal(f.pilot.state.rejectedPlans.length, 1);
+    assert.equal(f.pilot.loadRejected().length, 1);
     assert.equal(f.pilot.admission(plan({ newEvidence: 'Finding 2: the checkpoint file is read before it is written during resume' })).code, 'blocked');
   } finally { f.cleanup(); }
 });
@@ -308,7 +308,7 @@ test('review round 12: terminal rejections keep their findings too; a finding la
     f.pilot.state.active = { stage: 'plan-review', plan: plan({ title: 'Fix the stuck resume of the video loop' }), planRevisions: 0, repairs: 0 };
     f.pilot.dispatch = () => ({});
     f.pilot.advance(['VERDICT: FAIL', long, 'Another unrelated finding about colours of the dashboard header'].join('\n')); // takes the "another task queued" early return
-    assert.equal(f.pilot.state.rejectedPlans.length, 1, 'the terminal path remembers the plan too');
+    assert.equal(f.pilot.loadRejected().length, 1, 'the terminal path remembers the plan too');
     assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume.' })).code, 'blocked');
   } finally { f.cleanup(); }
 });
@@ -349,7 +349,7 @@ test('final defect: a finding at ANY position of an earlier review stays known, 
     f.pilot.state.active.stage = 'code-review';
     f.pilot.state.active.reviewFingerprint = require('./autopilot').worktreeFingerprint(f.repo);
     f.pilot.advance('VERDICT: FAIL\nThe second review only complains about colours of the header.');
-    const entry = f.pilot.state.rejectedPlans.find((x) => x.title === task.title);
+    const entry = f.pilot.loadRejected().find((x) => x.title === task.title);
     assert.ok(entry && entry.vocab.length > 1000, 'the vocabulary of the first, very long review is kept');
     assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume' })).code, 'blocked', 'a finding from the end of the first review is not new');
     assert.equal(f.pilot.admission(plan({ newEvidence: 'A new deterministic failing test in resume.test.js reproduces the loop without any network at all' })).ok, true, 'genuinely new vocabulary is accepted');
@@ -376,5 +376,21 @@ test('last defect: a selfProtect pilot without check commands still goes through
   try {
     assert.equal(next(true), 'verify', 'selfProtect: the diff lint gate runs');
     assert.equal(next(false), 'code-review', 'other pilots keep the previous behaviour');
+  } finally { f.cleanup(); }
+});
+
+test('retention: a rejection is never forgotten because later tasks followed (own file, no count or age limit)', () => {
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    f.pilot.rememberRejected(plan({ title: 'Fix the stuck resume of the video loop' }), 'VERDICT: FAIL\nThe checkpoint file is read before it is written during resume.');
+    for (let i = 0; i < 400; i++) f.pilot.rememberRejected(plan({ title: 'Unrelated task number ' + i + ' about module m' + i }), 'VERDICT: FAIL\nFinding about module m' + i + ' and its configuration.');
+    f.pilot.state.history = Array.from({ length: 300 }, (_, i) => ({ title: 'Other work ' + i, outcome: 'completed' }));
+    assert.equal(f.pilot.loadRejected().length, 401, 'nothing was dropped');
+    assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume' })).code, 'blocked', 'the first rejection still protects');
+    const again = kit.setup(); // a restart: another pilot object on the same files must see it too
+    again.cleanup();
+    const file = f.pilot.rejectedFile(); assert.ok(fs.existsSync(file)); assert.ok(file.includes('rejected-plans-'));
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).entries.length, 401, 'on disk');
   } finally { f.cleanup(); }
 });

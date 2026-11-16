@@ -861,17 +861,28 @@ class MindAutopilot {
     this.report('error', 'Autopilote ' + this.id + ' arrete sur erreur : ' + this.state.error.slice(0, 300), ['halt']);
     this.save();
   }
-  // Every rejection keeps its plan and every finding (line, sentence, late part of a long line) so the same line cannot come back dressed as new.
+  // Every rejection keeps its plan and the whole vocabulary of its reviews, so the same line cannot come back dressed as new.
+  // Stored in its OWN append-only file (not in the pilot state, whose history is bounded): a rejection is never forgotten because other tasks followed.
+  rejectedFile() { return path.join(this.repoRoot, '.symphonee', 'rejected-plans-' + this.id + '.json'); }
+  loadRejected() {
+    try { const j = JSON.parse(fs.readFileSync(this.rejectedFile(), 'utf8')); return Array.isArray(j.entries) ? j.entries : []; } catch (_) { return []; }
+  }
   rememberRejected(plan, raw) {
     if (!plan) return;
-    const rp = this.state.rejectedPlans = this.state.rejectedPlans || [];
-    // The same rejection reaches here twice (plan-review, then complete): one entry, with the larger text.
-    const same = rp.find((x) => x.title === plan.title);
+    const entries = this.loadRejected();
     const vocab = backlogLib.vocabOf(raw);
+    const same = entries.find((x) => x.title === plan.title);
     if (same) {
-      same.vocab = [...new Set([...(same.vocab || []), ...vocab])].slice(0, 20000); same.text = [same.text, String(raw || '')].filter(Boolean).join('\n').slice(0, 30000); same.items = [...new Set([...(same.items || []), ...backlogLib.reviewItems(raw)])].slice(0, 80); return; }
-    rp.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])], text: String(raw || '').slice(0, 30000), vocab: vocab.slice(0, 20000), at: new Date().toISOString() });
-    this.state.rejectedPlans = rp.slice(-30);
+      same.vocab = [...new Set([...(same.vocab || []), ...vocab])].slice(0, 20000);
+      same.items = [...new Set([...(same.items || []), ...backlogLib.reviewItems(raw)])].slice(0, 80);
+      same.at = new Date().toISOString(); same.count = (same.count || 1) + 1;
+    } else {
+      entries.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])].slice(0, 80), vocab: vocab.slice(0, 20000), count: 1, at: new Date().toISOString() });
+    }
+    try {
+      fs.mkdirSync(path.dirname(this.rejectedFile()), { recursive: true });
+      const tmp = this.rejectedFile() + '.tmp'; fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries })); fs.renameSync(tmp, this.rejectedFile());
+    } catch (e) { this.log('warn', 'rejected plans not saved: ' + e.message); }
   }
   backlogCtx() {
     const gatePath = path.join(this.repoRoot, '.ai-workspace', 'merge-gate', 'state.json');
@@ -882,7 +893,7 @@ class MindAutopilot {
       branches = String(r.stdout || '').split('\n').map((x) => x.trim().split(' ')).filter((p) => p[0] && Date.now() / 1000 - Number(p[1]) < 14 * 86400).map((p) => p[0]);
     } catch (_) { /* no git */ }
     const ctx = { history: this.state.history || [], queue: this.state.queue || [], events: this.state.events || [], error: this.state.error || null,
-      gatePath, repoName: this.state.repoName || null, pilotId: this.id, branches, active: (this.state.active && this.state.active.plan) || null, rejected: this.state.rejectedPlans || [], opts: this.def.backlog || {} };
+      gatePath, repoName: this.state.repoName || null, pilotId: this.id, branches, active: (this.state.active && this.state.active.plan) || null, rejected: this.loadRejected(), opts: this.def.backlog || {} };
     ctx.signals = backlogLib.collectBacklog(ctx);
     return ctx;
   }
