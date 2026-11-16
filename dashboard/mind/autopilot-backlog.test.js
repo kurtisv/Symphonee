@@ -8,7 +8,7 @@ const B = require('./autopilot-backlog');
 const guard = require('./autopilot-verify');
 const kit = require('./qwen-repo-test-kit');
 
-const plan = (o = {}) => ({ decision: 'TASK', category: 'correctness', title: 'Fix the stuck resume of the video loop', objective: 'The loop resumes the same task forever after restart', severity: 'stuck-loop', proof: 'reproduced', evidence: ['e'], acceptance: ['a'], ...o });
+const plan = (o = {}) => ({ decision: 'TASK', category: 'correctness', title: 'Fix the stuck resume of the video loop', objective: 'The loop resumes the same task forever after restart', severity: 'stuck-loop', proof: 'reproduced', evidence: ['loop.js:42 resumes the same task after restart (reproduced twice)'], acceptance: ['a'], ...o });
 const H = (title, outcome, extra = {}) => ({ title, outcome, at: '2026-11-14T10:00:00Z', reviewerEvidence: 'diagnosis for ' + title, ...extra });
 function gateFile(t, state) { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-bl-')); t.after(() => fs.rmSync(d, { recursive: true, force: true })); const f = path.join(d, 'state.json'); fs.writeFileSync(f, JSON.stringify(state)); return f; }
 
@@ -37,7 +37,7 @@ test('backlog signals come from REAL data, ordered by priority class: stopped ga
 
 test('admission: duplicate of done, queued, in-flight and branch work is refused; blocked needs newEvidence; weak justification is refused', (t) => {
   const gate = gateFile(t, { candidates: { c: { repo: 'Symphonee', key: 'c', status: 'pr-open', pr: 12, origin: { pilot: 'default', title: 'Fix the stuck resume of the video loop' } } }, merges: [] });
-  const base = { history: [H('Add tests for plugin hints generator', 'completed')], queue: [{ plan: plan({ title: 'Reject inherited prototype ids in the EDL validator' }) }], gatePath: gate, repoName: 'Symphonee', pilotId: 'default', branches: ['remotes/origin/mind-autopilot/2026-11-15-normalize-host-ports'], opts: { strict: true } };
+  const base = { history: [H('Add tests for plugin hints generator', 'completed')], queue: [{ plan: plan({ title: 'Reject inherited prototype ids in the EDL validator' }) }], gatePath: gate, repoName: 'Symphonee', pilotId: 'default', branches: ['remotes/origin/mind-autopilot/2026-11-15-normalize-host-ports-site-recipes'], opts: { strict: true } };
   base.signals = [{ text: 'Task repeated without success: stuck resume of the video loop' }];
   assert.equal(B.admit(plan({ title: 'Fix the stuck resume of the video loop' }), base).code, 'duplicate', 'in flight (PR open)');
   assert.equal(B.admit(plan({ title: 'Add tests for the plugin hints generator', objective: 'x' }), base).code, 'duplicate', 'done');
@@ -151,5 +151,55 @@ test('review round 1: a queued task that became a duplicate while it waited neve
     let archived = false; const c = f.pilot.complete; f.pilot.complete = (o) => { if (o === 'interrupted') archived = true; return c.call(f.pilot, o); };
     try { f.pilot.recoverAfterRestart(); } catch (_) { /* old path may need more state */ }
     assert.equal(archived, false, 'not archived by the new reconciliation');
+  } finally { f.cleanup(); }
+});
+
+const cp = require('node:child_process');
+const sh = (cwd, ...a) => cp.execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8' }).trim();
+
+test('review round 2: a protected file renamed out of its folder is still a protected hit (real git rename)', (t) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-rn-')); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  sh(d, 'init', '-q'); sh(d, 'config', 'user.email', 'a@b.invalid'); sh(d, 'config', 'user.name', 'a');
+  fs.mkdirSync(path.join(d, 'dashboard/mind'), { recursive: true });
+  fs.writeFileSync(path.join(d, 'dashboard/mind/lessons.js'), 'module.exports = { certify() { return 1 + 1 + 1 + 1; } };\n'.repeat(5)); sh(d, 'add', '-A'); sh(d, 'commit', '-qm', 'base');
+  const base = sh(d, 'rev-parse', 'HEAD');
+  fs.mkdirSync(path.join(d, 'dashboard/lib'), { recursive: true }); sh(d, 'mv', 'dashboard/mind/lessons.js', 'dashboard/lib/renamed.js');
+  const hits = guard.protectedHits(guard.changedPaths(d, base), [...B.ENGINE_PROTECTED]);
+  assert.deepEqual(hits, ['dashboard/mind/lessons.js'], 'the OLD protected path is reported');
+});
+
+test('review round 2: a change to a permission call site is a lint finding for a selfProtect pilot only', (t) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-lint-')); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  sh(d, 'init', '-q'); sh(d, 'config', 'user.email', 'a@b.invalid'); sh(d, 'config', 'user.name', 'a');
+  fs.writeFileSync(path.join(d, 'app.js'), 'function handle(req) {\n  if (!permGate(req)) return 403;\n  return 200;\n}\n'); sh(d, 'add', '-A'); sh(d, 'commit', '-qm', 'base');
+  const base = sh(d, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(d, 'app.js'), 'function handle(req) {\n  return 200;\n}\n');
+  assert.ok(guard.diffLint(d, base, { selfProtect: true }).some((x) => /permission or approval call site/.test(x)), 'removing the gate call is caught');
+  assert.deepEqual(guard.diffLint(d, base), [], 'other pilots are unchanged');
+});
+
+test('review round 2: gate state with the wrong shape fails closed; a plan rejected before needs a new element; observations, not keywords; short branch slugs do not block', (t) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-bl3-')); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  const base = { history: [], queue: [], branches: [], signals: [], opts: { strict: true } };
+  for (const body of ['null', '[]', '{}', '{"candidates":[]}']) { const f = path.join(d, 's.json'); fs.writeFileSync(f, body); assert.equal(B.admit(plan(), { ...base, gatePath: f }).code, 'unverifiable', body); }
+  const ok = path.join(d, 'ok.json'); fs.writeFileSync(ok, '{"candidates":{},"merges":[]}'); assert.equal(B.admit(plan(), { ...base, gatePath: ok }).ok, true);
+  assert.ok(B.collectBacklog({ history: [], gatePath: path.join(d, 's.json') }).some((x) => x.class === 1 && /unreadable/.test(x.text)));
+  const rej = { ...base, rejected: [{ title: 'Fix the stuck resume of the video loop', evidence: 'the reviewer could not reproduce the failure on the base' }] };
+  assert.equal(B.admit(plan(), rej).code, 'blocked'); assert.equal(B.admit(plan({ newEvidence: 'the reviewer could not reproduce the failure on the base' }), rej).code, 'blocked');
+  assert.equal(B.admit(plan({ newEvidence: 'a new failing test in resume.test.js now reproduces it deterministically' }), rej).ok, true);
+  assert.equal(B.admit(plan({ proof: 'read-in-code', evidence: ['pack.js has 900 lines', 'refactor it for readability'] }), base).code, 'unjustified');
+  assert.equal(B.admit(plan({ proof: 'reproduced', evidence: ['pack.js:42 throws TypeError for an empty list (TODO comment above it is unrelated)'] }), base).ok, true, 'a real observation that mentions a TODO passes');
+  assert.equal(B.admit(plan({ title: 'Fix plugin tests for the video plugin', objective: 'fix plugin tests' }), { ...base, branches: ['origin/mind-autopilot/2026-11-15-fix-plugin-tests'] }).ok, true, 'a generic three-word slug does not block');
+  assert.equal(B.collectBacklog({ history: [H('A single interrupted task', 'interrupted')] }).some((x) => /ended without success/.test(x.text)), true, 'one interruption is already a signal');
+});
+
+test('review round 2: the extended severity classes are in the discovery contract only for a pilot that opted in; a rejected plan is remembered even when the revision finds no task', () => {
+  const f = kit.setup();
+  try {
+    f.pilot.state.repoPath = f.repo; f.pilot.state.active = { stage: 'discover', plan: null, localSignals: {} };
+    assert.doesNotMatch(f.pilot.discoveryPrompt(), /stuck-loop/, 'unchanged for other pilots');
+    assert.match(f.pilot.discoveryPrompt(), /"severity":"data-loss\|crash\|security\|wrong-price\|broken-flow\|measured-slowness\|other"/);
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    assert.match(f.pilot.discoveryPrompt(), /"severity":"data-loss\|crash\|security\|wrong-price\|broken-flow\|measured-slowness\|lost-work\|stuck-loop\|wrong-state\|cleanup-proven\|other"/);
   } finally { f.cleanup(); }
 });

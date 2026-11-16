@@ -101,7 +101,7 @@ test('the discovery prompt carries the priority contract and what is already don
     f.pilot.enqueue([task('Queued stations task')]);
     f.pilot.state.active = { stage: 'discover', plan: null, localSignals: {} };
     const p = f.pilot.discoveryPrompt();
-    assert.match(p, /PRIORITY \(decided before anyone implements it; the model is chosen afterwards/); assert.match(p, /"severity":"data-loss\|crash\|security\|wrong-price\|broken-flow\|measured-slowness\|lost-work\|stuck-loop\|wrong-state\|cleanup-proven\|other"/);
+    assert.match(p, /PRIORITY \(decided before anyone implements it; the model is chosen afterwards/); assert.match(p, /"severity":"data-loss\|crash\|security\|wrong-price\|broken-flow\|measured-slowness\|other"/);
     assert.match(p, /ALREADY DONE, IN FLIGHT OR QUEUED/); assert.match(p, /- completed: Already merged price fix/); assert.match(p, /- queued: Queued stations task/);
     assert.doesNotMatch(p, /- no-task: /, 'empty discoveries are not listed as work');
   } finally { f.cleanup(); }

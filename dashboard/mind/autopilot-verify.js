@@ -62,7 +62,8 @@ function unlinkDirs(worktreePath, dirs = []) {
 // match a path pattern; `skip` lists the junctions Symphonee created itself.
 function changedPaths(cwd, base, { skip = [] } = {}) {
   const lines = (args) => runGit(cwd, args).split(/\r?\n/).filter(Boolean);
-  const tracked = lines(['diff', '--name-only', base, '--']);
+  // --no-renames: a protected file renamed out of its folder shows as a deletion of the protected path AND an addition, never only the new name.
+  const tracked = lines(['diff', '--name-only', '--no-renames', base, '--']);
   const untracked = lines(['ls-files', '--others', '--exclude-standard']);
   const own = new Set(skip.map(d => String(d).replace(/\\/g, '/').replace(/\/+$/, '')));
   const ignored = lines(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'])
@@ -84,7 +85,9 @@ const WEAKENERS = [
   [/\bx(?:it|test|describe)\s*\(/, 'test disabled (xit/xdescribe)'],
   [/@ts-(?:ignore|nocheck)\b/, 'type-check silenced (@ts-ignore/@ts-nocheck)'],
 ];
-function diffLint(cwd, base) {
+// Call sites of the permission and approval machinery: changing any of these lines (added OR removed) is a change to the loop's own permissions.
+const ENGINE_CONTROL = /\b(permGate|permissionMode|autoPermit|bypassPermissions|TOKEN_REQUIRED|x-symphonee-token|requirePermission|evaluatePermission)\b/;
+function diffLint(cwd, base, { selfProtect = false } = {}) {
   const findings = [];
   const scan = (file, text) => {
     for (const line of text) {
@@ -95,6 +98,7 @@ function diffLint(cwd, base) {
   for (const line of runGit(cwd, ['diff', '--unified=0', base, '--']).split(/\r?\n/)) {
     if (line.startsWith('+++ ')) { file = line.slice(4).replace(/^b\//, ''); continue; }
     if (line.startsWith('+') && !line.startsWith('+++')) scan(file, [line.slice(1)]);
+    if (selfProtect && /^[+-](?![+-]{2} )/.test(line) && ENGINE_CONTROL.test(line)) findings.push(file + ': changes a permission or approval call site (needs a dedicated, explicitly authorised mission)');
   }
   for (const f of runGit(cwd, ['ls-files', '--others', '--exclude-standard']).split(/\r?\n/).filter(Boolean)) {
     if (!/\.[jt]sx?$/.test(f)) continue;
