@@ -513,10 +513,15 @@ test('a candidate holding a push intent is neither dropped when its branch disap
   const state = {};
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
   const c = only(state); c.pushIntent = M; c.status = 'new';
+  c.evaluatedMerge = M; const readPilot = io.readPilot;
   io.readPilot = () => ({ history: [] }); // the pilot branch is gone: discovery no longer returns it
+  io.isAncestor = () => false; // push definitively rejected: the withdrawn candidate is DROPPED, never revived
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
-  assert.equal(Object.keys(state.candidates).length, 1, 'kept: its push may have landed');
-  c.status = 'refused'; io.isAncestor = (cwd, a) => a === M; // refused after an accepted push
+  assert.equal(Object.keys(state.candidates).length, 0, 'withdrawn and not landed: dropped'); assert.equal(w.pushes.filter((p) => p.includes('refs/heads/integration')).length, 0);
+  state.candidates[c.key] = c; c.status = 'new'; io.isAncestor = (cwd, a) => a === M; // the same, but the push DID land
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(Object.keys(state.candidates).length, 1, 'kept: its push landed');
+  state.merges = []; c.status = 'refused'; io.isAncestor = (cwd, a) => a === M; // refused after an accepted push
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
   assert.equal(only(state).status, 'merged'); assert.equal(state.merges.length, 1);
 });

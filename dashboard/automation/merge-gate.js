@@ -241,7 +241,11 @@ async function pass(policy, state, io) {
     // rebased) is replaced by the new commit: drop the stale entry.
     const live = new Set(found.map((c) => c.repo + '|' + c.branch + '|' + c.sha));
     for (const [k, c] of Object.entries(state.candidates)) {
-      if (c.repo === repo.name && c.status === 'new' && !c.pushIntent && !live.has(k)) { /* a candidate holding a push intent is kept: that push may have landed */ delete state.candidates[k]; io.log('candidate remplacee ' + k); }
+      if (c.repo === repo.name && c.status === 'new' && !live.has(k)) {
+        // A withdrawn candidate is kept ONLY if its tested merge really is in the base (an accepted push to reconcile); otherwise it is dropped, never revived.
+        let landed = false; try { landed = Boolean(c.pushIntent && c.pushIntent === c.evaluatedMerge && io.isAncestor(repo.path, c.evaluatedMerge, baseSha)); } catch (_) { landed = false; }
+        if (landed) continue;
+        delete state.candidates[k]; io.log('candidate remplacee ' + k); }
     }
     for (const c of found) {
       const key = c.repo + '|' + c.branch + '|' + c.sha;
