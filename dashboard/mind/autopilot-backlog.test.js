@@ -388,9 +388,35 @@ test('retention: a rejection is never forgotten because later tasks followed (ow
     f.pilot.state.history = Array.from({ length: 300 }, (_, i) => ({ title: 'Other work ' + i, outcome: 'completed' }));
     assert.equal(f.pilot.loadRejected().length, 401, 'nothing was dropped');
     assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume' })).code, 'blocked', 'the first rejection still protects');
-    const again = kit.setup(); // a restart: another pilot object on the same files must see it too
-    again.cleanup();
+    const again = f.reopen(); again.applyDefinition({ ...again.def, backlog: { strict: true } }); // a RESTART: another pilot object on the same files
+    assert.equal(again.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume' })).code, 'blocked', 'the restarted pilot still knows');
+    again.close();
     const file = f.pilot.rejectedFile(); assert.ok(fs.existsSync(file)); assert.ok(file.includes('rejected-plans-'));
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).entries.length, 401, 'on disk');
+  } finally { f.cleanup(); }
+});
+
+test('final: legacy state entries are migrated, a damaged store refuses admission and is never overwritten, a failed write keeps the entry, other pilots do not record', () => {
+  const f = kit.setup();
+  try {
+    // other pilots (no backlog): nothing recorded, no file
+    f.pilot.rememberRejected(plan(), 'VERDICT: FAIL\nsomething about the loop and its timers during resume');
+    assert.equal(fs.existsSync(f.pilot.rejectedFile()), false); assert.deepEqual(f.pilot.loadRejected(), []);
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    // an entry written by the previous version, in the pilot state: migrated on the next write, and honoured meanwhile
+    f.pilot.state.rejectedPlans = [{ title: 'Fix the stuck resume of the video loop', items: ['The checkpoint file is read before it is written during resume'], text: 'The checkpoint file is read before it is written during resume' }];
+    assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume' })).code, 'blocked', 'legacy entries are honoured');
+    f.pilot.rememberRejected(plan({ title: 'Another task entirely about exporters' }), 'VERDICT: FAIL\nexporter finding about rounding of durations in the output');
+    assert.equal(f.pilot.state.rejectedPlans, undefined, 'migrated into the file'); assert.equal(f.pilot.loadRejected().length, 2);
+    // a damaged store: admission refuses, the file is NOT replaced
+    fs.writeFileSync(f.pilot.rejectedFile(), '{ damaged');
+    assert.equal(f.pilot.admission(plan({ title: 'A different task about colours', newEvidence: '' })).code, 'unverifiable');
+    f.pilot.rememberRejected(plan({ title: 'Third task about timers' }), 'VERDICT: FAIL\ntimer finding about the scheduler tick');
+    assert.equal(fs.readFileSync(f.pilot.rejectedFile(), 'utf8'), '{ damaged', 'the unreadable file is left alone');
+    assert.ok(f.pilot.state.rejectedPlans.some((x) => x.title === 'Third task about timers'), 'the entry is kept in the state buffer');
+    // a failed write keeps the entry too
+    fs.rmSync(f.pilot.rejectedFile()); fs.mkdirSync(f.pilot.rejectedFile()); // a directory where the file should be: read fails -> error path
+    f.pilot.rememberRejected(plan({ title: 'Fourth task about caches' }), 'VERDICT: FAIL\ncache finding about eviction order');
+    assert.ok(f.pilot.state.rejectedPlans.some((x) => x.title === 'Fourth task about caches'));
   } finally { f.cleanup(); }
 });

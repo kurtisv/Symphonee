@@ -141,6 +141,7 @@ function admit(plan, ctx) {
   const { history = [], queue = [], opts = {} } = ctx;
   if (!plan || plan.decision === 'NO_TASK') return { ok: true };
   const text = plan.title + ' ' + plan.objective;
+  if (ctx.rejectedError && opts.strict) return { ok: false, code: 'unverifiable', reason: 'the memory of rejected plans cannot be read (' + String(ctx.rejectedError).slice(0, 100) + '): a rejected line could come back, so no new task is admitted' };
   const flight = inFlight(ctx);
   if (flight.degraded && opts.strict) return { ok: false, code: 'unverifiable', reason: 'the merge gate state exists but cannot be read (' + String(flight.degraded).slice(0, 100) + '): in-flight work cannot be checked, so no new task is admitted' };
   const dup = flight.find((x) => (x.where === 'branch' ? (tokens(String(x.title).replace(/\d{4}-\d{2}-\d{2}/g, ' ')).size >= 3 && coverage(x.title, plan.title) >= 0.85) : (similarity(text, x.title) >= SIMILAR || similarity(plan.title, x.title) >= SIMILAR)));
