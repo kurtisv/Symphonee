@@ -113,6 +113,10 @@ function inFlight({ history = [], queue = [], gatePath = null, repoName = null, 
   return items;
 }
 
+// A "new element" is compared with EACH earlier finding and each original evidence item on its own (a long reviewer text must not dilute a short observation).
+function repeatsAny(ne, rejections) {
+  return (rejections || []).some((r) => (Array.isArray(r.items) ? r.items : [r.evidence]).concat(r.evidence && Array.isArray(r.items) ? [r.evidence] : []).some((x) => x && String(x).trim() && similarity(ne, String(x)) >= 0.6));
+}
 // Admission: the engine's own gate on a discovered plan. -> { ok, reason, code }.
 function admit(plan, ctx) {
   const { history = [], queue = [], opts = {} } = ctx;
@@ -122,20 +126,20 @@ function admit(plan, ctx) {
   if (flight.degraded && opts.strict) return { ok: false, code: 'unverifiable', reason: 'the merge gate state exists but cannot be read (' + String(flight.degraded).slice(0, 100) + '): in-flight work cannot be checked, so no new task is admitted' };
   const dup = flight.find((x) => (x.where === 'branch' ? (tokens(String(x.title).replace(/\d{4}-\d{2}-\d{2}/g, ' ')).size >= 3 && coverage(x.title, plan.title) >= 0.85) : (similarity(text, x.title) >= SIMILAR || similarity(plan.title, x.title) >= SIMILAR)));
   if (dup) return { ok: false, code: 'duplicate', reason: 'duplicates work that is ' + dup.where + ': ' + String(dup.title).slice(0, 90) };
-  const rejectedAll = (ctx.rejected || []).concat((history || []).filter((h) => h && ['plan-rejected', 'review-rejected'].includes(h.outcome)).map((h) => ({ title: h.title, evidence: String(h.reviewerEvidence || '') + ' ' + (h.evidence || []).join(' ') })))
+  const rejectedAll = (ctx.rejected || []).concat((history || []).filter((h) => h && ['plan-rejected', 'review-rejected'].includes(h.outcome)).map((h) => ({ title: h.title, items: [String(h.reviewerEvidence || ''), ...(Array.isArray(h.evidence) ? h.evidence : [])] })))
     .filter((r) => r && r.title && similarity(plan.title, r.title) >= SIMILAR);
   const rejected = rejectedAll[0];
   if (rejected && !blockedTasks(history, opts.maxAttempts || 3).some((b) => similarity(plan.title, b.title) >= SIMILAR)) {
     const ne = String(plan.newEvidence || '').trim();
     if (ne.length < 20) return { ok: false, code: 'blocked', reason: 'a similar plan was already REJECTED by review and this one states no new element (newEvidence)' };
-    if (rejectedAll.some((r) => similarity(ne, String(r.evidence || '')) >= 0.6)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what the rejecting review already said' };
+    if (repeatsAny(ne, rejectedAll)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what the rejecting review already said' };
   }
   const blocked = blockedTasks(history, opts.maxAttempts || 3).find((b) => similarity(plan.title, b.title) >= SIMILAR);
   if (blocked) {
     const ne = String(plan.newEvidence || '').trim(), maxA = opts.maxAttempts || 3;
     if (blocked.attempts >= maxA * 2) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times: it needs a human decision or a dedicated mission, not another attempt' };
     if (ne.length < 20) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times without success (' + blocked.outcomes.join(', ') + ') and the plan states no new element (newEvidence)' };
-    if (rejectedAll.some((r) => similarity(ne, String(r.evidence || '')) >= 0.6)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what a rejecting review already said' };
+    if (repeatsAny(ne, rejectedAll)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what a rejecting review already said' };
     const seen = (history || []).filter((h) => h && h.title && similarity(plan.title, h.title) >= SIMILAR).flatMap((h) => [h.newEvidence, h.reviewerEvidence]).filter(Boolean);
     if (seen.some((x) => similarity(ne, x) >= 0.6)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what was already known about the failed attempts' };
   }

@@ -275,3 +275,10 @@ test('review round 9: the original evidence of a rejected plan is not new eviden
     assert.equal(f.pilot.state.queue.length, 0, 'the second plan of the same discovery duplicates the first');
   } finally { f.cleanup(); }
 });
+
+test('review round 10: a short original observation is not new evidence even when the review text is long', () => {
+  const rej = { history: [], queue: [], gatePath: null, branches: [], signals: [], opts: { strict: true },
+    rejected: [{ title: 'Fix the stuck resume of the video loop', items: ['The reviewer wrote a long finding about checkpoints, timers, file ordering and the absence of a failing test for this scenario in the repository', 'ECONNRESET at worker.js:42'] }] };
+  assert.equal(B.admit(plan({ newEvidence: 'ECONNRESET at worker.js:42' }), rej).code, 'blocked');
+  assert.equal(B.admit(plan({ newEvidence: 'A new deterministic failing test in resume.test.js reproduces the loop without any network' }), rej).ok, true);
+});
