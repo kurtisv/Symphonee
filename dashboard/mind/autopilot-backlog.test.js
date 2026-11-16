@@ -196,6 +196,10 @@ test('review round 2: gate state with the wrong shape fails closed; a plan rejec
   assert.equal(B.admit(plan({ newEvidence: 'second finding: the checkpoint file is read before it is written' }), two).code, 'blocked', 'novelty is checked against EVERY earlier rejection');
   const dirty = path.join(d, 'dirty.json'); fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: null, y: { repo: 'R', status: 'refused', history: 5 } }, stopped: { at: 'never' }, merges: [null] }));
   assert.doesNotThrow(() => B.collectBacklog({ history: [], gatePath: dirty, repoName: 'R' })); assert.doesNotThrow(() => B.admit(plan(), { ...base, gatePath: dirty }));
+  assert.equal(B.admit(plan(), { ...base, gatePath: dirty }).code, 'unverifiable', 'a damaged candidate entry fails closed');
+  fs.writeFileSync(dirty, JSON.stringify({ candidates: {}, stopped: { at: 1e20, reason: 'x' }, merges: [] })); assert.doesNotThrow(() => B.collectBacklog({ history: [], gatePath: dirty }));
+  const fails3 = ['a', 'b', 'c'].map((x) => H('Fix durations in the exporter module ' + x, 'verify-failed'));
+  assert.equal(B.admit(plan({ title: 'Fix durations in the exporter module', newEvidence: 'the checkpoint file is read before it is written (seen in resume.js)' }), { ...base, history: fails3, rejected: [{ title: 'Fix durations in the exporter module', evidence: 'the checkpoint file is read before it is written (seen in resume.js)' }] }).code, 'blocked', 'a blocked task must not reuse a rejected finding as new evidence');
   assert.equal(B.collectBacklog({ history: [H('A single interrupted task', 'interrupted')] }).some((x) => /ended without success/.test(x.text)), true, 'one interruption is already a signal');
 });
 

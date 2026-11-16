@@ -74,7 +74,7 @@ function collectBacklog({ history = [], events = [], error = null, gatePath = nu
   const gr = readGate(gatePath), g = gr.data || null;
   if (gr.error) add(1, 'gate-unreadable', 'The merge gate state is unreadable: ' + String(gr.error).slice(0, 120), 'cannot see candidates, merges or the stop flag');
   if (g) {
-    if (g.stopped) add(1, 'gate-stopped', 'The merge gate is STOPPED: ' + String(g.stopped.reason || '').slice(0, 160), 'gate state: stopped at ' + (Number.isFinite(Number(g.stopped.at)) ? new Date(Number(g.stopped.at)).toISOString() : 'an unknown time'));
+    if (g.stopped) add(1, 'gate-stopped', 'The merge gate is STOPPED: ' + String(g.stopped.reason || '').slice(0, 160), 'gate state: stopped at ' + (Number.isFinite(new Date(Number(g.stopped.at)).getTime()) ? new Date(Number(g.stopped.at)).toISOString() : 'an unknown time'));
     for (const c of Object.values(g.candidates || {})) {
       if (!c || typeof c !== 'object') continue;
       if (repoName && c.repo !== repoName) continue;
@@ -100,6 +100,7 @@ function inFlight({ history = [], queue = [], gatePath = null, repoName = null, 
   for (const q of queue) if (q && q.plan) items.push({ where: 'queued', title: q.plan.title });
   const gr = readGate(gatePath), g = gr.data || null;
   if (gr.error) items.degraded = gr.error;
+  if (g && Object.values(g.candidates || {}).some((c) => !c || typeof c !== 'object')) items.degraded = 'a candidate entry of the gate state is damaged';
   if (g) for (const c of Object.values(g.candidates || {})) {
     if (!c || typeof c !== 'object') continue;
     if ((repoName && c.repo !== repoName) || (c.origin && c.origin.pilot && c.origin.pilot !== pilotId)) continue;
@@ -131,6 +132,7 @@ function admit(plan, ctx) {
     const ne = String(plan.newEvidence || '').trim(), maxA = opts.maxAttempts || 3;
     if (blocked.attempts >= maxA * 2) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times: it needs a human decision or a dedicated mission, not another attempt' };
     if (ne.length < 20) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times without success (' + blocked.outcomes.join(', ') + ') and the plan states no new element (newEvidence)' };
+    if (rejectedAll.some((r) => similarity(ne, String(r.evidence || '')) >= 0.6)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what a rejecting review already said' };
     const seen = (history || []).filter((h) => h && h.title && similarity(plan.title, h.title) >= SIMILAR).flatMap((h) => [h.newEvidence, h.reviewerEvidence]).filter(Boolean);
     if (seen.some((x) => similarity(ne, x) >= 0.6)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what was already known about the failed attempts' };
   }
