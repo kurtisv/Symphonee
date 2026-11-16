@@ -348,6 +348,19 @@ function selectForTask(root, scope, { checkerVersion, question = '', maxMethods 
   const hints = mine.filter((x) => statusOf(x) === 'observation').sort((a, b) => confidenceOf(b, now) - confidenceOf(a, now) || b.count - a.count).slice(0, maxHints);
   return { methods, hints, decisions };
 }
+// Why a lesson cannot be handed over as a certified method right now (null = it can). Pure; used to explain every rejection.
+function eligibility(e, checkerVersion, now = Date.now()) {
+  const st = statusOf(e);
+  if (e.disabled) return 'disabled';
+  if (st === 'obsolete') return 'obsolete (' + (e.obsoleteReason || 'retired') + ')';
+  if (st === 'observation') return 'an observation: shown at most as an unverified hint, never as a method';
+  if (st === 'teaching') return 'a teacher explanation that was never validated: not shown';
+  if (st !== 'validated' || !e.validation) return 'not validated';
+  if (e.validation.checkerVersion !== checkerVersion) return 'validated under another proof regime (' + e.validation.checkerVersion + '): no longer trusted';
+  if (!(now < e.validation.validUntil)) return 'expired';
+  if (!wideCertified(e.validation)) return 'validated before the stress-proof rule (legacy-unproven): not recalled as certified';
+  return null;
+}
 const methodLine = (m) => '- [' + m.errorClass + ']' + (m.applicability ? ' Problem it solves: ' + m.applicability.problem + '.' : '') + ' Cause: ' + m.teaching.cause + (m.teaching.principle ? ' General principle (applies to other problems too): ' + m.teaching.principle + ' Application to the problem it was taught on (adapt it, do not copy it): ' : ' Strategy: ') + m.teaching.strategy
   + (m.teaching.pitfalls.length ? ' Avoid: ' + (m.applicability ? m.teaching.pitfalls.slice(0, 2) : m.teaching.pitfalls).join(' / ') : '') + ' Check: ' + m.teaching.verify.slice(0, 300)
   + (m.applicability ? ' Limits: ' + m.applicability.limits[0] + '.' : '')
@@ -359,4 +372,4 @@ function methodsText({ methods = [], hints = [] } = {}) {
   return out.join('\n\n');
 }
 
-module.exports = { wideCertified, isFresh, digestOf, SIMILAR, STATUSES, VALID_DAYS, statusOf, teachingProblems, validationProblems, attachTeaching, validate, markObsolete, isCurrent, expireStale, selectForTask, methodsText, relevantTo, CONFIDENCE: C, similarity, consolidate, confidenceOf, confirm, weaken, promotionCandidates, skillCandidates, load, record, top, all, promptText, firstFinding, normKey, memorySpec, pendingTeach, markTaught, fileOf, scopeOf };
+module.exports = { eligibility, wideCertified, isFresh, digestOf, SIMILAR, STATUSES, VALID_DAYS, statusOf, teachingProblems, validationProblems, attachTeaching, validate, markObsolete, isCurrent, expireStale, selectForTask, methodsText, relevantTo, CONFIDENCE: C, similarity, consolidate, confidenceOf, confirm, weaken, promotionCandidates, skillCandidates, load, record, top, all, promptText, firstFinding, normKey, memorySpec, pendingTeach, markTaught, fileOf, scopeOf };

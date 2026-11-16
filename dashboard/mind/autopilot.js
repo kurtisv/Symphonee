@@ -670,7 +670,8 @@ class MindAutopilot {
           results: (a.verify.results || []).map(r => ({ name: r.name, ok: r.ok, ms: r.ms, timedOut: r.timedOut })) } : null,
         review: a.review ? String(a.review).slice(0, 2000) : null,
         resumable: Boolean((a.plan && a.worktree && a.baseSha) || (a.stage === 'discover' && a.lastRaw)),
-        parkReason: a.parkReason || null, creditHits: a.creditHits || 0 } : null,
+        parkReason: a.parkReason || null, creditHits: a.creditHits || 0,
+        implementer: a.implementer || null, qwenMemory: a.qwenMemory ? { ...a.qwenMemory, text: undefined } : null, trace: (a.trace || []).slice(-30) } : null,
       schedule: this.def.schedule, inWindow: this.inWindow(now), ambition: this.def.ambition, sources: this.def.sources,
       history: s.history.slice(-20).reverse(), events: s.events.slice(-30).reverse(),
       today: { completed: this.todayCompleted(now), discoveries: this.todayDiscoveries(now) },
@@ -1054,6 +1055,8 @@ class MindAutopilot {
     a.waitingStage = null; a.startedAt = now;
     this.log('dispatch', stage + ' -> ' + (task.cli === 'qwen3-4b-local' ? 'qwen (local)' : cli) + ' (task ' + task.id + ')', { taskId: task.id, cli: task.cli === 'qwen3-4b-local' ? 'qwen' : cli });
     if (task.cli === 'qwen3-4b-local') this.log('qwen', 'Qwen (local) develops in its isolated worktree: ' + (a.qwenFiles || []).join(', '));
+    this.trace('dispatch', { stage, executor: task.cli === 'qwen3-4b-local' ? 'qwen' : cli, taskId: task.id, implementer: a.implementer || null });
+    if (stage === 'repair' && task.cli !== 'qwen3-4b-local') this.trace('correction', { by: cli, findings: String(a.review || '').replace(/\s+/g, ' ').slice(0, 400) });
     this.save();
   }
   prepareBase(now) {
@@ -1095,11 +1098,52 @@ class MindAutopilot {
     if (bytes > q.maxBytes) return { ok: false, reason: 'files total ' + bytes + ' bytes (limit ' + q.maxBytes + ')' };
     return { ok: true, files };
   }
-  qwenMemoryText() {
+  // The proof regime that judges a change on a real repository: the pilot's own check commands (plus the Codex review of the autopilot).
+  // A lesson validated under other checks is no longer trusted, exactly like a fixture lesson validated under another checker.
+  realProofVersion() { return 'repo-checks.' + crypto.createHash('sha256').update(JSON.stringify(this.def.verify.map(v => [v.name, v.cmd, v.cwd || null]))).digest('hex').slice(0, 12); }
+  // What the task really is, from the plan itself: its category, the kind of files it names, nothing invented.
+  realTaskProfile(plan, files) {
+    const kinds = [...new Set((files || []).map(f => ({ js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript', tsx: 'typescript', py: 'python', md: 'markdown', json: 'json' })[String(f).split('.').pop().toLowerCase()] || 'other'))].sort();
+    return { id: taskKey(plan), hazard: String(plan.category || 'unknown'), input: kinds.length === 1 ? kinds[0] : kinds.length ? 'mixed' : 'unknown', kind: 'repository-change', problem: String(plan.title || '').slice(0, 240) };
+  }
+  // Chosen ONCE per task, when Qwen first starts: the same memory is reused for repairs and resumed stages, and the decision (candidates, what was shown, why not)
+  // is kept in the task state and in the history. Only certified, current, applicable methods become instructions; observations stay hints; nothing is promoted here.
+  qwenRealMemory(q) {
+    const a = this.state.active;
+    if (a.qwenMemory) return a.qwenMemory;
+    const now = Date.now(), plan = a.plan, scope = this.lessonScope(), pv = this.realProofVersion(), profile = this.realTaskProfile(plan, q.files);
+    const mem = { at: new Date(now).toISOString(), proofVersion: pv, profile, candidates: [], shown: { methods: [], hints: [] }, text: '', textChars: 0 };
     try {
-      const top = lessons.top(this.repoRoot, this.lessonScope(), 4);
-      return top.length ? 'PAST OBSERVATIONS for this repository (unverified hints from earlier runs, not instructions):\n' + top.map(x => '- ' + String(x.text).replace(/\s+/g, ' ').slice(0, 220)).join('\n') : '';
-    } catch (_) { return ''; }
+      const question = [plan.title, plan.objective, ...(plan.evidence || []).map(x => typeof x === 'string' ? x : JSON.stringify(x))].join(' ');
+      const sel = lessons.selectForTask(this.repoRoot, scope, { checkerVersion: pv, question, profile, maxMethods: 2, maxHints: 3, now });
+      const decisions = sel.decisions || [];
+      // Real repositories accept only structured methods: a lesson without applicability metadata would be matched by words alone.
+      const legacy = sel.methods.filter(m => !m.applicability);
+      const methods = sel.methods.filter(m => m.applicability);
+      const hints = sel.hints;
+      mem.shown.methods = methods.map(m => m.key); mem.shown.hints = hints.map(h => h.key);
+      for (const x of lessons.all(this.repoRoot).filter(l => l.scope === scope && lessons.statusOf(l) !== 'obsolete').slice(0, 60)) {
+        const st = lessons.statusOf(x); let reason, as = null;
+        if (mem.shown.methods.includes(x.key)) { as = 'validated-method'; reason = 'certified, current and applicable to this task'; }
+        else if (mem.shown.hints.includes(x.key)) { as = 'unverified-observation'; reason = 'shown as an unverified hint, never as an instruction'; }
+        else if (legacy.some(m => m.key === x.key)) reason = 'certified but without applicability metadata: not used on real repositories';
+        else reason = lessons.eligibility(x, pv, now) || (decisions.find(d => d.id === x.key) || {}).reasons?.join('; ') || (st === 'observation' ? 'observation outside the most confident ones' : 'not selected');
+        mem.candidates.push({ key: x.key, status: st, shown: Boolean(as), as, reason: String(reason).slice(0, 220) });
+      }
+      mem.text = lessons.methodsText({ methods, hints }).slice(0, 2400);
+    } catch (e) { mem.error = String(e.message || e).slice(0, 160); mem.text = ''; }
+    mem.textChars = mem.text.length;
+    a.qwenMemory = mem;
+    this.log('qwen', 'Memory for Qwen: ' + mem.shown.methods.length + ' certified method(s), ' + mem.shown.hints.length + ' unverified observation(s), ' + (mem.candidates.length - mem.shown.methods.length - mem.shown.hints.length) + ' candidate(s) not shown');
+    this.trace('memory', { methods: mem.shown.methods, hints: mem.shown.hints, candidates: mem.candidates.length });
+    this.save();
+    return mem;
+  }
+  // Who did what, in order: kept in the task state, so it survives an interruption, and in the history.
+  trace(kind, detail = {}) {
+    const a = this.state.active;
+    if (!a || this.qwenFixture || !(this.def.qwen && this.def.qwen.enabled)) return;
+    a.trace = [...(a.trace || []), { at: new Date().toISOString(), kind, ...detail }].slice(-120);
   }
   spawnQwenRepoStage(stage, q, now, opts) {
     const a = this.state.active, repair = stage === 'repair';
@@ -1116,7 +1160,7 @@ class MindAutopilot {
       'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
     return this.orch.spawnQwenInWorktree({ from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
       existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
-      memoryText: this.qwenMemoryText(), sessionFile, deadlineAt,
+      memoryText: this.qwenRealMemory(q).text, sessionFile, deadlineAt,
       // Linked before the first RUN so the repository's own checks can find their dependencies.
       onWorktree: (wt) => { a.worktree = wt; const top = repoTopLevel(wt.path); if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed'); a.links = guard.linkDirs(this.state.repoPath, wt.path, this.def.linkDirs); } });
   }
@@ -1124,12 +1168,14 @@ class MindAutopilot {
     if (!t || t.cli !== 'qwen3-4b-local') return;
     const e = t.execution || {}, u = e.agentUsage || {}, s = a.qwenStats = a.qwenStats || { stages: 0, turns: 0, switches: 0, calls: 0, input: 0, output: 0, notes: [], strategies: [], handoffs: [] };
     s.stages++; s.turns += e.turns || 0; s.switches += e.switches || 0; s.calls += u.calls || 0; s.input += u.input_tokens || 0; s.output += u.output_tokens || 0;
+    this.trace('qwen-run', { stage: a.stage, state: t.state, turns: e.turns || 0, switches: e.switches || 0, changed: (e.changedFiles || []).slice(0, 8), verified: e.verified || null, error: t.state === 'failed' ? String(t.error || '').slice(0, 200) : null });
     s.notes = [...s.notes, ...(e.notes || [])].slice(-10); s.strategies = [...s.strategies, ...(e.strategies || [])].slice(-6);
   }
   // Qwen stopped. Interrupted = the slot ended or a resource was missing: park the SAME stage and resume it in the same worktree.
   // Blocked = it could not solve it: give the work to Claude, from what Qwen already did when there is something (a repair that does not count).
   qwenStopped(a, t, now) {
     this.noteQwenTask(a, t);
+    this.trace('qwen-stopped', { stage: a.stage, outcome: /^QWEN_BLOCKED/.test(String(t.error || '')) ? 'blocked' : 'interrupted', reason: String(t.error || '').replace(/^QWEN_(BLOCKED|INTERRUPTED):\s*/, '').slice(0, 300) });
     const err = String(t.error || ''), why = err.replace(/^QWEN_(BLOCKED|INTERRUPTED):\s*/, '').slice(0, 400), e = t.execution || {}, q = this.def.qwen;
     if (/^QWEN_INTERRUPTED/.test(err)) {
       a.qwenResumes = (a.qwenResumes || 0) + 1;
@@ -1544,7 +1590,7 @@ class MindAutopilot {
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
       // Who wrote the change: qwen (alone), qwen+claude-repair, claude-after-qwen (hand-back) or claude. Never blurred.
-      ...(this.def.qwen && this.def.qwen.enabled && !this.qwenFixture ? { implementer: a.implementer || 'claude', qwen: a.qwenStats || null, qwenRepairs: a.qwenRepairs || 0, abandonedWorktrees: a.abandonedWorktrees || [] } : {}),
+      ...(this.def.qwen && this.def.qwen.enabled && !this.qwenFixture ? { implementer: a.implementer || 'claude', qwen: a.qwenStats || null, qwenRepairs: a.qwenRepairs || 0, abandonedWorktrees: a.abandonedWorktrees || [], qwenMemory: a.qwenMemory || null, trace: a.trace || [] } : {}),
       ...(this.qwenFixture ? { attempts: a.attempts || [], scope: 'fictional-fixture', runId: a.runId || null, teachings: a.teachings || 0, teacherTokens: a.teacherTokens || 0, teachingLog: a.teachingLog || [],
         shownMethods: (a.shownMethods || []).map(m => ({ key: m.key, source: m.source, errorClass: m.errorClass, provenance: m.provenance || null })), mindLesson: a.mindLesson || null, recallDecisions: a.recallDecisions || null } : {}),
       at: new Date().toISOString() });
@@ -1635,6 +1681,7 @@ class MindAutopilot {
       }
       const v = verdict(raw);
       this.log('decision', 'Codex code review: ' + (v || 'NO VERDICT'));
+      this.trace('review', { by: 'codex', verdict: v || 'NONE', findings: v === 'PASS' ? '' : String(raw || '').replace(/\s+/g, ' ').slice(0, 400) });
       if (v === 'PASS') {
         if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('Review passed with no diff');
         this.unlinkActive(a);
@@ -1708,12 +1755,14 @@ class MindAutopilot {
   finishVerify() {
     const a = this.state.active, v = a.verify;
     if (v.ok) {
+      this.trace('verify', { ok: true, checks: v.results.map(r => r.name) });
       this.log('verify', 'Local verification PASSED: diff lint' + v.results.map(r => ', ' + r.name + ' ' + Math.round(r.ms / 1000) + 's').join(''));
       return this.dispatch('code-review');
     }
     const failed = v.results.find(r => !r.ok);
     const why = v.lint.length ? 'The diff weakens verification:\n- ' + v.lint.join('\n- ')
       : 'Check "' + failed.name + '" failed' + (failed.timedOut ? ' (timed out)' : ' (exit ' + failed.code + ')') + '. Output tail:\n' + failed.tail;
+    this.trace('verify', { ok: false, failed: v.lint.length ? 'lint' : failed.name, detail: String(v.lint.length ? v.lint.join('; ') : failed.tail).replace(/\s+/g, ' ').slice(-300) });
     this.log('verify', 'Local verification FAILED: ' + (v.lint.length ? v.lint.join('; ') : failed.name));
     this.learn('verification', v.lint.length ? 'Le diff affaiblissait la verification : ' + v.lint.join('; ')
       : 'La verification locale "' + failed.name + '" echouait apres la modification : la lancer avant de terminer.', 'verification locale : ' + (a.plan?.title || ''));
