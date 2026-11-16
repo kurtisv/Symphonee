@@ -14,6 +14,10 @@ const localBrief = require('./local-brief');
 const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
+const tq = require('./qwen-teaching');
+const applicability = require('./lesson-applicability');
+const failures = require('./qwen-failure-analysis');
+const { CHECKER_VERSION } = require('../orchestrator/qwen-pure-assertions');
 // Optional Sentry reporting (window check-ins, completions, halts). Never throws.
 let sentry = null;
 try { sentry = require('../automation/sentry-report'); } catch (_) {}
@@ -86,6 +90,13 @@ function nextWindowStart(sched, now = Date.now()) {
   const t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime();
   return t > now ? t : new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, h, m, 0, 0).getTime();
 }
+// Opt-in local developer. Numbers are bounded; nothing here can raise a limit of the protected-path or verification gates.
+function validQwen(q) {
+  if (!q || q.enabled !== true) return { enabled: false };
+  const n = (x, lo, hi, d) => { const v = Number(x); return Number.isInteger(v) && v >= lo && v <= hi ? v : d; };
+  return { enabled: true, maxFiles: n(q.maxFiles, 1, 6, 4), maxBytes: n(q.maxBytes, 4000, 120000, 48000), maxRepairs: n(q.maxRepairs, 0, 4, 2), maxResumes: n(q.maxResumes, 1, 30, 12) };
+}
+const windowEndAfter = (sched, now) => { if (!sched) return null; const [h, m] = sched.end.split(':').map(Number); const d = new Date(now); let t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime(); if (t <= now) t += 86400000; return t; };
 const LIMIT_RANGES = { dailyCompletions: [1, 50], dailyDiscoveries: [1, 100], dailyCalls: [1, 300],
   dailyTokenBudget: [100000, 500000000], reservedTokensPerCall: [10000, 2000000], repairs: [0, 5], planRevisions: [0, 3] };
 function mergeLimits(base, over) {
@@ -138,6 +149,42 @@ const CONTEXT_POLICY = 'Conserve tokens: inspect only relevant files (maximum ei
 const WORK_CATEGORIES = Object.freeze(['correctness', 'performance', 'quality', 'cleanup', 'testing']);
 const STAGES = Object.freeze(['discover', 'plan-review', 'implement', 'code-review', 'repair']);
 const PILOT_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
+// Fixture environment refusals that happen before the developer runs.
+const ENV_FAILURE = /^(Insufficient free RAM|LM Studio unavailable|.* context is not loaded|Vulkan GPU is not verified)/;
+// Plain-language meaning of the independent checker's messages. Measured
+// 2026-11-15: a 4B model resubmitted identical code three times after
+// "Unsupported expression: MemberExpression", which names an internal node.
+const CHECK_HINTS = Object.freeze([
+  [/VariableDeclaration/, 'Only a new single-assignment const with a value is allowed (no let, var, reassignment, destructuring or several declarators).'],
+  [/MemberExpression/, 'Only .length, v[i] indexing and Math.abs, Math.max, Math.min can be read: Number.MAX_VALUE, Number.MAX_SAFE_INTEGER, Infinity, Math.floor and every other property are unavailable. Write a numeric constant as a literal, for example 1.7976931348623157e308.'],
+  [/CallExpression|Unsupported expression/, 'The only calls allowed are {ARR}.reduce((a, b) => expression, initial) and Math.abs(x), Math.max(a, b), Math.min(a, b) with exactly two arguments for max and min: Math.min(...{ARR}) and Math.max(...{ARR}) with a spread are refused. For the largest or smallest value of a whole array write {ARR}.reduce((m, x) => Math.max(m, x), start) and never list array positions by hand.'],
+  [/Unknown identifier/, 'Only the parameters, your consts and the reduce callback parameters exist: no Infinity, NaN, undefined, Number or other globals.'],
+  [/Unsupported result/, 'For one of the inputs the result was not a finite number (Infinity, -Infinity or NaN) or nothing was returned: an intermediate value overflows or a branch has no return.'],
+  [/Unsupported reduce callback/, 'reduce needs exactly (a, b) => expression, with an expression body: no braces, no if statement and no return inside it. To treat some elements differently use a conditional expression, for example (a, b) => b > 0 ? a + b : a, and give the initial value as the second argument.'],
+  [/Index out of range|Index requires/, 'An index must be an integer inside the array; guard the empty array first.'],
+  [/Unsupported statement/, 'Only if, return and const statements are allowed: no for or while loops, assignments or other statements. Do the repetition with {ARR}.reduce(...).'],
+]);
+const hintFor = (text, param) => { const h = (CHECK_HINTS.find(([re]) => re.test(String(text))) || [])[1]; return h && h.split('{ARR}').join(param || 'the array parameter'); };
+// Collapses the per-assertion syntax refusals into one plain instruction each;
+// wrong results and everything else pass through unchanged.
+// param / code: the array parameter and the latest code, so the hints use the REAL names (a hint once said `arr` and the developer copied it, 3 failures measured).
+function explainChecks(observations, ctx = {}) {
+  const hints = new Set(), rest = [], param = ctx.param || failures.paramOf(ctx.code);
+  for (const o of observations) {
+    const wrong = /^Assertion \d+ \((.*) expected (.*)\): Supervisor refused: verification refused: Expected values to be strictly deep-equal: (.*) !== (.*)$/.exec(String(o).trim());
+    if (wrong) { rest.push(`${wrong[1]} returned ${wrong[3]}, but it must return ${wrong[2]}.`); continue; }
+    const m = /verification refused: ([^|]+)/.exec(String(o));
+    const h = m && hintFor(m[1], param);
+    if (h) hints.add(h); else rest.push(String(o));
+  }
+  const slips = ctx.code && observations.some(o => /Unknown identifier/.test(String(o))) ? failures.unknownNames(ctx.code).filter(n => failures.HINT_PLACEHOLDERS.includes(n)) : [];
+  const naming = slips.map(n => 'You wrote `' + n + '` but there is no such name: the array parameter of your function is `' + (param || 'the one in its signature') + '`. Use that name.');
+  return [...naming, ...[...hints].map(h => 'The checker refused your syntax. ' + h), ...rest];
+}
+const ENV_RETRIES = 8, ENV_WAIT_MS = 60_000, MAX_EXTRA_CASES = 6;
+// The pure subset accepted by the fixture's independent checker, told to both
+// the developer and the reviewer so that corrections stay implementable.
+const FIXTURE_SUBSET = "one function declaration with plain parameters followed by module.exports = { name }; a body made of if statements, return statements and single-assignment `const name = expression;` declarations (no let, no var, no reassignment, no loops); expressions limited to numbers, strings, booleans, null, parameters and consts, + - * / %, comparisons (=== !== < <= > >=), && || !, ?:, .length, indexing v[i] with an integer index in range, exactly Math.abs(x), Math.max(a, b) and Math.min(a, b), and, called on the array parameter that is in your function signature, .reduce((a, b) => expression, initial) with an expression body (no braces). No loops, no Math.floor/ceil/sqrt, no other calls.";
 const CODE_QUALITY_POLICY = [
   'Correctness: prioritize reproducible defects, regressions, and failing tests.',
   'Performance: optimize only demonstrated bottlenecks. Record a reproducible baseline (command, metric, environment), compare before and after using comparable workloads, and reject regressions.',
@@ -327,7 +374,25 @@ function localTriage(cwd, { exclude = [] } = {}) {
 
 class MindAutopilot {
   constructor({ repoRoot, orchestrator, getUiContext, getRepoPath, getRepos, broadcast, autoTimer = true,
-    id = 'default', def = {}, peers = null }) {
+    id = 'default', def = {}, peers = null, qwenFixture = null }) {
+    // Experimental: Qwen3 4B as developer on a FICTIONAL fixture, Codex as the
+    // tool-free reviewer. Only an in-process capability enables it; neither the
+    // routes nor the pilot definition file can, and real projects stay locked.
+    if (qwenFixture) {
+      const { QWEN_DEVELOPER_FIXTURE } = require('../orchestrator/qwen-supervision');
+      if (qwenFixture.capability !== QWEN_DEVELOPER_FIXTURE) throw new Error('Untrusted Qwen fixture');
+      const f = qwenFixture;
+      if (!f.root || !Array.isArray(f.files) || !Array.isArray(f.editable) || !Array.isArray(f.assertions) || typeof f.requirements !== 'string' || !/^[a-z0-9.-]{3,40}$/.test(f.reviewerModel || '')) throw new Error('Invalid Qwen fixture');
+      if ((f.lessonsRoot !== undefined && (typeof f.lessonsRoot !== 'string' || !path.isAbsolute(f.lessonsRoot))) || (f.name !== undefined && !/^[a-z0-9-]{1,40}$/.test(f.name))) throw new Error('Invalid Qwen fixture');
+      if (f.developerModel !== undefined &&!Object.hasOwn(require('../orchestrator/qwen-docker-adapter').PROFILES, f.developerModel)) throw new Error('Unsupported Qwen developer model');
+      // Teaching: Claude explains a repeated blockage; Mind keeps what was validated. Both optional.
+      if (f.family !== undefined && !/^[a-z0-9-]{2,40}$/.test(f.family)) throw new Error('Invalid Qwen fixture family');
+      if (f.teacher !== undefined && (!f.teacher || typeof f.teacher.enabled !== 'boolean' || (f.teacher.enabled && (!f.lessonsRoot || !f.family)))) throw new Error('Invalid Qwen fixture teacher');
+      if (f.wideCheck !== undefined && typeof f.wideCheck !== 'function') throw new Error('Invalid Qwen fixture wide check');
+      if (f.taskProfile !== undefined && (!f.taskProfile || !/^[a-z0-9-]{2,40}$/.test(f.taskProfile.id || '') || !f.taskProfile.hazard || !f.taskProfile.input || !f.taskProfile.kind)) throw new Error('Invalid Qwen fixture task profile');
+      if (f.mind !== undefined && !['recallLessons', 'upsertLesson', 'recordLessonUse'].every(k => typeof f.mind?.[k] === 'function')) throw new Error('Invalid Qwen fixture Mind');
+      this.qwenFixture = Object.freeze({ ...f });
+    } else this.qwenFixture = null;
     this.orch = orchestrator; this.repoRoot = repoRoot; this.getUiContext = getUiContext;
     this.getRepoPath = getRepoPath; this.getRepos = getRepos || (() => ({}));
     this.broadcast = broadcast || (() => {});
@@ -369,6 +434,8 @@ class MindAutopilot {
       // Local pre-triage model (LM Studio, loopback only): condenses the
       // backlog's P0/P1 lines before discovery. Hints only, never a verdict.
       localBrief: validLocalBrief(def.localBrief),
+      // Qwen3.5-4B (local) as the first candidate for small tasks on this repository; Claude stays the fallback. Off unless enabled.
+      qwen: validQwen(def.qwen),
       fallback: fallback.profile(def.fallback),
       // Adaptive task capacity (0..6 per work window) from the real remaining
       // subscription capacity; false turns it off (fixed daily limit again).
@@ -475,7 +542,7 @@ class MindAutopilot {
     return this.snapshot(now);
   }
   report(level, message, fingerprint, extra = {}) {
-    if (!sentry) return;
+    if (!sentry || this.qwenFixture) return; // a fictional fixture never reports outside
     sentry.event({ message, level, loop: 'autopilote', fingerprint: ['autopilote', this.id, ...fingerprint],
       tags: { pilote: this.id, depot: this.state.repoName || null }, extra }).catch(() => {});
   }
@@ -603,7 +670,8 @@ class MindAutopilot {
           results: (a.verify.results || []).map(r => ({ name: r.name, ok: r.ok, ms: r.ms, timedOut: r.timedOut })) } : null,
         review: a.review ? String(a.review).slice(0, 2000) : null,
         resumable: Boolean((a.plan && a.worktree && a.baseSha) || (a.stage === 'discover' && a.lastRaw)),
-        parkReason: a.parkReason || null, creditHits: a.creditHits || 0 } : null,
+        parkReason: a.parkReason || null, creditHits: a.creditHits || 0,
+        implementer: a.implementer || null, qwenMemory: a.qwenMemory ? { ...a.qwenMemory, text: undefined } : null, trace: (a.trace || []).slice(-30) } : null,
       schedule: this.def.schedule, inWindow: this.inWindow(now), ambition: this.def.ambition, sources: this.def.sources,
       history: s.history.slice(-20).reverse(), events: s.events.slice(-30).reverse(),
       today: { completed: this.todayCompleted(now), discoveries: this.todayDiscoveries(now) },
@@ -819,6 +887,7 @@ class MindAutopilot {
   // then teaches Mind what is not taught yet (gate lessons included). Never throws.
   lessonScope() { return lessons.scopeOf(this.id, this.state.repoName); }
   learn(kind, text, source) {
+    if (this.qwenFixture) return; // fixture observations go to an isolated Mind space, never to repository lessons
     try {
       const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source });
       if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon repetee (' + r.entry.count + ') ') + '[' + kind + '] ' + r.entry.text.slice(0, 160));
@@ -865,7 +934,7 @@ class MindAutopilot {
   }
   dispatch(stage, now = Date.now()) {
     const a = this.state.active;
-    if (!STAGES.includes(stage)) throw new Error('Invalid stage');
+    if (!STAGES.includes(stage) && !(this.qwenFixture && stage === 'teach')) throw new Error('Invalid stage');
     const resuming = a.handoff?.status === 'ready' && a.handoff.stage === stage;
     if (resuming) {
       now = Date.now();
@@ -891,6 +960,7 @@ class MindAutopilot {
     // task begun inside it: it waits for the next window.
     // A task started by hand ("Lancer une tache maintenant") runs to its end.
     if (this.def.schedule && !this.inWindow(now) && !(a && a.manual)) return this.parkForWindow(stage, now);
+    if (this.qwenFixture) return this.dispatchQwenFixture(stage, now);
     const cli = resuming ? this.def.fallback.provider : ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
@@ -909,10 +979,13 @@ class MindAutopilot {
     };
     if (stage === 'discover' && this.state.discoveryTimes.length >= this.limits.dailyDiscoveries) return wait('Daily discovery limit reached');
     if (stage === 'implement' && !this.state.consent?.worktreeWrites) throw new Error('Worktree write consent missing');
+    const qwenStage = !resuming && (stage === 'implement' || stage === 'repair') ? this.qwenRepoCandidate(stage) : null;
+    if (qwenStage && !qwenStage.ok) { this.log('qwen', 'Qwen not used for ' + stage + ': ' + qwenStage.reason); if (stage === 'implement' && this.state.active.implementer !== 'claude-after-qwen') this.state.active.implementer = 'claude'; }
     // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
     const held = cli === 'codex' && a.reviewHold && this.state.budgetCalls.find(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
-    const charge = held || budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
-    if (held) { held.stage = stage; held.at = now; a.reviewHold = null; }
+    // Qwen is local: no cloud call to reserve for it.
+    const charge = qwenStage && qwenStage.ok ? { ref: null } : (held || budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits));
+    if (held && !(qwenStage && qwenStage.ok)) { held.stage = stage; held.at = now; a.reviewHold = null; }
     if (!charge) return wait('Daily call or token budget reached');
     if (stage === 'discover') this.state.discoveryTimes.push(now);
     this.save();
@@ -931,17 +1004,10 @@ class MindAutopilot {
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path, autoPermit: false, confineWrites: true, expectsRepoChanges: true,
         prompt: [repoPin(a.worktree.path, this.state.repoPath), 'Resume the approved implementation in this SAME worktree. Preserve existing changes. No commit/push/merge/deploy.',
           JSON.stringify(a.handoff.checkpoint), this.planVerdictText(), RULES, this.guardText(), this.qualityPolicy(), this.contextPolicy(), this.verifyText()].join('\n\n') });
+    } else if (qwenStage && qwenStage.ok) {
+      task = this.spawnQwenRepoStage(stage, qwenStage, now, opts);
     } else if (stage === 'implement') {
-      let startPoint = null;
-      if (this.def.baseRef) {
-        const [remote, ...rest] = this.def.baseRef.split('/');
-        const f = rest.length ? runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]) : null;
-        if (f && (f.error || f.status !== 0)) this.log('warn', 'fetch ' + this.def.baseRef + ' impossible, base locale utilisee');
-        startPoint = this.def.baseRef;
-      }
-      a.baseSha = git(this.state.repoPath, ['rev-parse', '--verify', (startPoint || 'HEAD') + '^{commit}']);
-      a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
-      const branch = 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
+      const branch = this.prepareBase(now);
       task = this.orch.spawnInWorktree({ ...opts, cli: 'claude', repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
         expectsRepoChanges: true, autoPermit: false, confineWrites: true, prompt: [
           repoPin('your current working directory', this.state.repoPath) + ' Never edit ' + this.state.repoPath + ' itself.',
@@ -954,7 +1020,7 @@ class MindAutopilot {
           'For performance report baseline and new measurements, workload and machine environment.',
           'For cleanup prove removed code has no necessary callers; for quality explain the concrete maintainability benefit.',
           'Do not push, merge or deploy.'].filter(Boolean).join('\n\n') });
-      a.worktree = task.worktree;
+      a.worktree = task.worktree; a.implementer = a.implementer || 'claude';
       const top = a.worktree && repoTopLevel(a.worktree.path);
       if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed');
       a.links = guard.linkDirs(this.state.repoPath, a.worktree.path, this.def.linkDirs);
@@ -967,6 +1033,7 @@ class MindAutopilot {
         autoPermit: false, readOnly: true, sandbox: 'read-only',
         prompt: repoPin(a.worktree.path, this.state.repoPath) + '\n\n' + this.reviewPrompt(stage) });
     } else if (stage === 'repair') {
+      if (a.implementer === 'qwen') a.implementer = 'qwen+claude-repair';
       a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path,
         autoPermit: false, confineWrites: true, expectsRepoChanges: true, prompt: [
@@ -986,11 +1053,521 @@ class MindAutopilot {
     if (resuming) { a.handoff.status = 'dispatched'; a.handoff.taskId = task.id;
       this.log('handoff', 'claude -> ' + cli + ': quota; same ' + stage + ' stage', { taskId: task.id, cli }); }
     a.waitingStage = null; a.startedAt = now;
+    this.log('dispatch', stage + ' -> ' + (task.cli === 'qwen3-4b-local' ? 'qwen (local)' : cli) + ' (task ' + task.id + ')', { taskId: task.id, cli: task.cli === 'qwen3-4b-local' ? 'qwen' : cli });
+    if (task.cli === 'qwen3-4b-local') this.log('qwen', 'Qwen (local) develops in its isolated worktree: ' + (a.qwenFiles || []).join(', '));
+    this.trace('dispatch', { stage, executor: task.cli === 'qwen3-4b-local' ? 'qwen' : cli, taskId: task.id, implementer: a.implementer || null });
+    if (stage === 'repair' && task.cli !== 'qwen3-4b-local') this.trace('correction', { by: cli, findings: String(a.review || '').replace(/\s+/g, ' ').slice(0, 400) });
+    this.save();
+  }
+  prepareBase(now) {
+    let startPoint = null;
+    if (this.def.baseRef) {
+      const [remote, ...rest] = this.def.baseRef.split('/');
+      const f = rest.length ? runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]) : null;
+      if (f && (f.error || f.status !== 0)) this.log('warn', 'fetch ' + this.def.baseRef + ' impossible, base locale utilisee');
+      startPoint = this.def.baseRef;
+    }
+    const a = this.state.active;
+    a.baseSha = git(this.state.repoPath, ['rev-parse', '--verify', (startPoint || 'HEAD') + '^{commit}']);
+    a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
+    return 'mind-autopilot/' + budget.dayOf(now) + '-' + crypto.randomBytes(3).toString('hex');
+  }
+  // ── Local Qwen developer on the real repository (opt-in per pilot) ──────
+  // Admissible = small and clearly located: the plan names 1..maxFiles tracked, unprotected files that fit the
+  // 8k context. Anything else, or a task Qwen already failed, goes to Claude as before. A refusal is not an error.
+  qwenRepoCandidate(stage) {
+    const a = this.state.active, q = this.def.qwen;
+    if (this.qwenFixture || !q || !q.enabled || !a || !a.plan) return null;
+    if (typeof this.orch.spawnQwenInWorktree !== 'function' || !(this.orch.isQwenRepoEnabled && this.orch.isQwenRepoEnabled())) return { ok: false, reason: 'Qwen repository developer disabled in the Symphonee configuration' };
+    if (a.qwenFailed) return { ok: false, reason: 'Qwen already handed this task back' };
+    if (stage === 'repair') {
+      if (a.implementer !== 'qwen' || !a.worktree) return { ok: false, reason: 'the implementation was not Qwen\'s' };
+      if ((a.qwenRepairs || 0) >= q.maxRepairs) return { ok: false, reason: 'Qwen repair attempts used (' + q.maxRepairs + ')' };
+      return { ok: true, files: a.qwenFiles || [] };
+    }
+    if (a.qwenFiles && a.worktree) return { ok: true, files: a.qwenFiles }; // resuming Qwen's own stage
+    const tracked = (runGit(this.state.repoPath, ['ls-files']).stdout || '').split('\n').filter(Boolean);
+    const text = [a.plan.title, a.plan.objective, ...(a.plan.evidence || [])].map(x => typeof x === 'string' ? x : JSON.stringify(x)).join('\n').replace(/\\/g, '/');
+    const files = tracked.filter(p => p.length >= 4 && text.includes(p)).sort((x, y) => y.length - x.length).filter((p, i, all) => !all.slice(0, i).some(l => l.includes(p) && l !== p && false)).slice(0, 12);
+    if (!files.length) return { ok: false, reason: 'the plan does not name a tracked file' };
+    if (files.length > q.maxFiles) return { ok: false, reason: 'the plan touches ' + files.length + ' files (limit ' + q.maxFiles + ')' };
+    const prot = guard.compilePatterns(this.def.protectedPaths);
+    const hit = files.find(p => prot.some(re => re.test(p)));
+    if (hit) return { ok: false, reason: 'protected file named: ' + hit };
+    let bytes = 0; for (const p of files) { try { bytes += fs.statSync(path.join(this.state.repoPath, p)).size; } catch (_) {} }
+    if (bytes > q.maxBytes) return { ok: false, reason: 'files total ' + bytes + ' bytes (limit ' + q.maxBytes + ')' };
+    return { ok: true, files };
+  }
+  // The proof regime that judges a change on a real repository: the pilot's own check commands (plus the Codex review of the autopilot).
+  // A lesson validated under other checks is no longer trusted, exactly like a fixture lesson validated under another checker.
+  realProofVersion() { return 'repo-checks.' + crypto.createHash('sha256').update(JSON.stringify(this.def.verify.map(v => [v.name, v.cmd, v.cwd || null]))).digest('hex').slice(0, 12); }
+  // What the task really is, from the plan itself: its category, the kind of files it names, nothing invented.
+  realTaskProfile(plan, files) {
+    const kinds = [...new Set((files || []).map(f => ({ js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript', tsx: 'typescript', py: 'python', md: 'markdown', json: 'json' })[String(f).split('.').pop().toLowerCase()] || 'other'))].sort();
+    return { id: taskKey(plan), hazard: String(plan.category || 'unknown'), input: kinds.length === 1 ? kinds[0] : kinds.length ? 'mixed' : 'unknown', kind: 'repository-change', problem: String(plan.title || '').slice(0, 240) };
+  }
+  // Chosen ONCE per task, when Qwen first starts: the same memory is reused for repairs and resumed stages, and the decision (candidates, what was shown, why not)
+  // is kept in the task state and in the history. Only certified, current, applicable methods become instructions; observations stay hints; nothing is promoted here.
+  qwenRealMemory(q) {
+    const a = this.state.active;
+    if (a.qwenMemory) return a.qwenMemory;
+    const now = Date.now(), plan = a.plan, scope = this.lessonScope(), pv = this.realProofVersion(), profile = this.realTaskProfile(plan, q.files);
+    const mem = { at: new Date(now).toISOString(), proofVersion: pv, profile, candidates: [], shown: { methods: [], hints: [] }, text: '', textChars: 0 };
+    try {
+      const question = [plan.title, plan.objective, ...(plan.evidence || []).map(x => typeof x === 'string' ? x : JSON.stringify(x))].join(' ');
+      const sel = lessons.selectForTask(this.repoRoot, scope, { checkerVersion: pv, question, profile, maxMethods: 2, maxHints: 3, now });
+      const decisions = sel.decisions || [];
+      // Real repositories accept only structured methods: a lesson without applicability metadata would be matched by words alone.
+      const legacy = sel.methods.filter(m => !m.applicability);
+      const methods = sel.methods.filter(m => m.applicability);
+      const hints = sel.hints;
+      mem.shown.methods = methods.map(m => m.key); mem.shown.hints = hints.map(h => h.key);
+      for (const x of lessons.all(this.repoRoot).filter(l => l.scope === scope && lessons.statusOf(l) !== 'obsolete').slice(0, 60)) {
+        const st = lessons.statusOf(x); let reason, as = null;
+        if (mem.shown.methods.includes(x.key)) { as = 'validated-method'; reason = 'certified, current and applicable to this task'; }
+        else if (mem.shown.hints.includes(x.key)) { as = 'unverified-observation'; reason = 'shown as an unverified hint, never as an instruction'; }
+        else if (legacy.some(m => m.key === x.key)) reason = 'certified but without applicability metadata: not used on real repositories';
+        else reason = lessons.eligibility(x, pv, now) || (decisions.find(d => d.id === x.key) || {}).reasons?.join('; ') || (st === 'observation' ? 'observation outside the most confident ones' : 'not selected');
+        mem.candidates.push({ key: x.key, status: st, shown: Boolean(as), as, reason: String(reason).slice(0, 220) });
+      }
+      mem.text = lessons.methodsText({ methods, hints }).slice(0, 2400);
+    } catch (e) { mem.error = String(e.message || e).slice(0, 160); mem.text = ''; }
+    mem.textChars = mem.text.length;
+    a.qwenMemory = mem;
+    this.log('qwen', 'Memory for Qwen: ' + mem.shown.methods.length + ' certified method(s), ' + mem.shown.hints.length + ' unverified observation(s), ' + (mem.candidates.length - mem.shown.methods.length - mem.shown.hints.length) + ' candidate(s) not shown');
+    this.trace('memory', { methods: mem.shown.methods, hints: mem.shown.hints, candidates: mem.candidates.length });
+    this.save();
+    return mem;
+  }
+  // Who did what, in order: kept in the task state, so it survives an interruption, and in the history.
+  trace(kind, detail = {}) {
+    const a = this.state.active;
+    if (!a || this.qwenFixture || !(this.def.qwen && this.def.qwen.enabled)) return;
+    a.trace = [...(a.trace || []), { at: new Date().toISOString(), kind, ...detail }].slice(-120);
+  }
+  spawnQwenRepoStage(stage, q, now, opts) {
+    const a = this.state.active, repair = stage === 'repair';
+    let branch = null;
+    if (!repair && !a.worktree) branch = this.prepareBase(now); else a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
+    a.qwenSessionId = a.qwenSessionId || crypto.randomBytes(8).toString('hex');
+    if (repair) a.qwenRepairs = (a.qwenRepairs || 0) + 1;
+    a.qwenFiles = q.files; a.implementer = 'qwen';
+    const sessionFile = path.join(this.repoRoot, '.symphonee', 'qwen-sessions', this.id + '-' + a.qwenSessionId + '.json');
+    const win = windowEndAfter(this.def.schedule, now), stepEnd = now + this.stepMs - 90000;
+    const deadlineAt = a.manual || !win ? stepEnd : Math.min(stepEnd, win);
+    const objective = [String(a.plan.objective || ''), (a.plan.evidence || []).length ? 'Evidence: ' + JSON.stringify(a.plan.evidence).slice(0, 700) : '',
+      repair ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + String(a.review || '').slice(0, 3500) : '',
+      'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
+    return this.orch.spawnQwenInWorktree({ from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
+      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
+      memoryText: this.qwenRealMemory(q).text, sessionFile, deadlineAt,
+      // Linked before the first RUN so the repository's own checks can find their dependencies.
+      onWorktree: (wt) => { a.worktree = wt; const top = repoTopLevel(wt.path); if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed'); a.links = guard.linkDirs(this.state.repoPath, wt.path, this.def.linkDirs); } });
+  }
+  noteQwenTask(a, t) {
+    if (!t || t.cli !== 'qwen3-4b-local') return;
+    const e = t.execution || {}, u = e.agentUsage || {}, s = a.qwenStats = a.qwenStats || { stages: 0, turns: 0, switches: 0, calls: 0, input: 0, output: 0, notes: [], strategies: [], handoffs: [] };
+    s.stages++; s.turns += e.turns || 0; s.switches += e.switches || 0; s.calls += u.calls || 0; s.input += u.input_tokens || 0; s.output += u.output_tokens || 0;
+    this.trace('qwen-run', { stage: a.stage, state: t.state, turns: e.turns || 0, switches: e.switches || 0, changed: (e.changedFiles || []).slice(0, 8), verified: e.verified || null, error: t.state === 'failed' ? String(t.error || '').slice(0, 200) : null });
+    s.notes = [...s.notes, ...(e.notes || [])].slice(-10); s.strategies = [...s.strategies, ...(e.strategies || [])].slice(-6);
+  }
+  // Qwen stopped. Interrupted = the slot ended or a resource was missing: park the SAME stage and resume it in the same worktree.
+  // Blocked = it could not solve it: give the work to Claude, from what Qwen already did when there is something (a repair that does not count).
+  qwenStopped(a, t, now) {
+    this.noteQwenTask(a, t);
+    this.trace('qwen-stopped', { stage: a.stage, outcome: /^QWEN_BLOCKED/.test(String(t.error || '')) ? 'blocked' : 'interrupted', reason: String(t.error || '').replace(/^QWEN_(BLOCKED|INTERRUPTED):\s*/, '').slice(0, 300) });
+    const err = String(t.error || ''), why = err.replace(/^QWEN_(BLOCKED|INTERRUPTED):\s*/, '').slice(0, 400), e = t.execution || {}, q = this.def.qwen;
+    if (/^QWEN_INTERRUPTED/.test(err)) {
+      a.qwenResumes = (a.qwenResumes || 0) + 1;
+      if (a.qwenResumes <= q.maxResumes) {
+        a.waitingStage = a.stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'qwen-paused';
+        this.state.nextAt = /slot ended/.test(why) && this.def.schedule ? nextWindowStart(this.def.schedule, now) : now + 10 * 60000;
+        this.log('qwen', 'Qwen paused (' + why + '); progress kept, ' + a.waitingStage + ' resumes at ' + new Date(this.state.nextAt).toLocaleString() + ' (' + a.qwenResumes + '/' + q.maxResumes + ')');
+        this.save(); return true;
+      }
+    }
+    // hand back to Claude, reversibly: the worktree and Qwen's session file are kept
+    a.qwenFailed = true; a.implementer = 'claude-after-qwen';
+    (a.qwenStats = a.qwenStats || { handoffs: [] }).handoffs = [...(a.qwenStats.handoffs || []), { stage: a.stage, reason: why, at: new Date(now).toISOString() }];
+    this.learn('blockage', 'Le developpeur local (Qwen) a ete bloque sur "' + (a.plan?.title || '') + '" : ' + why + (e.notes && e.notes.length ? ' Notes : ' + e.notes.slice(-3).join(' | ') : ''), 'qwen-local');
+    const changed = a.worktree && a.baseSha ? changedFiles(a.worktree.path, a.baseSha) : false;
+    if (changed) {
+      a.review = 'A local developer (Qwen) started this task in this worktree and could not finish it: ' + why + '\nIts notes: ' + ((e.notes || []).slice(-5).join(' | ') || 'none') + '\nApproaches it tried: ' + ((e.strategies || []).join(' | ') || 'none') + '\nContinue from the current state of this worktree; the repository checks are the judge.';
+      this.log('qwen', 'Qwen blocked (' + why + '); Claude takes over in the same worktree (not counted as a repair)');
+      this.dispatch('repair', now); return true;
+    }
+    this.unlinkActive(a);
+    (a.abandonedWorktrees = a.abandonedWorktrees || []).push(a.worktree ? a.worktree.path : null); a.worktree = null; a.links = [];
+    this.log('qwen', 'Qwen blocked with no change (' + why + '); Claude implements from scratch (its empty worktree is kept)');
+    this.dispatch('implement', now); return true;
+  }
+  // ── Qwen fixture mode: same implement / code-review / repair stages ─────
+  startFixtureTask(plan, now = Date.now()) {
+    if (!this.qwenFixture) throw new Error('Not a Qwen fixture pilot');
+    if (this.state.active) throw new Error('A task is already active');
+    if (!plan || typeof plan.title !== 'string' || typeof plan.objective !== 'string') throw new Error('Fixture plan required');
+    Object.assign(this.state, { enabled: true, error: null, repoName: 'qwen-fixture', repoPath: this.qwenFixture.root, nextAt: 0 });
+    this.state.active = { stage: 'implement', taskId: null, plan, review: '', planRevisions: 0, repairs: 0, baseSha: null, worktree: null,
+      budgetRef: null, waitingStage: null, manual: true, attempts: [], reviews: [], diff: null, technical: null, reviewRequest: null,
+      runId: crypto.randomBytes(16).toString('hex'), teachings: 0, taughtSignatures: [], teaching: null, pendingTeach: null, currentShown: [], shownMethods: [], reviewRepeat: 0 };
+    this.log('plan', '[fixture] ' + plan.title);
+    if (this.qwenFixture.lessonsRoot) { try { const n = lessons.consolidate(this.qwenFixture.lessonsRoot, this.fixtureLessonScope()); if (n) this.log('lesson', n + ' lecon(s) reformulee(s) fusionnee(s)'); } catch (_) {} }
+    this.dispatch('implement', now);
+    return this.snapshot(now);
+  }
+  // Fixture instincts: a persistent, isolated lesson store (never the repository's
+  // lecons.json, never Mind memory cards). Only verified evidence is recorded:
+  // the host's independent checks and real reviews, not developer self-reports.
+  fixtureLessonScope() { return lessons.scopeOf(this.id, 'fixture:' + (this.qwenFixture.name || 'qwen')); }
+  fixtureLearn(kind, text, { trigger, action, source } = {}) {
+    const f = this.qwenFixture;
+    if (!f.lessonsRoot || !text) return null;
+    try {
+      const r = lessons.record(f.lessonsRoot, { scope: this.fixtureLessonScope(), kind, text, trigger, action, source, evidence: 'verified' });
+      if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon renforcee ') + '[' + kind + '] ' + r.entry.text.slice(0, 140) + ' (confiance ' + r.entry.confidence + ')');
+      return r.entry;
+    } catch (_) { return null; }
+  }
+  fixtureConfirm(kinds) {
+    const f = this.qwenFixture, a = this.state.active;
+    if (!f.lessonsRoot) return;
+    for (const k of a.appliedLessons || []) if (!kinds || kinds.includes(k.split(':')[0])) { try { lessons.confirm(f.lessonsRoot, this.fixtureLessonScope(), k); } catch (_) {} }
+  }
+  // One verified observation -> one atomic lesson. Environment failures (RAM,
+  // Docker, model not loaded) are not the developer's mistakes and are skipped.
+  learnFromChecks(observations) {
+    for (const o of observations.slice(0, 3)) {
+      const s = String(o);
+      if (/Insufficient free RAM|not loaded|Docker|Vulkan|LM Studio|Cancelled|Snapshot/i.test(s)) continue;
+      // A wrong value for one input is task-specific, not a reusable lesson.
+      if (/strictly deep-equal/.test(s)) continue;
+      const core = (/verification refused: ([^|]+)/.exec(s) || /(Unexpected shell command[^|]*)/.exec(s) || /(Qwen did not demonstrate[^|]*)/.exec(s) || /(FatalBudgetExceededError)/.exec(s) || [null, s])[1].trim().slice(0, 200);
+      const action = hintFor(core)
+        || (/Unexpected shell command/.test(core) ? 'Run only the exact shell command: node test.js.'
+        : /FatalBudgetExceeded/.test(core) ? 'Finish in few tool calls: read the file once, edit once, run node test.js once.'
+        : undefined);
+      this.fixtureLearn('checks', core, { trigger: 'when writing ' + this.qwenFixture.editable.join(', '), action, source: 'independent checks' });
+      if (/verification refused/.test(s)) break; // one syntax lesson per attempt is enough
+    }
+  }
+  qwenPrompt(stage) {
+    const a = this.state.active, f = this.qwenFixture;
+    let learned = '';
+    // Validated methods (instructions, with provenance) first; unverified observations only as hints.
+    const methods = this.recallMethods();
+    a.shownMethods = methods; a.appliedLessons = [];
+    let hints = [];
+    if (f.lessonsRoot) {
+      try {
+        hints = lessons.top(f.lessonsRoot, this.fixtureLessonScope(), 5).filter(x => lessons.statusOf(x) === 'observation');
+        a.appliedLessons = hints.map(x => x.key);
+      } catch (_) { hints = []; }
+    }
+    learned = [lessons.methodsText({ methods }), lessons.promptText(hints)].filter(Boolean).join('\n\n').slice(0, 2400);
+    a.currentShown = [...methods.map(m => m.key), ...(a.teaching ? [a.teaching.key] : [])];
+    const textMode = Boolean(f.developerModel) && require('../orchestrator/qwen-docker-adapter').PROFILES[f.developerModel]?.mode === 'text';
+    const parts = ['Task: ' + a.plan.objective, 'Requirements: ' + f.requirements,
+      'Edit only ' + f.editable.join(', ') + '. The checker accepts only: ' + FIXTURE_SUBSET + '',
+      textMode ? 'You have no tools: you only write the file content in your answer.'
+        : 'Tools: read files only with read_file and change average.js only with edit. The ONLY shell command allowed is exactly: node test.js (no ls, cat, node -e or any other command; any other command voids the attempt). The files are ' + f.files.join(' and ') + '.',
+      'Unrelated example of the accepted shape: function sum(v){if(v.length===0)return 0;return v.reduce((a,b)=>a+b,0)}\nmodule.exports={sum};'];
+    if (learned) parts.push(learned);
+    if (a.teaching) parts.push(tq.teachingText(a.teaching));
+    if (stage === 'repair') {
+      parts.push('Your previous proposal was REJECTED. Fix every observation below' + (textMode ? '' : ', starting again from the original file') + '. If a suggested fix needs syntax outside the accepted shape, reach the same result with an expression that stays inside it.',
+        'Observations:\n' + String(a.review || '').slice(0, 1400), 'Previous proposal (diff):\n' + String(a.diff || '').slice(0, 900));
+    }
+    return parts.join('\n\n').slice(0, textMode ? 7600 : 3900);
+  }
+  dispatchQwenFixture(stage, now) {
+    const a = this.state.active, f = this.qwenFixture;
+    if (!['implement', 'code-review', 'repair', 'teach'].includes(stage)) throw new Error('Qwen fixture uses only implement, code-review, repair and teach');
+    const cli = stage === 'code-review' ? 'codex' : stage === 'teach' ? 'claude' : 'qwen3-4b-docker';
+    const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
+    if (!charge) throw new Error('Fixture call budget reached');
+    let task;
+    if (stage === 'teach') {
+      const p = a.pendingTeach;
+      const prompt = tq.buildTeacherPrompt({ fn: f.assertions[0].export, requirements: f.requirements, subset: FIXTURE_SUBSET, failures: p.observations,
+        attempts: a.attempts.slice(-3).map(x => ({ attempt: x.attempt, code: tq.codeOf(x.diff), outcome: x.review ? 'Codex ' + x.review.decision : (x.technical && x.technical.passed ? 'checks passed' : 'refused by the independent checker') })),
+        counterexamples: (a.extraCases || []).map(c => c.export + '(' + JSON.stringify(c.args).slice(1, -1) + ') must return ' + JSON.stringify(c.expected)) });
+      task = this.orch.spawnHeadless(tq.teacherSpawnOptions({ prompt, cwd: f.root, space: this.state.space }));
+    } else if (stage === 'code-review') {
+      const { buildFixtureReviewRequest } = require('../orchestrator/qwen-supervision');
+      const reviewMs = Math.min(this.stepMs, 600000);
+      const { request, prompt } = buildFixtureReviewRequest({ technical: a.technical, requirements: f.requirements, cases: this.fixtureCases(), counterexamples: true, diff: a.diff, timeoutMs: reviewMs + 60000, constraints: FIXTURE_SUBSET });
+      a.reviewRequest = request;
+      task = this.orch.spawnHeadless({ cli: 'codex', model: f.reviewerModel, prompt, cwd: f.root, from: 'mind-autopilot-fixture', space: this.state.space,
+        timeout: reviewMs, cloudTimeoutMs: reviewMs, readOnly: true, noRetry: true, noFallback: true, compactContext: true, fixtureNoApiKeys: true, reviewerNoTools: true });
+    } else {
+      const { QWEN_DEVELOPER_FIXTURE } = require('../orchestrator/qwen-supervision');
+      task = this.orch.spawnQwenFixture({ prompt: this.qwenPrompt(stage), cwd: f.root, files: f.files, editable: f.editable, assertions: this.fixtureCases(),
+        from: 'mind-autopilot-fixture', space: this.state.space, ...(f.developerModel ? { model: f.developerModel } : {}),
+        ...(a.repeatCount ? { temperature: Math.min(0.9, Math.round((0.2 + 0.25 * a.repeatCount) * 100) / 100) } : {}) }, QWEN_DEVELOPER_FIXTURE);
+    }
+    if (!task?.id) throw new Error('No task ID from Orchestrator');
+    charge.taskId = task.id;
+    a.stage = stage; a.taskId = task.id; a.budgetRef = charge.ref; a.waitingStage = null; a.startedAt = now;
     this.log('dispatch', stage + ' -> ' + cli + ' (task ' + task.id + ')', { taskId: task.id, cli });
     this.save();
   }
+  // One attempt of the developer, settled from its task (completed or failed).
+  // Every non-passing outcome becomes an observation for the next repair.
+  // Trusted cases plus reviewer counterexamples the host confirmed (bounded).
+  fixtureCases() { return [...this.qwenFixture.assertions, ...((this.state.active && this.state.active.extraCases) || [])]; }
+  // A counterexample is kept only if the reviewed code really fails it under the
+  // independent checker: a reviewer mistake never becomes a check.
+  async adoptCounterexamples(list) {
+    const a = this.state.active, f = this.qwenFixture, sup = require('../orchestrator/qwen-supervision');
+    const base = f.assertions[0], added = [];
+    for (const c of list.slice(0, 3)) {
+      if ((a.extraCases || []).length >= MAX_EXTRA_CASES) break;
+      const cand = { file: base.file, export: base.export, args: c.args, expected: c.expected };
+      if (this.fixtureCases().some(x => JSON.stringify([x.args, x.expected]) === JSON.stringify([cand.args, cand.expected]))) continue;
+      try {
+        require('../orchestrator/qwen-assertions').validateAssertions([cand], f.editable);
+        const r = await sup.assessReconstructedFixture(f.root, f.files, f.editable, a.diff, [cand]);
+        if (r.passed || r.unsupported) { this.log('verify', 'Counterexample ignored (the reviewed code passes it or it cannot be checked): ' + JSON.stringify(cand.args).slice(0, 80)); continue; }
+        a.extraCases = [...(a.extraCases || []), cand]; added.push(cand);
+        this.log('verify', 'Counterexample adopted as an independent check: ' + JSON.stringify(cand.args).slice(0, 80) + ' -> ' + JSON.stringify(cand.expected).slice(0, 40));
+      } catch (e) { this.log('verify', 'Counterexample rejected: ' + String(e.message || e).slice(0, 80)); }
+    }
+    return added;
+  }
+  // ── Teacher-assisted learning (fixture mode) ────────────────────────────────
+  // Validated methods relevant to this task: from Mind when it is configured (the
+  // durable store, also after a restart), else from the lessons file. Only current
+  // validated lessons; unvalidated teachings and observations are never returned.
+  recallMethods() {
+    this.syncPendingMind(); // a Mind write that failed earlier is retried before recalling
+    const f = this.qwenFixture, a = this.state.active, question = [a.plan.objective, f.requirements].join(' ');
+    try {
+      if (f.mind) return this.gateRecalled(f.mind.recallLessons({ question, checkerVersion: CHECKER_VERSION, limit: 5 })).map(r => ({ key: r.key, mindId: r.id, errorClass: r.errorClass, teaching: r.teaching, applicability: r.applicability || null, source: 'mind', provenance: r.provenance,
+        validation: { at: Date.parse(r.provenance.validatedAt), evidenceCount: r.provenance.evidenceCount, reviewTaskId: r.provenance.reviewTaskId, checkerVersion: r.provenance.checkerVersion } }));
+      if (f.lessonsRoot) {
+        lessons.expireStale(f.lessonsRoot, this.fixtureLessonScope(), CHECKER_VERSION);
+        return lessons.selectForTask(f.lessonsRoot, this.fixtureLessonScope(), { checkerVersion: CHECKER_VERSION, question }).methods
+          .map(x => ({ key: x.key, errorClass: x.errorClass, teaching: x.teaching, validation: x.validation, source: 'lessons' }));
+      }
+    } catch (e) { this.log('lesson', 'Recall failed, continuing without validated methods: ' + String(e.message || e).slice(0, 100)); }
+    return [];
+  }
+  lastAttemptCode() { const a = this.state.active, l = a && a.attempts && a.attempts[a.attempts.length - 1]; return l ? tq.codeOf(l.diff) : ''; }
+  // Structural applicability gate (hazard, input kind, task kind, syntax, per-task track record). Nothing applicable: the developer works without extra memory.
+  // Every decision is kept in the run record. Without a task profile the historical behaviour is unchanged.
+  gateRecalled(recalled) {
+    const f = this.qwenFixture, a = this.state.active;
+    if (!f.taskProfile) return recalled.slice(0, 3);
+    const cands = recalled.map(r => ({ id: r.id, lesson: { key: r.key, applicability: r.applicability }, usage: r.usage, raw: r }));
+    const s = applicability.select(cands, f.taskProfile, { max: 2, legacyWordRelevant: () => true }); // retrieval already ranked by words: legacy-format lessons keep that rule
+    a.recallDecisions = s.decisions; this.log('lesson', 'Recall gate: ' + s.kept.length + ' of ' + recalled.length + ' method(s) applicable' + (s.kept.length ? '' : ': working without extra memory'));
+    return s.kept.map(k => k.raw);
+  }
+  // At most perTask teacher calls per task, one per distinct blockage, and only for
+  // an equivalent failure that just repeated.
+  shouldTeach(repeated, signature) {
+    const a = this.state.active, t = this.qwenFixture.teacher;
+    return Boolean(t && t.enabled && repeated && (a.teachings || 0) < Math.min(tq.LIMITS.perTask, t.maxPerTask || tq.LIMITS.perTask) && !(a.taughtSignatures || []).includes(signature));
+  }
+  startTeaching(ctx, now) {
+    const a = this.state.active, f = this.qwenFixture, errorClass = tq.errorClassFor(ctx.kind, ctx.raw || ctx.observations);
+    // The observation is the verified part: record it before anything is taught.
+    const text = String(ctx.observations[0] || errorClass).slice(0, 300);
+    let entry = null;
+    try { entry = lessons.record(f.lessonsRoot, { scope: this.fixtureLessonScope(), kind: 'blockage', text, key: errorClass + ' ' + f.family, source: ctx.kind === 'review' ? 'codex fixture review' : 'independent checks', evidence: 'verified' }).entry; } catch (_) { /* below */ }
+    a.taughtSignatures = [...(a.taughtSignatures || []), ctx.signature];
+    if (!entry || lessons.statusOf(entry) === 'validated') {
+      this.log('teach', entry ? 'Blockage already has a validated method (' + errorClass + '): the teacher is not called' : 'Blockage could not be recorded: the teacher is not called');
+      a.repeatCount = 0; a.lastFailureSignature = null; a.lastFailedDiff = null;
+      return this.dispatch('repair', now);
+    }
+    a.pendingTeach = { ...ctx, errorClass, lessonKey: entry.key };
+    this.log('teach', 'Equivalent failure repeated (' + errorClass + '): asking the teacher once');
+    return this.dispatch('teach', now);
+  }
+  qwenTeachSettled(t, now = Date.now()) {
+    const a = this.state.active, f = this.qwenFixture, p = a.pendingTeach;
+    a.teachings = (a.teachings || 0) + 1; a.pendingTeach = null;
+    a.repeatCount = 0; a.lastFailureSignature = null; a.lastFailedDiff = null; // a fresh start after the lesson
+    // The call cost tokens whether or not its answer is accepted.
+    const spent = tq.teacherTokens(t.usage); a.teacherTokens = (a.teacherTokens || 0) + (spent || 0);
+    const note = { at: new Date(now).toISOString(), errorClass: p.errorClass, state: t.state, tokens: spent, rawChars: String(t.result || '').length, accepted: false, error: null, raw: String(t.result || '').slice(0, 3000) };
+    a.teachingLog = [...(a.teachingLog || []), note];
+    if (t.state !== 'completed') {
+      note.error = String(t.error || t.state).slice(0, 120);
+      this.log('teach', 'Teacher unavailable (' + String(t.error || t.state).slice(0, 80) + '): standard repair, nothing is certified');
+      return this.dispatch('repair', now);
+    }
+    try {
+      const parsed = tq.parseTeaching(t.result, { fn: f.assertions[0].export });
+      const tokens = tq.teacherTokens(t.usage);
+      const teaching = { ...parsed, source: 'claude', model: String(t.model || 'claude'), tokens, errorClass: p.errorClass, family: f.family };
+      lessons.attachTeaching(f.lessonsRoot, this.fixtureLessonScope(), p.lessonKey, teaching);
+      a.teaching = { key: p.lessonKey, ...parsed, errorClass: p.errorClass, tokens, signature: p.signature, failedAttempts: p.failedAttempts, afterAttempt: a.attempts.length, at: now };
+      note.accepted = true;
+      this.log('teach', 'Teaching received (' + (tokens ?? '?') + ' tokens), status TEACHING, not certified: ' + parsed.cause.slice(0, 120));
+    } catch (e) {
+      note.error = String(e.message || e).slice(0, 160);
+      this.log('teach', 'Teaching refused (' + String(e.message || e).slice(0, 120) + '): standard repair, nothing is certified');
+    }
+    return this.dispatch('repair', now);
+  }
+  // VALIDATED needs every proof at once; any missing proof leaves the lesson TEACHING.
+  validateTaught(review, t, ex) {
+    const a = this.state.active, f = this.qwenFixture;
+    if (!a.teaching || !f.lessonsRoot) return null;
+    const last = a.attempts[a.attempts.length - 1], sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
+    const ev = { runId: a.runId, family: f.family, checkerVersion: CHECKER_VERSION,
+      independent: { passed: Boolean(a.technical && a.technical.passed), executed: a.technical && a.technical.executed, expected: a.technical && a.technical.expected },
+      codex: { decision: review.decision, taskId: t.id, diffHash: review.diffHash, reviewer: { provider: 'codex', cleanup: ex.cleanup, tools: ex.reviewer.tools, version: ex.reviewer.version } },
+      codeHash: sha(tq.codeOf(a.diff)), assertionsHash: a.technical && a.technical.assertionsHash, shown: last ? last.shown : [],
+      blocked: { signature: a.teaching.errorClass + ':' + sha(a.teaching.signature).slice(0, 16), failedAttempts: a.teaching.failedAttempts }, afterTeaching: Boolean(last && last.attempt > a.teaching.afterAttempt) };
+    // Fail closed: a family that defines a stress check requires it, even if the harness forgot to configure it.
+    ev.wideRequired = typeof f.wideCheck === 'function' || require('../orchestrator/qwen-fixture-tasks').TASKS.some(x => x.id === f.family && x.stress);
+    if (f.taskProfile) { const ap = applicability.buildApplicability({ profile: f.taskProfile, code: tq.codeOf(a.diff), family: f.family, wide: null }); if (ap) ev.applicability = ap; }
+    if (typeof f.wideCheck === 'function') {
+      try { const w = f.wideCheck(tq.codeOf(a.diff)); if (w && Number.isInteger(w.inputs) && Number.isInteger(w.mismatches)) ev.wide = { inputs: w.inputs, mismatches: w.mismatches }; } catch (e) { this.log('lesson', 'Wide check failed to run: ' + String(e.message || e).slice(0, 120)); }
+    }
+    if (ev.applicability && ev.wide) { ev.applicability.limits[1] = 'stress-checked on ' + ev.wide.inputs + ' inputs with ' + ev.wide.mismatches + ' mismatches'; ev.applicability.level = 'independent-checks+codex-review+stress'; }
+    let r;
+    try {
+      r = lessons.validate(f.lessonsRoot, this.fixtureLessonScope(), a.teaching.key, ev, { checkerVersion: CHECKER_VERSION });
+      this.log('lesson', 'VALIDATED' + (r.merged ? ' (merged into an existing method)' : '') + ' [' + r.entry.errorClass + '] after the independent checks and a real Codex GO');
+    } catch (e) {
+      this.log('lesson', 'Not validated, stays TEACHING: ' + String(e.message || e).slice(0, 200));
+      return null;
+    }
+    // Validated locally; the Mind write is a separate step. If it fails the lesson is recorded as pending, never reported as not validated.
+    if (f.mind) {
+      const job = { key: a.teaching.key, checkerVersion: CHECKER_VERSION, evidence: ev, teaching: { ...r.taught.teaching, errorClass: r.taught.errorClass, family: r.taught.family } };
+      try { this.syncOneToMind(job); } catch (e) {
+        this.state.mindSyncPending = [...(this.state.mindSyncPending || []).filter(x => x.key !== job.key), job].slice(-10);
+        this.log('lesson', 'VALIDATED locally, Mind write FAILED (pending sync, retried later, no duplicate): ' + String(e.message || e).slice(0, 160));
+        this.save();
+      }
+    }
+    return r;
+  }
+  syncOneToMind(job) {
+    const a = this.state.active, m = this.qwenFixture.mind.upsertLesson(job); // idempotent: the same run id is never counted twice
+    this.log('lesson', 'Kept in Mind: ' + m.id + (m.merged ? ' (evidence ' + m.evidenceCount + ')' : ''));
+    if (a) a.mindLesson = m;
+    this.state.mindSyncPending = (this.state.mindSyncPending || []).filter(x => x.key !== job.key);
+    return m;
+  }
+  // Retries Mind writes that failed after a local validation. Safe to call at any time.
+  syncPendingMind() {
+    const f = this.qwenFixture; if (!f || !f.mind) return 0; let done = 0;
+    for (const job of [...(this.state.mindSyncPending || [])]) { try { this.syncOneToMind(job); done++; } catch (e) { this.log('lesson', 'Pending Mind sync still failing: ' + String(e.message || e).slice(0, 120)); } }
+    if (done) this.save();
+    return done;
+  }
+  // Counters only (a lesson shown before a success is not thereby proven useful).
+  recordFixtureUses(outcome) {
+    const f = this.qwenFixture, a = this.state.active;
+    if (!f.mind || !a) return;
+    for (const m of a.shownMethods || []) if (m.source === 'mind') { try { f.mind.recordLessonUse(m.mindId, outcome === 'fixture-approved', f.taskProfile ? f.taskProfile.id : undefined); } catch (_) { /* counters are best effort */ } }
+  }
+  envWaitMs() { const w = this.qwenFixture.envWaitMs; return Number.isInteger(w) && w >= 0 && w <= ENV_WAIT_MS ? w : ENV_WAIT_MS; }
+  qwenAttemptSettled(t, now = Date.now()) {
+    const a = this.state.active;
+    const technical = t.execution && t.execution.independentAssertions || null;
+    if (t.execution && t.execution.cleanup === 'unverified') throw new Error('Qwen Docker cleanup is not verified; stopped for inspection');
+    // Policy deviations already refused inside the container (another tool or
+    // command) are ordinary failures; signs of escape or tampering halt.
+    if (/isolation|outside its selection|links rejected|unexpected file|unsupported file|Untrusted|temporary repository|without remotes|Base changed|Snapshot|Git (state|conflicts)/i.test(String(t.error || ''))) {
+      throw new Error('Qwen fixture safety check failed: ' + String(t.error).slice(0, 300));
+    }
+    // Environment refusals before the developer even ran (free RAM, local model or
+    // Docker unavailable) are not attempts: wait and retry the same stage without
+    // using a repair (measured 2026-11-15: five RAM refusals ended a run in 15 s).
+    if (t.state !== 'completed' && !technical && ENV_FAILURE.test(String(t.error || ''))) {
+      a.envRetries = (a.envRetries || 0) + 1;
+      if (a.envRetries > ENV_RETRIES) return this.complete('environment-unavailable', String(t.error).slice(0, 300));
+      a.waitingStage = a.stage; a.stage = 'budget-wait'; a.taskId = null; a.parkReason = 'environment';
+      this.state.nextAt = now + this.envWaitMs();
+      this.log('environment', String(t.error).slice(0, 120) + ' : nouvel essai de ' + a.waitingStage + ' dans ' + this.envWaitMs() / 1000 + ' s (' + a.envRetries + '/' + ENV_RETRIES + '), aucune tentative consommee');
+      this.save();
+      return;
+    }
+    const passed = t.state === 'completed' && technical && technical.passed === true && technical.executed === technical.expected && typeof t.result === 'string' && t.result.length > 0;
+    const observations = passed ? [] : (technical && technical.errors && technical.errors.length ? technical.errors : [String(t.error || 'Developer produced no verifiable proposal').slice(0, 600)]);
+    a.attempts.push({ attempt: a.attempts.length + 1, stage: a.stage, taskId: t.id, at: new Date(now).toISOString(),
+      diff: typeof t.result === 'string' ? t.result.slice(0, 4000) : null, technical, developerError: passed ? null : observations.join(' | ').slice(0, 1200),
+      qwenUsage: t.execution && t.execution.agentUsage || null, agentDurationMs: t.execution && t.execution.agentDurationMs || null, shown: a.currentShown || [], review: null });
+    // A proposal the reviewer already refused is not paid for again.
+    const refused = passed && (a.refusedDiffs || []).includes(require('../orchestrator/qwen-supervision').digest(t.result));
+    if (refused) observations.push('Same proposal as one the reviewer already refused; it is not reviewed again. Change the code to fix: ' + String((a.reviews || []).at(-1)?.text || '').slice(0, 400));
+    if (passed && !refused) {
+      a.diff = t.result; a.technical = technical;
+      this.log('verify', 'Independent assertions ' + technical.executed + '/' + technical.expected + ' passed');
+      this.fixtureConfirm(['checks']); // the checks lessons shown were followed, verified by the host
+      return this.dispatch('code-review', now);
+    }
+    if (typeof t.result === 'string' && t.result) a.diff = t.result;
+    this.learnFromChecks(observations);
+    // Same code as the previous failed attempt: say so, the model does not notice it.
+    // "Same" is judged by outcome: identical code, or different code failing exactly
+    // the same cases (measured 2026-11-15: a model that only renamed a variable).
+    const signature = observations.join('|');
+    const sameCode = typeof t.result === 'string' && t.result && a.lastFailedDiff === t.result;
+    const sameAgain = Boolean(sameCode || (signature && a.lastFailureSignature === signature));
+    a.lastFailedDiff = typeof t.result === 'string' ? t.result : null;
+    a.lastFailureSignature = signature;
+    // A repeated proposal at a fixed temperature repeats forever: raise it for the
+    // next attempt (bounded), and return to the default as soon as the code changes.
+    a.repeatCount = sameAgain ? (a.repeatCount || 0) + 1 : 0;
+    a.review = 'Independent checks (not a review): ' + (sameAgain ? (sameCode ? 'You sent exactly the same code as your previous attempt and it fails the same way: change the approach.\n'
+        : 'Your new code fails exactly the same cases as your previous attempt: renaming or rearranging did not fix the logic, rethink it from the requirements.\n') : '')
+      + explainChecks(observations, { code: this.lastAttemptCode() }).join('\n');
+    a.repairs++;
+    this.log('decision', 'Developer attempt rejected by independent checks: ' + observations.join(' | ').slice(0, 300));
+    // Equivalent failure twice in a row: one bounded teacher call, then the standard repair.
+    if (this.shouldTeach(sameAgain && a.repeatCount === 1, 'checks:' + signature)) return this.startTeaching({ kind: 'checks', signature: 'checks:' + signature, observations: explainChecks(observations, { code: this.lastAttemptCode() }), raw: observations, failedAttempts: a.repeatCount + 1 }, now);
+    // No progress: the same refused code three times in a row. Stop now instead
+    // of spending the remaining attempts on a model that will not change.
+    if (a.repeatCount >= 2) { this.log('decision', 'Stopped without progress: the same refused code three times in a row'); return this.complete('stalled', a.review); }
+    if (a.repairs > this.limits.repairs) return this.complete('checks-failed', a.review);
+    return this.dispatch('repair', now);
+  }
+  async qwenReviewSettled(t, now = Date.now()) {
+    const a = this.state.active, f = this.qwenFixture;
+    const { parseReviewResponse, unfenceReview } = require('../orchestrator/qwen-supervision');
+    const { gitSnapshot } = require('../orchestrator/qwen-git-snapshot');
+    const last = a.attempts[a.attempts.length - 1];
+    const ex = t.execution || {};
+    if (t.state !== 'completed' || ex.cleanup !== 'verified-no-descendants' || !ex.reviewer || !Array.isArray(ex.reviewerItems) || ex.reviewerItems.some(x => !['agent_message', 'reasoning'].includes(x))) {
+      throw new Error('Codex review unusable (no verdict accepted): ' + String(t.error || ex.cleanup || t.state).slice(0, 400));
+    }
+    let review;
+    try { review = parseReviewResponse(unfenceReview(t.result), a.reviewRequest, now); }
+    catch (e) { throw new Error('Codex review rejected by the host: ' + e.message); }
+    if (gitSnapshot(f.root, f.files).commit !== a.technical.baseCommit) throw new Error('Fixture base changed during review');
+    const record = { at: new Date(now).toISOString(), taskId: t.id, decision: review.decision, corrections: review.corrections, diffHash: review.diffHash,
+      reviewer: { provider: 'codex', model: t.model, version: ex.reviewer.version, tools: ex.reviewer.tools, promptInputHash: ex.reviewer.promptInputHash, items: ex.reviewerItems, cleanup: ex.cleanup }, usage: t.usage || null };
+    if (last) last.review = record;
+    a.reviews = [...(a.reviews || []), { at: record.at, verdict: review.decision === 'GO' ? 'PASS' : 'FAIL', text: JSON.stringify(review.corrections).slice(0, 3000) }];
+    this.log('decision', 'Codex fixture review: ' + review.decision);
+    if (review.decision === 'GO') { this.fixtureConfirm(null); this.validateTaught(review, t, ex); return this.complete('fixture-approved', JSON.stringify(record)); }
+    // A real, host-validated review is verified evidence: its first correction becomes a lesson.
+    this.fixtureLearn('revue', String(review.corrections[0] || '').slice(0, 300), { trigger: 'when writing ' + f.editable.join(', '), source: 'codex fixture review ' + t.id });
+    a.refusedDiffs = [...(a.refusedDiffs || []), review.diffHash].slice(-20);
+    const added = await this.adoptCounterexamples(review.counterexamples || []);
+    a.review = 'Independent Codex review (NO-GO):\n- ' + review.corrections.join('\n- ')
+      + (added.length ? '\nNew independent checks from the reviewer (they must pass from now on): '
+        + added.map(c => c.export + '(' + JSON.stringify(c.args).slice(1, -1) + ') must return ' + JSON.stringify(c.expected)).join('; ') : '');
+    a.repairs++;
+    const first = String(review.corrections[0] || '');
+    a.reviewRepeat = a.lastReviewFirst && lessons.similarity(a.lastReviewFirst, first) >= 0.45 ? (a.reviewRepeat || 0) + 1 : 0;
+    a.lastReviewFirst = first;
+    const reviewSig = 'review:' + tq.errorClassFor('review', review.corrections);
+    if (a.repairs <= this.limits.repairs && this.shouldTeach(a.reviewRepeat >= 1, reviewSig)) return this.startTeaching({ kind: 'review', signature: reviewSig, observations: review.corrections.map(c => String(c).slice(0, 400)), failedAttempts: a.reviewRepeat + 1 }, now);
+    if (a.repairs > this.limits.repairs) return this.complete('review-rejected', a.review);
+    return this.dispatch('repair', now);
+  }
   complete(outcome, reviewerEvidence = null) {
     const a = this.state.active;
+    if (this.qwenFixture) this.recordFixtureUses(outcome);
     // The task's span ends now: it stays reserved until a reading taken after this.
     if (a && a.launchedAt) {
       const sp = (this.state.taskSpans || []).find(t => t.launchedAt === a.launchedAt && t.endedAt == null);
@@ -1012,7 +1589,12 @@ class MindAutopilot {
       worktree: a.worktree || null, commit: a.commit || null, baseSha: a.baseSha || null, planRevisions: a.planRevisions || 0, repairs: a.repairs || 0,
       reviews: a.reviews || [],
       verified: a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : [],
+      // Who wrote the change: qwen (alone), qwen+claude-repair, claude-after-qwen (hand-back) or claude. Never blurred.
+      ...(this.def.qwen && this.def.qwen.enabled && !this.qwenFixture ? { implementer: a.implementer || 'claude', qwen: a.qwenStats || null, qwenRepairs: a.qwenRepairs || 0, abandonedWorktrees: a.abandonedWorktrees || [], qwenMemory: a.qwenMemory || null, trace: a.trace || [] } : {}),
+      ...(this.qwenFixture ? { attempts: a.attempts || [], scope: 'fictional-fixture', runId: a.runId || null, teachings: a.teachings || 0, teacherTokens: a.teacherTokens || 0, teachingLog: a.teachingLog || [],
+        shownMethods: (a.shownMethods || []).map(m => ({ key: m.key, source: m.source, errorClass: m.errorClass, provenance: m.provenance || null })), mindLesson: a.mindLesson || null, recallDecisions: a.recallDecisions || null } : {}),
       at: new Date().toISOString() });
+    if (this.qwenFixture) this.state.enabled = false; // one fixture task, never a discovery afterwards
     this.state.history = this.state.history.slice(-100);
     this.unlinkActive(a);
     this.report(outcome === 'completed' ? 'info' : 'warning', 'Autopilote ' + this.id + ' : tache ' + outcome + ' : ' + (a.plan?.title || '(decouverte)'),
@@ -1099,6 +1681,7 @@ class MindAutopilot {
       }
       const v = verdict(raw);
       this.log('decision', 'Codex code review: ' + (v || 'NO VERDICT'));
+      this.trace('review', { by: 'codex', verdict: v || 'NONE', findings: v === 'PASS' ? '' : String(raw || '').replace(/\s+/g, ' ').slice(0, 400) });
       if (v === 'PASS') {
         if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('Review passed with no diff');
         this.unlinkActive(a);
@@ -1172,12 +1755,14 @@ class MindAutopilot {
   finishVerify() {
     const a = this.state.active, v = a.verify;
     if (v.ok) {
+      this.trace('verify', { ok: true, checks: v.results.map(r => r.name) });
       this.log('verify', 'Local verification PASSED: diff lint' + v.results.map(r => ', ' + r.name + ' ' + Math.round(r.ms / 1000) + 's').join(''));
       return this.dispatch('code-review');
     }
     const failed = v.results.find(r => !r.ok);
     const why = v.lint.length ? 'The diff weakens verification:\n- ' + v.lint.join('\n- ')
       : 'Check "' + failed.name + '" failed' + (failed.timedOut ? ' (timed out)' : ' (exit ' + failed.code + ')') + '. Output tail:\n' + failed.tail;
+    this.trace('verify', { ok: false, failed: v.lint.length ? 'lint' : failed.name, detail: String(v.lint.length ? v.lint.join('; ') : failed.tail).replace(/\s+/g, ' ').slice(-300) });
     this.log('verify', 'Local verification FAILED: ' + (v.lint.length ? v.lint.join('; ') : failed.name));
     this.learn('verification', v.lint.length ? 'Le diff affaiblissait la verification : ' + v.lint.join('; ')
       : 'La verification locale "' + failed.name + '" echouait apres la modification : la lancer avant de terminer.', 'verification locale : ' + (a.plan?.title || ''));
@@ -1246,6 +1831,16 @@ class MindAutopilot {
     this.busy = true;
     try {
       this.windowCheckIn(now);
+      if (!this.state.active && this.qwenFixture) return this.snapshot();
+      if (this.state.active && this.qwenFixture && !this.state.active.waitingStage) {
+        const a = this.state.active, t = this.orch.getTask(a.taskId);
+        if (!t) throw new Error('Orchestrator task not found: ' + a.taskId);
+        if (now - a.startedAt > this.stepMs + 120000) { this.orch.cancelTask(a.taskId); budget.settleCall(this.state, a.budgetRef, t); throw new Error('Stage timed out: ' + a.stage); }
+        if (['running', 'pending', 'queued'].includes(t.state)) return this.snapshot();
+        budget.settleCall(this.state, a.budgetRef, t); a.budgetRef = null; this.save();
+        if (a.stage === 'code-review') await this.qwenReviewSettled(t, now); else if (a.stage === 'teach') this.qwenTeachSettled(t, now); else this.qwenAttemptSettled(t, now);
+        return this.snapshot();
+      }
       if (!this.state.active) {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
         if (now < this.state.nextAt || (!this.def.capacity && this.todayCompleted(now) >= this.limits.dailyCompletions)
@@ -1360,10 +1955,12 @@ class MindAutopilot {
             a.localProjectRefs = transmitted.filter(x => x.kind && x.kind !== 'skill').map(x => x.ref).filter(x => /^[A-Z]\d+$/.test(x));
           }
           budget.settleCall(this.state, a.budgetRef, t);
+          this.noteQwenTask(a, t);
           a.budgetRef = null; this.save();
           this.advance(t.result, now);
         } else if (!['running', 'pending', 'queued'].includes(t.state)) {
           budget.settleCall(this.state, a.budgetRef, t);
+          if (t.cli === 'qwen3-4b-local' && /^QWEN_(BLOCKED|INTERRUPTED)/.test(String(t.error || ''))) { this.qwenStopped(a, t, now); return this.snapshot(); }
           if (a.handoff && (t.cli === 'qwen' || a.currentProvider === 'qwen' || a.currentProvider === 'ollama-mind')) {
             a.handoff.status = 'blocked'; a.handoff.nextAction = 'inspect-qwen-failure';
             throw new Error('Qwen fallback failed; no automatic switch back to Claude');

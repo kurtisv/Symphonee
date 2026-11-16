@@ -139,12 +139,18 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, requireProcessTreeProof = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, fixtureNoApiKeys = false, reviewerNoTools = false, requireProcessTreeProof = false, _retryAttempt = 0 }) {
+    if (fixtureNoApiKeys && (!['codex', 'claude'].includes(cli) || !readOnly || !noRetry || !noFallback || !compactContext || !(cloudTimeoutMs > 0))) throw new Error('Invalid fixture review safeguards');
+    // Tool-free Codex reviewer for fictional fixtures only (see codex-no-tools.js).
+    if (reviewerNoTools && (cli !== 'codex' || !fixtureNoApiKeys || !model || _retryAttempt !== 0)) throw new Error('Invalid tool-free reviewer request');
     // The autopilot owns retries/handoff when process containment is required.
     if (requireProcessTreeProof) { noFallback = true; noRetry = true; }
     cli = canonicalProviderId(cli);
-    // Qwen's Windows container sandbox needs its own lifecycle and mount
-    // verification. A permission flag alone cannot enforce these guarantees.
+    if (cli === 'qwen3-4b-docker') {
+      throw new Error('Qwen3 Docker agent is disabled until its sandbox adapter is verified');
+    }
+    // Path normalization alone does not confine Qwen's native tools or child
+    // processes. Keep these runs blocked until an OS sandbox is verified.
     if (cli === 'qwen' && (readOnly || confineWrites)) {
       throw new Error('Qwen confinement is unavailable until a verified sandbox adapter is installed');
     }
@@ -310,7 +316,8 @@ module.exports = {
       // shell is limited to an allow-list, publishing/history-rewriting git
       // and package commands are denied. It never inherits bypass mode either.
       const shouldYolo = !readOnly && !confineWrites && (autoPermit || modeYolo);
-      if (readOnly && cli === 'claude') finalArgs.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit');
+      if (readOnly && cli === 'claude' && fixtureNoApiKeys) finalArgs.push('--safe-mode', '--strict-mcp-config', '--tools', '', '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--no-session-persistence');
+      else if (readOnly && cli === 'claude') finalArgs.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit');
       else if (confineWrites && cli === 'claude') {
         finalArgs.push('--permission-mode', 'acceptEdits',
           '--allowedTools', ...CONFINED_ALLOWED_TOOLS,
@@ -338,6 +345,25 @@ module.exports = {
       }
     }
 
+    // The tool-free reviewer replaces every argument above. The configuration
+    // is proven locally BEFORE launch; any extra declared tool refuses the run.
+    let reviewerDir = null;
+    if (reviewerNoTools) {
+      const noTools = require('./codex-no-tools');
+      reviewerDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'sym-codex-reviewer-'));
+      try {
+        const catalog = noTools.writeRestrictedCatalog(reviewerDir, resolvedModel);
+        const proof = (this._verifyNoTools || noTools.verifyNoTools)({ cwd: cwd || process.cwd(), catalogFile: catalog, model: resolvedModel });
+        finalArgs.length = 0;
+        finalArgs.push('exec', ...noTools.reviewerArgs(catalog, resolvedModel));
+        task._reviewerProof = { ...proof, argv: [...finalArgs] };
+      } catch (err) {
+        try { fs.rmSync(reviewerDir, { recursive: true, force: true }); } catch (_) {}
+        this.tasks.delete(task.id);
+        throw err;
+      }
+    }
+
     if (cfg.promptMode === 'flag') {
       // Prompt is the value of the last flag (e.g. gemini -p "prompt", copilot -p "prompt")
       finalArgs.push(prompt);
@@ -347,12 +373,12 @@ module.exports = {
     }
     // 'stdin' mode: prompt is written to proc.stdin below
 
-    const useShell = cfg.shell !== undefined ? cfg.shell : true;
+    const useShell = reviewerNoTools ? false : (cfg.shell !== undefined ? cfg.shell : true);
     // Inject API keys from config as environment variables (unlocks additional models)
     const spawnEnv = cli === 'gemini'
       ? { ...buildGeminiEnv(process.env), FORCE_COLOR: '0', NO_COLOR: '1' }
       : { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' };
-    const aiKeys = this.getConfig().AiApiKeys || {};
+    const aiKeys = fixtureNoApiKeys ? {} : (this.getConfig().AiApiKeys || {});
     const CLI_ENV_KEYS = {
       claude:  ['ANTHROPIC_API_KEY'],
       gemini:  ['GEMINI_API_KEY'],
@@ -364,6 +390,11 @@ module.exports = {
     };
     for (const envKey of (CLI_ENV_KEYS[cli] || [])) {
       if (aiKeys[envKey]) spawnEnv[envKey] = aiKeys[envKey];
+    }
+    if (fixtureNoApiKeys) {
+      stripCloudEnv(spawnEnv);
+      const denied = new Set([...require('./local-providers').CLOUD_ENV_KEYS, 'NODE_OPTIONS', 'NODE_PATH'].map(x => x.toUpperCase()));
+      for (const key of Object.keys(spawnEnv)) if (denied.has(key.toUpperCase())) delete spawnEnv[key];
     }
     // 'claude-local' points Claude Code at the local LM Studio server instead of the
     // cloud API. Fixed values (not user config) -- only set on the spawned child's env,
@@ -411,7 +442,9 @@ module.exports = {
 
     // Pre-trust the working folder so first-time dispatches don't abort with
     // "this folder isn't trusted". This is independent of full bypass mode.
-    try { (this._pretrust || pretrustFolderForCli)(cli, cwd || process.cwd()); } catch (_) {}
+    // The tool-free reviewer needs no trust entry: never write one to the user's config.
+    if (task._reviewerProof) task.execution.reviewer = task._reviewerProof;
+    else try { (this._pretrust || pretrustFolderForCli)(cli, cwd || process.cwd()); } catch (_) {}
 
     // Local write task: remember the working tree so a "success" that changed
     // nothing can be treated as unusable output (-> cloud) instead of counted as done.
@@ -474,10 +507,41 @@ module.exports = {
 
     proc.on('close', (code) => {
       task._proc = null;
+      if (reviewerDir) { try { fs.rmSync(reviewerDir, { recursive: true, force: true }); } catch (_) {} }
+      if (reviewerNoTools && (task.state === STATE.CANCELLED || task.state === STATE.TIMEOUT)) {
+        // Stopped reviews are never usable; still record whether cleanup is proven.
+        try { const left = (this._survivingDescendants || require('./codex-no-tools').survivingDescendants)(proc.pid); task.execution.cleanup = left.length ? 'unverified' : 'verified-no-descendants'; }
+        catch (_) { task.execution.cleanup = 'unverified'; }
+      }
       if (task.state === STATE.CANCELLED || task.state === STATE.TIMEOUT) return;
       // 'error' already settled this attempt (and possibly failed it over).
       if (task._settled) return;
       task._settled = true;
+
+      if (reviewerNoTools) {
+        // Fail closed: a review is usable only if the event stream shows no tool
+        // use and no process launched by this run is still alive.
+        const noTools = require('./codex-no-tools');
+        let survivors = null, failure = null, audit = null;
+        try { survivors = (this._survivingDescendants || noTools.survivingDescendants)(proc.pid); }
+        catch (e) { failure = 'Reviewer process cleanup could not be verified: ' + e.message; }
+        if (survivors && survivors.length) {
+          for (const s of survivors) { try { require('child_process').execFileSync('taskkill', ['/T', '/F', '/PID', String(s.pid)], { windowsHide: true, stdio: 'ignore', timeout: 10000 }); } catch (_) {} }
+          failure = 'Reviewer left running processes: ' + survivors.map(s => s.name + ':' + s.pid).join(', ');
+        }
+        if (!failure && code !== 0) failure = (stderr.trim() || `Codex exited with code ${code}`).slice(0, 2000);
+        if (!failure) { try { audit = noTools.auditEvents(stdout); } catch (e) { failure = e.message; } }
+        task.execution.cleanup = survivors && !survivors.length ? 'verified-no-descendants' : 'unverified';
+        task.execution.reviewerItems = audit ? audit.items : null;
+        if (audit) task.usage = audit.usage;
+        if (failure) { task.state = STATE.FAILED; task.error = failure; task.result = ''; }
+        else { task.state = STATE.COMPLETED; task.result = audit.text.trim(); }
+        this.heartbeats.delete(task.id);
+        task.completedAt = Date.now();
+        this._persistResult(task);
+        this._broadcastTaskUpdate(task);
+        return;
+      }
 
       // A local run that "succeeds" with no output is unusable: fail it so it
       // goes to cloud instead of returning an empty answer.
@@ -633,6 +697,7 @@ module.exports = {
     });
 
     proc.on('error', (err) => {
+      if (reviewerDir) { try { fs.rmSync(reviewerDir, { recursive: true, force: true }); } catch (_) {} }
       if (job) { try { fs.unlinkSync(job.requestFile); } catch (_) {} }
       if (task._settled) return;
       task._settled = true;

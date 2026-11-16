@@ -36,6 +36,35 @@ async function makeRouter({ lmstudio = up(), freeMemMB = 12000, config = {} } = 
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sy-localfirst-')); }
 
+test('fixture Codex review strips inherited and configured API credentials', async () => {
+  const before = process.env.OPENAI_API_KEY;
+  const beforeOptions = process.env.NODE_OPTIONS;
+  try {
+    process.env.OPENAI_API_KEY='inherited-test-key'; process.env.NODE_OPTIONS='test-only-value';
+    const orch = makeOrch();
+    const task=orch.spawnHeadless({cli:'codex',prompt:'fixture',cwd:tmpDir(),readOnly:true,noRetry:true,noFallback:true,compactContext:true,cloudTimeoutMs:1000,fixtureNoApiKeys:true});
+    const env=orch.spawns[0].env;
+    assert.equal(env.OPENAI_API_KEY,undefined); assert.equal(env.NODE_OPTIONS,undefined); assert.equal(env.NODE_PATH,undefined);
+    await new Promise(resolve=>task._proc.once('close',resolve));
+    clearTimeout(task._timer);
+  } finally {
+    if(before===undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY=before;
+    if(beforeOptions===undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS=beforeOptions;
+  }
+});
+
+test('fixture Claude reviewer requests no built-in tools and strips cloud API credentials', async () => {
+  const orch = makeOrch();
+  const task=orch.spawnHeadless({cli:'claude',prompt:'fixture',cwd:tmpDir(),readOnly:true,noRetry:true,noFallback:true,compactContext:true,cloudTimeoutMs:1000,fixtureNoApiKeys:true});
+  const call=orch.spawns[0], args=call.args;
+  for(const flag of ['--safe-mode','--strict-mcp-config','--tools','--no-session-persistence']) assert.ok(args.includes(flag),flag);
+  assert.ok(['', '""'].includes(args[args.indexOf('--tools')+1]));
+  assert.equal(call.env.ANTHROPIC_API_KEY,undefined);
+  assert.equal(args.includes('--dangerously-skip-permissions'),false);
+  await new Promise(resolve=>task._proc.once('close',resolve));
+  clearTimeout(task._timer);
+});
+
 // A real Orchestrator with process spawning replaced by a scripted fake.
 function makeOrch({ cfg = {}, script = {}, lmstudio = up(), post } = {}) {
   const { Orchestrator } = require('../orchestrator');
