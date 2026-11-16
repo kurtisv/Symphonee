@@ -255,3 +255,9 @@ test('review round 7: valid candidates of other sources or repositories (PleinSe
   const ctx = { history: [], queue: [], gatePath: f, repoName: 'R', branches: [], signals: [], opts: { strict: true } };
   assert.equal(B.admit(plan(), ctx).ok, true);
 });
+
+test('review round 7 (real data): the same task with an extra clause is still the same task; unrelated short titles are not', () => {
+  assert.ok(B.similarity("Fix the '1m 60.0s' duration rollover in video-use pack.js and add pack.test.js coverage", 'Fix the 1m 60.0s duration rollover in video-use pack.js') >= B.SIMILAR);
+  assert.ok(B.similarity('Fix plugin tests', 'Fix plugin tests for the video plugin and the audio plugin helpers') < B.SIMILAR, 'fewer than four tokens: containment is not used');
+  assert.ok(B.similarity('Reject inherited prototype ids in the EDL validator', 'Harden transcript normalizers for missing end times') < 0.3);
+});

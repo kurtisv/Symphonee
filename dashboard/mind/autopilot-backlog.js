@@ -31,7 +31,9 @@ function similarity(a, b) {
   const A = tokens(a), B = tokens(b);
   if (!A.size || !B.size) return 0;
   let n = 0; for (const t of A) if (B.has(t)) n++;
-  return n / (A.size + B.size - n);
+  const jac = n / (A.size + B.size - n), small = Math.min(A.size, B.size);
+  // The same task described with an extra clause ("... and add tests") keeps almost all of the shorter title: containment counts too.
+  return small >= 4 && n / small >= 0.8 ? Math.max(jac, n / small) : jac;
 }
 const SIMILAR = 0.6;
 // An observation: a location (file:line), an error or exception, a failing test, expected/actual values, a measured duration.
