@@ -334,3 +334,20 @@ test('sending re-reads the terminal and refuses when it changed', async () => {
   await assert.rejects(office.sendReply('t', 'y\r', sigOf(same), { getJson: () => Promise.resolve({ termId: 'main', output: same.output, totalLines: 3 }), openSocket: sock }), e => e.code === 'GONE');
   assert.equal(sent.length, 1, 'nothing was sent to a different terminal');
 });
+
+test('the office stays first; requests sit under "Ce qui coince" with a badge on the office', () => {
+  const at = (s) => html.indexOf(s);
+  assert.ok(at('id="stage"') > 0 && at('id="stage"') < at('id="hAlerts"'), 'the office comes before "Ce qui coince"');
+  assert.ok(at('id="hAlerts"') < at('id="attn"') && at('id="attn"') < at('id="alerts"'), 'requests are inside "Ce qui coince", above the diagnosis');
+  assert.ok(at('id="stage"') < at('id="asksBadge"') && at('id="asksBadge"') < at('id="sheet"'), 'the badge is inside the office frame');
+  assert.match(html, /id="asksBadge"[^>]*data-jump="waiting"/);
+  assert.equal((html.match(/id="attn"/g) || []).length, 1);
+});
+
+test('the stylesheet is balanced: every rule is closed and none is swallowed', () => {
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)[1].replace(/\/\*[\s\S]*?\*\//g, '');
+  let depth = 0;
+  for (const c of css) { if (c === '{') depth++; if (c === '}') { depth--; assert.ok(depth >= 0, 'a closing brace has no opening one'); } }
+  assert.equal(depth, 0, 'an opening brace is never closed');
+  assert.match(css, /\.legend\s*\{[^}]*display:\s*flex/, 'the legend rule is intact');
+});

@@ -67,6 +67,12 @@
   #sheet b { color: var(--text); font-size: 14px; }
   #sheet .st { margin-top: 4px; overflow-wrap: anywhere; }
   /* Requests for the user: one card each, with its own answer controls */
+  /* The office stays first on the page; requests live under "Ce qui coince".
+     A small badge in the corner of the office points to them without moving anything. */
+  .asks-badge { position: absolute; bottom: 12px; left: 12px; z-index: 2; font: inherit; font-size: 12px; font-weight: 700; color: #3a2f12; background: var(--amber);
+    border: 0; border-radius: 999px; padding: 5px 14px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+  .asks-badge[hidden] { display: none; }
+  .asks-badge:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
   .asks { margin-bottom: 10px; display: grid; gap: 10px; }
   .asks[hidden] { display: none; }
   .asks-h { display: flex; align-items: center; gap: 8px; color: var(--amber); font-size: 12px; text-transform: uppercase; letter-spacing: .09em; }
@@ -89,7 +95,6 @@
   .ask-card input { flex: 1; min-width: 0; font: inherit; font-size: 12px; color: var(--text); background: #11121a; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
   .ask-card .rs, .asks .rs { margin-top: 6px; min-height: 16px; font-size: 11px; color: var(--dim); }
   .ask-card .rs.err, .asks .rs.err { color: var(--red); } .ask-card .rs.ok { color: var(--green); }
-    background: #11121a; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: 12px/1.45 Consolas, "Cascadia Mono", monospace; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--faint); font-size: 11px; }
   .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 
@@ -170,16 +175,16 @@
   <section aria-labelledby="hOffice">
     <div class="sechead"><h2 id="hOffice">Le bureau</h2>
       <span class="tools"><button type="button" id="calmBtn" aria-pressed="true" title="Activer ou couper les animations">Animations : oui</button></span></div>
-    <div id="attn" class="asks" aria-live="polite" hidden></div>
     <div id="stage" class="stage">
       <canvas id="c" width="480" height="270" tabindex="0" role="application" aria-label="Bureau des agents. Fleches gauche et droite pour passer d'un agent a l'autre, Echap pour deselectionner. Les details sont aussi dans les cartes plus bas."></canvas>
+      <button type="button" id="asksBadge" class="asks-badge" data-jump="waiting" hidden></button>
       <div id="tip" class="tip" hidden aria-hidden="true"></div>
       <div id="calm" class="calm" hidden>Le bureau est calme : personne au travail.</div>
     </div>
     <div id="sheet"><div id="sheetInfo" aria-live="polite">Clique sur un personnage pour voir sa fiche.</div></div>
     <div class="legend" aria-hidden="true"><span><i style="background:#5fd39a"></i>travaille</span><span><i style="background:#7aa8ff"></i>reflechit</span><span><i style="background:#ffc95c"></i>attend ta reponse</span><span><i style="background:#ff7a8f"></i>echec</span><span><i style="background:#6f748c"></i>au repos</span></div>
   </section>
-  <section aria-labelledby="hAlerts"><h2 id="hAlerts">Ce qui coince</h2><div id="alerts"><div class="empty">Diagnostic en cours...</div></div></section>
+  <section aria-labelledby="hAlerts"><h2 id="hAlerts">Ce qui coince</h2><div id="attn" class="asks" aria-live="polite" hidden></div><div id="alerts"><div class="empty">Diagnostic en cours...</div></div></section>
   <section aria-labelledby="hDesks"><h2 id="hDesks">Au travail <span class="n" id="nDesks">0</span></h2><div id="list" class="desks"></div></section>
   <section aria-labelledby="hLoops"><h2 id="hLoops">Boucles automatiques</h2><div id="loops" class="loops"></div></section>
   <section aria-labelledby="hTeam"><h2 id="hTeam">L equipe disponible</h2><div id="team" class="team"></div></section>
@@ -1270,6 +1275,10 @@
       + chip('waiting', waiting, 'attend une reponse', 'border-color:#7a6326;color:var(--amber)')
       + chip('failed', failed, 'en echec', 'border-color:#6e3040;color:var(--red)');
     renderAsks(asks);
+    var badge = el('asksBadge');
+    badge.hidden = !asks.length;
+    badge.textContent = '! ' + asks.length + (asks.length > 1 ? ' demandes pour toi' : ' demande pour toi');
+    el('hAlerts').textContent = 'Ce qui coince' + (asks.length ? ' (' + asks.length + ' a repondre)' : '');
     el('calm').hidden = desks.length > 0;
     if (cv.setAttribute) cv.setAttribute('aria-label', 'Bureau des agents : ' + active + ' au travail, ' + waiting + ' en attente de ta reponse, ' + failed + ' en echec. Fleches gauche et droite pour passer d\'un agent a l\'autre.');
     el('nDesks').textContent = String(desks.length);
@@ -1310,6 +1319,7 @@
     if (b && !b.disabled) jumpTo(b.getAttribute('data-jump'));
   }
   el('counts').addEventListener('click', onJump);
+  el('asksBadge').addEventListener('click', onJump);
 
   function syncCalmButton() {
     var b = el('calmBtn');
