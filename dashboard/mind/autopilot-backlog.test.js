@@ -333,3 +333,30 @@ test('review round 14: a local-model suggestion goes through the same admission;
     assert.equal(f.pilot.admission(plan({ title: 'Fix the stuck resume of the video loop' })).ok, false, 'what the local path now asks');
   } finally { f.cleanup(); }
 });
+
+test('final defect: a finding at ANY position of an earlier review stays known, through the production code-review path and through the plan-review path', () => {
+  const filler = Array.from({ length: 4000 }, (_, i) => 'Context line ' + i + ' about module alpha' + i + ' and its configuration beta' + i + '.').join('\n'); // far beyond 12000 and 30000 chars
+  const early = filler + '\nThe checkpoint file is read before it is written during resume.';
+  assert.ok(early.length > 100000);
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    f.pilot.dispatch = () => ({});
+    // production path 1: a failed CODE review (stage code-review), then a repair, then a LATER review with another reason
+    const task = plan({ title: 'Fix the stuck resume of the video loop' });
+    f.pilot.state.active = { stage: 'code-review', plan: task, repairs: 0, planRevisions: 0, worktree: { path: f.repo, branch: 'mind-autopilot/x' }, baseSha: 'abc', reviews: [], reviewFingerprint: require('./autopilot').worktreeFingerprint(f.repo) };
+    f.pilot.advance('VERDICT: FAIL\n' + early);
+    f.pilot.state.active.stage = 'code-review';
+    f.pilot.state.active.reviewFingerprint = require('./autopilot').worktreeFingerprint(f.repo);
+    f.pilot.advance('VERDICT: FAIL\nThe second review only complains about colours of the header.');
+    const entry = f.pilot.state.rejectedPlans.find((x) => x.title === task.title);
+    assert.ok(entry && entry.vocab.length > 1000, 'the vocabulary of the first, very long review is kept');
+    assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume' })).code, 'blocked', 'a finding from the end of the first review is not new');
+    assert.equal(f.pilot.admission(plan({ newEvidence: 'A new deterministic failing test in resume.test.js reproduces the loop without any network at all' })).ok, true, 'genuinely new vocabulary is accepted');
+    // production path 2: plan review of another task, same property
+    f.pilot.state.active = { stage: 'plan-review', plan: plan({ title: 'Fix the exporter rounding of durations' }), planRevisions: 0, repairs: 0 };
+    f.pilot.state.queue = [];
+    f.pilot.advance('VERDICT: FAIL\n' + early.replace('checkpoint file', 'exporter cache') );
+    assert.equal(f.pilot.admission(plan({ title: 'Fix the exporter rounding of durations', newEvidence: 'The exporter cache is read before it is written during resume' })).code, 'blocked');
+  } finally { f.cleanup(); }
+});

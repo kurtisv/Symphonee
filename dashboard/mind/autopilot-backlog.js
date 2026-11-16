@@ -130,6 +130,7 @@ function repeatsAny(ne, rejections) {
   const N = tokens(ne);
   if (N.size >= 3) for (const r of rejections || []) {
     const known = tokens([r.text, ...(Array.isArray(r.items) ? r.items : []), r.evidence].filter(Boolean).join(' '));
+    for (const w of Array.isArray(r.vocab) ? r.vocab : []) known.add(w);
     let n = 0; for (const t of N) if (known.has(t)) n++;
     if (n / N.size >= 0.85) return true;
   }
@@ -173,4 +174,4 @@ function admit(plan, ctx) {
 }
 
 const rank = (severity) => { const c = CLASSES.find((x) => x.severity === severity); return c ? c.n : 9; };
-module.exports = { reviewItems, CLASSES, ENGINE_PROTECTED, similarity, blockedTasks, collectBacklog, inFlight, admit, rank, tokens, FAILED, SIMILAR };
+module.exports = { vocabOf: (raw) => [...tokens(raw)], reviewItems, CLASSES, ENGINE_PROTECTED, similarity, blockedTasks, collectBacklog, inFlight, admit, rank, tokens, FAILED, SIMILAR };

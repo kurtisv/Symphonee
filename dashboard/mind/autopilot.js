@@ -866,9 +866,11 @@ class MindAutopilot {
     if (!plan) return;
     const rp = this.state.rejectedPlans = this.state.rejectedPlans || [];
     // The same rejection reaches here twice (plan-review, then complete): one entry, with the larger text.
-    const same = rp.slice(-3).find((x) => x.title === plan.title && Date.now() - Date.parse(x.at || 0) < 60000);
-    if (same) { same.text = [same.text, String(raw || '')].filter(Boolean).join('\n').slice(0, 30000); same.items = [...new Set([...(same.items || []), ...backlogLib.reviewItems(raw)])].slice(0, 80); return; }
-    rp.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])], text: String(raw || '').slice(0, 30000), at: new Date().toISOString() });
+    const same = rp.find((x) => x.title === plan.title);
+    const vocab = backlogLib.vocabOf(raw);
+    if (same) {
+      same.vocab = [...new Set([...(same.vocab || []), ...vocab])].slice(0, 20000); same.text = [same.text, String(raw || '')].filter(Boolean).join('\n').slice(0, 30000); same.items = [...new Set([...(same.items || []), ...backlogLib.reviewItems(raw)])].slice(0, 80); return; }
+    rp.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])], text: String(raw || '').slice(0, 30000), vocab: vocab.slice(0, 20000), at: new Date().toISOString() });
     this.state.rejectedPlans = rp.slice(-30);
   }
   backlogCtx() {
@@ -1864,6 +1866,7 @@ class MindAutopilot {
         return this.complete('completed', raw);
       }
       a.review = raw; a.repairs++;
+      if (this.def.backlog) this.rememberRejected(a.plan, raw);
       this.learn('revue', lessons.firstFinding(raw), 'revue du code par Codex : ' + (a.plan?.title || ''));
       // Keep every rejection: the reason of each repair stays visible after restarts.
       a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 12000) }].slice(-6);
@@ -2239,5 +2242,5 @@ function mountMindAutopilot(addRoute, json, deps) {
   });
   return pilots.get('default');
 }
-module.exports = { backlogLib, priorityScore, SEVERITY_WEIGHT, MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
+module.exports = { worktreeFingerprint, backlogLib, priorityScore, SEVERITY_WEIGHT, MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
   localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };
