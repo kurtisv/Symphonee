@@ -270,7 +270,7 @@ async function pass(policy, state, io) {
       if (c.status === 'new') budget.left--;
       // A transient error (network, GitHub, Symphonee API) leaves the candidate
       // where it was: retried at the next pass, the other candidates go on.
-      try { await step(c, repo, baseSha, state, io); }
+      try { if ((await step(c, repo, baseSha, state, io)) === 'waiting' && c.status === 'new') budget.left++; } // waiting on reconciliation costs no chain: it must not starve the others
       catch (e) {
         const msg = String(e && e.message || e).slice(0, 300);
         io.log(c.key + ' : erreur pendant ' + c.status + ', nouvel essai au prochain passage : ' + msg);
@@ -315,7 +315,7 @@ async function step(c, repo, baseSha, state, io) {
     let landed = false, unknown = false;
     try { const r = io.isAncestor(repo.path, c.evaluatedMerge, baseSha); landed = r === true; unknown = r === null || r === undefined; } catch (_) { unknown = true; }
     // Could not tell whether the intended push landed: wait for the next pass, never go on with a normal verification that could push it again.
-    if (unknown) return;
+    if (unknown) return 'waiting';
     if (landed) {
       c.mergeSha = c.evaluatedMerge;
       setStatus(c, 'merged', 'reconciliation : la fusion testee est deja dans ' + repo.base + ' (interruption avant l enregistrement)', io);

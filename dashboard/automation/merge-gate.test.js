@@ -547,6 +547,19 @@ test('push intent: a first ancestry check that says yes and a second that cannot
   assert.equal(w.chainRuns, chains); assert.equal(w.pushes.length, pushes); assert.notEqual(only(state).status, 'merged');
 });
 
+test('a candidate waiting on reconciliation reports it, so the pass gives its chain slot back', async () => {
+  const PT = { ...REPO, mergeMode: 'push-tested', base: 'integration' };
+  const { w, io } = world();
+  const M = 'm'.repeat(40);
+  const c = { key: 'k', repo: 'Demo', source: 'autopilot', branch: 'mind-autopilot/x', sha: w.sha, status: 'new', pushIntent: M, evaluatedMerge: M, history: [], createdAt: 1 };
+  const st = { candidates: { k: c }, merges: [] };
+  io.isAncestor = () => null;
+  assert.equal(await gate.step(c, PT, w.base, st, io), 'waiting'); assert.equal(c.status, 'new'); assert.equal(w.chainRuns, 0);
+  io.isAncestor = () => false; // a definite no: normal processing resumes (not 'waiting')
+  let r2; try { r2 = await gate.step(c, PT, w.base, st, io); } catch (_) { r2 = 'processed (candidate fixture has no proof)'; }
+  assert.notEqual(r2, 'waiting');
+});
+
 test('regenerate without a mode that pushes the tested merge: the repository is skipped', async () => {
   const { w, io } = world(); w.marker = true;
   await gate.pass({ enabled: true, repos: [{ ...REPO, regenerate: [{ cmd: ['node', 'x'] }] }] }, {}, io);
