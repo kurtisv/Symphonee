@@ -218,7 +218,7 @@ async function main() {
   try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch (_) {}
   let failed = null;
   try {
-    await gate.pass(policy, state, { git, api, runChain, openRevert, notify, log, readPilot, isAncestor, lesson,
+    await gate.pass(policy, state, { git, api, runChain, openRevert, notify, log, readPilot, isAncestor, lesson, persist: (st) => fs.writeFileSync(STATE, JSON.stringify(st, null, 2)),
       now: () => Date.now(), stopFileExists: () => fs.existsSync(STOP) });
   } catch (e) { failed = e; log('ERREUR ' + e.stack); notify('error', 'Porte de fusion : erreur interne : ' + e.message, ['porte-fusion', 'erreur-interne']); }
   finally {

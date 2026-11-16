@@ -453,7 +453,7 @@ test('push-tested: PR from porte/<branch> at the tested merge; CI on that head; 
   assert.equal(only(st).status, 'refused');
 });
 
-test('interruption: the tested merge already landed but was never recorded -> recorded once, no second push, no second PR', async () => {
+test('interruption (push intent recorded): the tested merge already landed but was never recorded -> recorded once, no second push, no second PR', async () => {
   const PT = { ...REPO, mergeMode: 'push-tested', base: 'integration' };
   const { w, io } = world(); w.marker = true;
   const M = 'm'.repeat(40);
@@ -461,13 +461,18 @@ test('interruption: the tested merge already landed but was never recorded -> re
   const git = io.git;
   io.git = (cwd, args) => { const a = args.join(' ');
     if (a === 'rev-parse origin/integration') return w.base;
-    if (a.startsWith('show origin/integration:AGENTS.md')) return '... ' + gate.MARK;
+    if (a.startsWith('show origin/integration:AGENTS.md')) return w.marker ? '... ' + gate.MARK : 'regles';
     return git(cwd, args); };
   const state = {};
+  let persisted = 0; io.persist = () => { persisted++; };
+  w.marker = false; // governance not merged yet: the normal path cannot merge, so only a reconciliation could record it
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
   assert.equal(only(state).status, 'pr-open');
-  // the process died right after the push: master holds the tested merge, the state still says pr-open
   io.isAncestor = (cwd, a) => a === M;
+  // somebody else put the tested merge on the base (no push intent recorded by the gate): NOT attributed to the gate
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(state.merges.length, 0, 'no evidence the gate pushed it: not recorded'); assert.notEqual(only(state).status, 'merged');
+  only(state).pushIntent = M; // what the gate persists right before its push
   const pushesBefore = w.pushes.length, prsBefore = w.prs.length;
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
   assert.equal(only(state).status, 'merged'); assert.equal(state.merges.length, 1); assert.equal(state.merges[0].reconciled, true); assert.equal(state.merges[0].sha, M);

@@ -59,7 +59,20 @@ test('no test file in the change: refused; only a defect (category correctness) 
 test('a test that cannot even run on the unfixed code (syntax error) is not accepted as a red proof', async (t) => {
   const r = repo(t), w = fixWorktree(t, r, { 'price.js': FIX, 'price.test.js': 'this is not javascript (((\n' });
   const out = await proofBeforeAfter(opts(r, w));
-  assert.equal(out.ok, false); assert.match(out.proofRun.why, /could not be run on the unfixed code|PASS|FAIL/);
+  assert.equal(out.ok, false); assert.match(out.proofRun.why, /could not be run on the unfixed code/, 'refused at the BEFORE run, not later');
+});
+
+test('a test that only fails because it imports a module the fix creates is not a red proof', async (t) => {
+  const r = repo(t), w = fixWorktree(t, r, { 'price.js': FIX, 'newmod.js': 'exports.x = 1;\n', 'price.test.js': "const test = require('node:test'); const m = require('./newmod.js'); test('loads', () => {});\n" });
+  const out = await proofBeforeAfter(opts(r, w, { changed: ['price.js', 'newmod.js', 'price.test.js'] }));
+  assert.equal(out.ok, false); assert.match(out.proofRun.why, /could not be run on the unfixed code/);
+});
+
+test('vitest commands do not get the jest-only option', () => {
+  const p = plan([{ name: 'vt', cmd: ['npx', 'vitest', 'run'] }], ['a.test.ts']);
+  assert.equal(p.groups[0].cmd.includes('--runTestsByPath'), false);
+  const j = plan([{ name: 'j', cmd: ['node', 'jest.js'] }], ['a.test.ts']);
+  assert.equal(j.groups.length, 1);
 });
 
 test('helpers: which files are tests, and the repository command that runs them (sub-packages run in their own folder)', () => {

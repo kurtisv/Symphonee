@@ -303,6 +303,7 @@ async function step(c, repo, baseSha, state, io) {
   // Reconciliation after an interruption: the process can die between the push that lands the tested merge and the write of its state.
   // If that exact merge commit is already in the base, the work is done: record it (never push, merge or open a PR a second time).
   if (pushesMerge(repo) && c.evaluatedMerge && ['pr-open', 'ci-green', 'waiting-governance', 'waiting-pace'].includes(c.status)
+      && c.pushIntent && c.pushIntent === c.evaluatedMerge // only if THIS gate recorded, before pushing, that it was about to push this very commit
       && !state.merges.some((m) => m.key === c.key && m.sha === c.evaluatedMerge)) {
     let landed = false;
     try { landed = Boolean(io.isAncestor(repo.path, c.evaluatedMerge, baseSha)); } catch (_) { landed = false; }
@@ -450,6 +451,7 @@ async function step(c, repo, baseSha, state, io) {
       if (!c.evaluatedMerge) return setStatus(c, 'new', 'fusion testee absente : nouvelle verification complete', io);
       // The lease makes it atomic on the exact tested base: master must still be
       // evaluatedBase on the remote (not moved forward, not rewound).
+      c.pushIntent = c.evaluatedMerge; if (io.persist) io.persist(state); // durable BEFORE the push, so a crash after it can be reconciled
       try { io.git(repo.path, ['push', '--force-with-lease=refs/heads/' + repo.base + ':' + c.evaluatedBase, 'origin', c.evaluatedMerge + ':refs/heads/' + repo.base]); }
       catch (e) {
         c.attempts = (c.attempts || 0) + 1;
@@ -540,7 +542,7 @@ function prBody(c, repo) {
     '- Preuve de la boucle : ' + (c.source === 'pleinsens-loop' ? 'revue finale Claude DECISION: GARDER (' + c.proof.reviewFile + ')' : 'revue Codex VERDICT: PASS ; verifications ' + c.proof.verifiedList.join(', ')),
     '- Chaine executee par la porte sur le resultat de la fusion : ' + c.chain.map((r) => r.name + ' ' + (r.ok ? 'OK' : 'ECHEC') + ' (' + r.s + ' s)').join(', '),
     ...(c.origin.severity ? ['- Probleme : gravite ' + c.origin.severity + ', preuve ' + (c.origin.proofStrength || 'inconnue')] : []),
-    ...(c.origin.proofRun ? ['- Preuve avant/apres : ' + (c.origin.proofRun.ok ? 'le test echoue avant le correctif et passe apres (' + (c.origin.proofRun.files || []).join(', ') + ')' : 'NON etablie : ' + c.origin.proofRun.why)] : ['- Preuve avant/apres : non exigee pour ce changement (limite)']),
+    ...(c.origin.proofRun ? ['- Preuve avant/apres : ' + (c.origin.proofRun.ok ? 'le test echoue avant le correctif et passe apres (' + (c.origin.proofRun.files || []).join(', ') + ')' : 'NON etablie : ' + c.origin.proofRun.why)] : ['- Preuve avant/apres : aucune enregistree pour ce changement (non exigee par la definition, ou enregistrement ancien) : limite connue']),
     '', 'Fusion seulement si la CI GitHub est verte sur ce commit et si toutes les regles tiennent encore juste avant. Aucun deploiement.',
     'Annulation apres fusion : `git revert -m 1 <commit de fusion>`.',
   ];

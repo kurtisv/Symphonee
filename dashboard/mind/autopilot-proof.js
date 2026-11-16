@@ -16,6 +16,8 @@ const cp = require('node:child_process');
 const TEST_FILE = /(^|\/)(__tests__\/.+|[^/]+\.(test|spec)\.[cm]?[jt]sx?)$/;
 // What a red run looks like for the usual runners (jest, vitest, node:test). Anything else red is "could not run", not "proved".
 const FAIL_PATTERN = /Tests?:\s+\d+ failed|✕|×|FAIL\b|# fail [1-9]|failing tests:/;
+// A test that fails because it cannot LOAD (missing module, syntax error) shows nothing about the defect.
+const LOAD_ERROR = /Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|SyntaxError|Test suite failed to run|ERR_REQUIRE_ESM|Unexpected token/;
 const TIMEOUT_MS = 20 * 60000;
 
 const git = (cwd, args) => cp.execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 120000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
@@ -43,7 +45,7 @@ function plan(verify, files) {
   }
   return { groups: [...groups.values()] };
 }
-const asCheck = (g, label) => ({ name: label + ':' + g.name, cwd: g.cwd || undefined, cmd: [...g.cmd, ...(/jest|vitest/.test(g.cmd.join(' ')) ? ['--runTestsByPath'] : []), ...g.files], timeoutMs: g.timeoutMs });
+const asCheck = (g, label) => ({ name: label + ':' + g.name, cwd: g.cwd || undefined, cmd: [...g.cmd, ...(/jest/.test(g.cmd.join(' ')) ? ['--runTestsByPath'] : []), ...g.files], timeoutMs: g.timeoutMs });
 
 // opts: { cwd (the fix worktree), base (sha), repoPath (main checkout, for the worktree), linkDirs, verify, runVerify, changed: [paths], category, enabled }
 // -> null when it does not apply; else { ok, result (a failing check in runVerify's shape, when !ok), proofRun }
@@ -64,13 +66,18 @@ async function proofBeforeAfter(opts) {
     for (const f of files) { // only the tests come over: the sources stay UNFIXED
       const src = path.join(opts.cwd, f), dst = path.join(tmp, f);
       if (!fs.existsSync(src)) continue; // a deleted test is not a proof
-      fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      // Never write through a symlink of the base: the destination itself is replaced, a symlinked parent is refused.
+      try { if (fs.lstatSync(dst).isSymbolicLink()) fs.unlinkSync(dst); } catch (_) { /* absent */ }
+      const realRoot = fs.realpathSync(tmp), realDir = fs.realpathSync(path.dirname(dst));
+      if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) return fail('a test path goes through a link that leaves the proof worktree: ' + f);
+      fs.copyFileSync(src, dst);
     }
     const before = [];
     for (const g of p.groups) {
       const r = await run(tmp, [asCheck(g, 'avant')]);
       const item = r.results[0] || {};
-      before.push({ group: g.name, ok: r.ok, red: !r.ok && FAIL_PATTERN.test(String(item.tail || '')), timedOut: !!item.timedOut });
+      before.push({ group: g.name, ok: r.ok, red: !r.ok && !item.timedOut && FAIL_PATTERN.test(String(item.tail || '')) && !LOAD_ERROR.test(String(item.tail || '')), timedOut: !!item.timedOut });
     }
     if (before.some((b) => b.ok)) return fail('the new tests PASS on the unfixed code (' + before.filter((b) => b.ok).map((b) => b.group).join(', ') + '): they prove nothing about the defect.', { before });
     if (before.some((b) => !b.red)) return fail('the new tests could not be run on the unfixed code (not a clean test failure): the failure before the fix is not demonstrated.', { before });

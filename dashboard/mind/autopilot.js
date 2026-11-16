@@ -1680,7 +1680,8 @@ class MindAutopilot {
     return q.length;
   }
   // The base the loop works from (fetched when the task starts); null when unknown.
-  currentBaseSha() {
+  currentBaseSha(refresh = false) {
+    if (refresh && this.def.baseRef) { const [remote, ...rest] = this.def.baseRef.split('/'); if (rest.length) runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]); }
     try { return git(this.state.repoPath, ['rev-parse', '--verify', (this.def.baseRef || 'HEAD') + '^{commit}']); } catch (_) { return null; }
   }
   // Starts the next queued task (its plan is reviewed by Codex as usual). Returns false when nothing is queued.
@@ -1692,7 +1693,7 @@ class MindAutopilot {
       const item = q.splice(idx, 1)[0];
       // A queued task is only a hypothesis about a past base: too old, dropped; base moved, the plan review must re-derive the defect on the NEW base.
       if (now - Date.parse(item.discoveredAt || 0) > QUEUE_MAX_AGE_MS) { this.log('queue', 'Tache en file depuis plus de 3 jours, abandonnee : ' + String(item.plan.title).slice(0, 90)); continue; }
-      const nowBase = this.currentBaseSha();
+      const nowBase = this.currentBaseSha(true); // fetched first: the review and the implementation must see the same base
       a.revalidate = item.baseSha && nowBase && item.baseSha !== nowBase ? { from: item.baseSha.slice(0, 10), to: nowBase.slice(0, 10) } : null;
       if (this.state.history.some(h => h.key === item.key && h.outcome === 'completed')) continue;
       a.plan = item.plan; a.stage = 'plan-review';
