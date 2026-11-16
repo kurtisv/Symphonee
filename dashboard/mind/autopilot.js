@@ -616,7 +616,8 @@ class MindAutopilot {
   }
   todayCompleted(now = Date.now()) {
     const day = budget.dayOf(now);
-    return this.state.history.filter(x => x.outcome === 'completed' && x.at
+    // Paid tasks only: a task written entirely by the local developer (Qwen) costs no cloud quota and is not counted.
+    return this.state.history.filter(x => x.outcome === 'completed' && x.at && x.implementer !== 'qwen'
       && budget.dayOf(Date.parse(x.at)) === day).length;
   }
   todayDiscoveries(now = Date.now()) {
