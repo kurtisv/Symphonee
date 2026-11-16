@@ -241,7 +241,7 @@ async function pass(policy, state, io) {
     // rebased) is replaced by the new commit: drop the stale entry.
     const live = new Set(found.map((c) => c.repo + '|' + c.branch + '|' + c.sha));
     for (const [k, c] of Object.entries(state.candidates)) {
-      if (c.repo === repo.name && c.status === 'new' && !live.has(k)) { delete state.candidates[k]; io.log('candidate remplacee ' + k); }
+      if (c.repo === repo.name && c.status === 'new' && !c.pushIntent && !live.has(k)) { /* a candidate holding a push intent is kept: that push may have landed */ delete state.candidates[k]; io.log('candidate remplacee ' + k); }
     }
     for (const c of found) {
       const key = c.repo + '|' + c.branch + '|' + c.sha;
@@ -251,7 +251,7 @@ async function pass(policy, state, io) {
         io.log('nouvelle candidate ' + key);
       }
     }
-    const mine = Object.values(state.candidates).filter((c) => c.repo === repo.name && !['refused', 'merged', 'confirmed'].includes(c.status))
+    const mine = Object.values(state.candidates).filter((c) => c.repo === repo.name && !['merged', 'confirmed'].includes(c.status) && (c.status !== 'refused' || (c.pushIntent && !state.merges.some((m) => m.key === c.key))))
       .sort((a, b) => a.createdAt - b.createdAt);
     // A repository with its own chainWindows/chainsPerPass has its own budget;
     // the others share one chain per pass inside policy.chainWindows (as before).
@@ -302,7 +302,7 @@ async function step(c, repo, baseSha, state, io) {
   const source = repo.sources.find((s) => s.type === c.source);
   // Reconciliation after an interruption: the process can die between the push that lands the tested merge and the write of its state.
   // If that exact merge commit is already in the base, the work is done: record it (never push, merge or open a PR a second time).
-  if (pushesMerge(repo) && c.evaluatedMerge && ['new', 'pr-open', 'ci-green', 'waiting-governance', 'waiting-pace'].includes(c.status) // 'new': a push that failed AFTER being accepted
+  if (pushesMerge(repo) && c.evaluatedMerge && ['new', 'pr-open', 'ci-green', 'waiting-governance', 'waiting-pace', 'refused'].includes(c.status) // 'new': a push that failed AFTER being accepted
       && c.pushIntent && c.pushIntent === c.evaluatedMerge // only if THIS gate recorded, before pushing, that it was about to push this very commit
       && !state.merges.some((m) => m.key === c.key && m.sha === c.evaluatedMerge)) {
     let landed = false;

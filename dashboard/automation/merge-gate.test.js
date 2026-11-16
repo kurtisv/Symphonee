@@ -501,6 +501,26 @@ test('a push accepted by the remote but reported as an error: the next pass reco
   assert.equal(only(state).status, 'merged'); assert.equal(state.merges[0].reconciled, true); assert.equal(w.chainRuns, chains, 'no new verification');
 });
 
+test('a candidate holding a push intent is neither dropped when its branch disappears nor lost when refused', async () => {
+  const PT = { ...REPO, mergeMode: 'push-tested', base: 'integration' };
+  const { w, io } = world(); w.marker = true;
+  const M = 'm'.repeat(40);
+  const git = io.git;
+  io.git = (cwd, args) => { const a = args.join(' ');
+    if (a === 'rev-parse origin/integration') return w.base;
+    if (a.startsWith('show origin/integration:AGENTS.md')) return '... ' + gate.MARK;
+    return git(cwd, args); };
+  const state = {};
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  const c = only(state); c.pushIntent = M; c.status = 'new';
+  io.readPilot = () => ({ history: [] }); // the pilot branch is gone: discovery no longer returns it
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(Object.keys(state.candidates).length, 1, 'kept: its push may have landed');
+  c.status = 'refused'; io.isAncestor = (cwd, a) => a === M; // refused after an accepted push
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(only(state).status, 'merged'); assert.equal(state.merges.length, 1);
+});
+
 test('regenerate without a mode that pushes the tested merge: the repository is skipped', async () => {
   const { w, io } = world(); w.marker = true;
   await gate.pass({ enabled: true, repos: [{ ...REPO, regenerate: [{ cmd: ['node', 'x'] }] }] }, {}, io);

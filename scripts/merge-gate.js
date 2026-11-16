@@ -219,7 +219,7 @@ async function main() {
   let state = {};
   // A missing file is a first run; an UNREADABLE one is never silently replaced by an empty state (candidates, merges and push intents would be lost).
   try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch (e) {
-    if (fs.existsSync(STATE)) { log('etat illisible, arret sans rien modifier : ' + e.message); notify('error', 'Porte de fusion : state.json illisible, passage annule (rien n est ecrase)', ['porte-fusion', 'etat']); try { fs.unlinkSync(LOCK); } catch (_) {} process.exit(1); }
+    if (fs.existsSync(STATE)) { log('etat illisible, arret sans rien modifier : ' + e.message); notify('error', 'Porte de fusion : state.json illisible, passage annule (rien n est ecrase)', ['porte-fusion', 'etat']); try { fs.unlinkSync(LOCK); } catch (_) {} process.exitCode = 1; await sentry.checkIn({ slug: 'porte-fusion', status: 'error', checkInId: ci.checkInId, durationSec: (Date.now() - t0) / 1000 }).catch(() => {}); return; }
   }
   let failed = null;
   try {

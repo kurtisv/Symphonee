@@ -93,8 +93,10 @@ async function proofBeforeAfter(opts) {
     if (before.some((b) => b.ok)) return fail('the new tests PASS on the unfixed code (' + before.filter((b) => b.ok).map((b) => b.group).join(', ') + '): they prove nothing about the defect.', { before });
     if (before.some((b) => !b.red)) return fail('the new tests could not be run on the unfixed code (not a clean test failure): the failure before the fix is not demonstrated.', { before });
   } finally {
-    try { if (opts.guard) opts.guard.unlinkDirs(tmp, opts.linkDirs || []); } catch (_) { /* links first, never a recursive delete through them */ }
-    try { git(opts.repoPath, ['worktree', 'remove', '--force', tmp]); } catch (_) { /* reported by the caller's cleanup */ }
+    try { if (opts.guard) opts.guard.unlinkDirs(tmp, opts.linkDirs || []); } catch (_) { /* checked below */ }
+    // Never delete the worktree while a link into the real repository is still there: a recursive delete could traverse it.
+    const stillLinked = (opts.linkDirs || []).some((d) => { const p = path.join(tmp, d); try { fs.lstatSync(p); } catch (_) { return false; } try { return fs.realpathSync(p) !== path.join(fs.realpathSync(tmp), d); } catch (_) { return true; } });
+    if (!stillLinked) { try { git(opts.repoPath, ['worktree', 'remove', '--force', tmp]); } catch (_) { /* reported by the caller's cleanup */ } }
   }
   const after = [];
   for (const g of p.groups) {
