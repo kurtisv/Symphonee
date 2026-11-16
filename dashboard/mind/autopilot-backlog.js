@@ -1,0 +1,115 @@
+'use strict';
+// Concrete backlog and admission rules for a pilot that works on the engine it runs on.
+// Everything here is read-only against the real data (pilot history, merge gate state, git branch names) and deterministic:
+// the priority is decided BEFORE any model is chosen, and a task that is not justified is refused by code, not by a prompt.
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Priority classes, most serious first (the user's order). The discovery contract uses the SEVERITY names.
+const CLASSES = Object.freeze([
+  { n: 1, severity: 'lost-work', label: 'lost work, wrong repository target, incorrect execution or merge' },
+  { n: 2, severity: 'stuck-loop', label: 'blocked loops, defective resumption, repeated tasks' },
+  { n: 3, severity: 'wrong-state', label: 'inaccurate displayed state, user decision not transmitted' },
+  { n: 4, severity: 'measured-slowness', label: 'measured slowness' },
+  { n: 5, severity: 'cleanup-proven', label: 'simplification or cleanup that removes a demonstrated problem' },
+]);
+
+// Paths a routine task may NEVER touch: the loop's own permissions, approval criteria, merge policy and protections, isolation and
+// memory-certification rules. Changing one needs a dedicated, explicitly authorised mission (a different pilot definition).
+// Enforced by the engine (merged into the pilot's protected paths), not by the prompt.
+const ENGINE_PROTECTED = Object.freeze([
+  '^dashboard/permissions\\.js$', '^dashboard/automation/', '^scripts/merge-gate\\.js$', '^scripts/api-token\\.js$', '^scripts/_ApiInit\\.ps1$',
+  '^dashboard/mind/autopilot[^/]*\\.js$', '^dashboard/mind/usage-capacity[^/]*\\.js$', '^dashboard/mind/lesson[^/]*\\.js$', '^dashboard/mind/qwen-[^/]*\\.js$',
+  '^dashboard/orchestrator/qwen-[^/]*\\.js$', '^dashboard/orchestrator/spawn-qwen[^/]*\\.js$',
+  '^FUSION_AUTOMATIQUE\\.md$', '^docs/FUSION_AUTOMATIQUE\\.md$', '(^|/)AGENTS\\.md$', '(^|/)CLAUDE\\.md$', '(^|/)GEMINI\\.md$', '^\\.github/',
+  '^\\.symphonee/', '^config/', '(^|/)package(-lock)?\\.json$', '(^|/)\\.env', 'secret',
+]);
+
+const STOP = new Set('the a an of to in on for and or with from by is are be this that it as at not no into when than then'.split(' '));
+const tokens = (s) => new Set(String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter((w) => w.length > 2 && !STOP.has(w)));
+function similarity(a, b) {
+  const A = tokens(a), B = tokens(b);
+  if (!A.size || !B.size) return 0;
+  let n = 0; for (const t of A) if (B.has(t)) n++;
+  return n / (A.size + B.size - n);
+}
+const SIMILAR = 0.6;
+// A branch name is a short slug: what matters is how much of it the plan covers.
+function coverage(slug, text) { const A = tokens(String(slug).replace(/d{4}-d{2}-d{2}/g, ' ')), B = tokens(text); if (A.size < 2) return 0; let n = 0; for (const t of A) if (B.has(t)) n++; return n / A.size; }
+const FAILED = new Set(['interrupted', 'verify-failed', 'review-rejected', 'plan-rejected', 'stuck', 'failed', 'repair-exhausted', 'abandoned']);
+
+// Tasks that failed again and again, with the diagnosis kept: a blocked task is kept, not retried (a new element is required).
+function blockedTasks(history, maxAttempts = 3) {
+  const groups = [];
+  for (const h of history || []) {
+    if (!h || !h.title || h.title === '(discovery)' || h.title === '(interrupted)') continue;
+    let g = groups.find((x) => similarity(x.title, h.title) >= SIMILAR);
+    if (!g) groups.push(g = { title: h.title, attempts: [], done: false });
+    if (h.outcome === 'completed') g.done = true;
+    else if (FAILED.has(h.outcome)) g.attempts.push({ outcome: h.outcome, at: h.at || null, why: String(h.reviewerEvidence || '').replace(/\s+/g, ' ').slice(0, 240) });
+  }
+  return groups.filter((g) => !g.done && g.attempts.length >= maxAttempts).map((g) => ({
+    title: g.title, attempts: g.attempts.length, outcomes: [...new Set(g.attempts.map((x) => x.outcome))], last: g.attempts[g.attempts.length - 1],
+    diagnosis: (g.attempts.slice().reverse().find((x) => x.why) || {}).why || 'no diagnosis recorded' }));
+}
+
+function readJson(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return null; } }
+
+// Real signals only. Each: { class, severity, key, text, evidence }.
+function collectBacklog({ history = [], events = [], error = null, gatePath = null, repoName = null, pilotId = 'default', now = Date.now() }) {
+  const out = [];
+  const add = (cls, key, text, evidence) => out.push({ class: cls, severity: CLASSES[cls - 1].severity, key, text: String(text).slice(0, 220), evidence: String(evidence || '').slice(0, 300) });
+  for (const b of blockedTasks(history, 2)) add(2, 'repeat:' + b.title.slice(0, 40), 'Task repeated without success (' + b.attempts + 'x ' + b.outcomes.join('/') + '): ' + b.title, b.diagnosis);
+  const g = gatePath ? readJson(gatePath) : null;
+  if (g) {
+    if (g.stopped) add(1, 'gate-stopped', 'The merge gate is STOPPED: ' + String(g.stopped.reason || '').slice(0, 160), 'gate state: stopped at ' + new Date(g.stopped.at || 0).toISOString());
+    for (const c of Object.values(g.candidates || {})) {
+      if (repoName && c.repo !== repoName) continue;
+      if (c.status === 'refused') {
+        const last = (c.history || []).filter((x) => x.status === 'refused').pop();
+        add(1, 'gate-refused:' + c.key, 'A finished task was refused by the merge gate (' + String((c.origin && c.origin.title) || c.branch).slice(0, 80) + ')', last && last.note);
+      }
+    }
+    for (const m of g.merges || []) if (m.status === 'failed-after-merge') add(1, 'merge-failed:' + m.key, 'A merged change failed after the merge (PR #' + m.pr + ')', 'gate merges list');
+  }
+  const recent = (events || []).filter((e) => e && /error|halt|fail/i.test(String(e.kind)) && now - Date.parse(e.at || 0) < 7 * 86400000);
+  for (const e of recent.slice(-3)) add(2, 'event:' + String(e.msg).slice(0, 40), 'Engine event: ' + String(e.msg).slice(0, 120), e.kind + ' at ' + e.at);
+  if (error) add(2, 'pilot-error', 'The pilot is halted by an error', String(error).slice(0, 200));
+  const failedVerify = (history || []).slice(-10).filter((h) => h && h.outcome === 'verify-failed');
+  for (const h of failedVerify.slice(-2)) add(2, 'verify-failed:' + h.title.slice(0, 40), 'A task ended with its verification failing: ' + h.title.slice(0, 100), (h.trace && JSON.stringify(h.trace).slice(0, 200)) || h.outcome);
+  return out.sort((a, b) => a.class - b.class);
+}
+
+// In-flight or already-done work, to refuse a duplicate before spending a model on it.
+function inFlight({ history = [], queue = [], gatePath = null, repoName = null, pilotId = 'default', branches = [] }) {
+  const items = [];
+  for (const h of history) if (h && h.outcome === 'completed' && h.title) items.push({ where: 'done', title: h.title });
+  for (const q of queue) if (q && q.plan) items.push({ where: 'queued', title: q.plan.title });
+  const g = gatePath ? readJson(gatePath) : null;
+  if (g) for (const c of Object.values(g.candidates || {})) {
+    if ((repoName && c.repo !== repoName) || (c.origin && c.origin.pilot && c.origin.pilot !== pilotId)) continue;
+    if (!['confirmed', 'merged', 'refused'].includes(c.status) && c.origin && c.origin.title) items.push({ where: 'awaiting merge (' + c.status + (c.pr ? ', PR #' + c.pr : '') + ')', title: c.origin.title });
+  }
+  for (const b of branches) items.push({ where: 'branch', title: String(b).replace(/^.*mind-autopilot\//, '').replace(/[-_/]+/g, ' ') });
+  return items;
+}
+
+// Admission: the engine's own gate on a discovered plan. -> { ok, reason, code }.
+function admit(plan, ctx) {
+  const { history = [], queue = [], opts = {} } = ctx;
+  if (!plan || plan.decision === 'NO_TASK') return { ok: true };
+  const text = plan.title + ' ' + plan.objective;
+  const dup = inFlight(ctx).find((x) => (x.where === 'branch' ? coverage(x.title, text) >= 0.75 : (similarity(text, x.title) >= SIMILAR || similarity(plan.title, x.title) >= SIMILAR)));
+  if (dup) return { ok: false, code: 'duplicate', reason: 'duplicates work that is ' + dup.where + ': ' + String(dup.title).slice(0, 90) };
+  const blocked = blockedTasks(history, opts.maxAttempts || 3).find((b) => similarity(plan.title, b.title) >= SIMILAR);
+  if (blocked && String(plan.newEvidence || '').trim().length < 20) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times without success (' + blocked.outcomes.join(', ') + ') and the plan states no new element (newEvidence)' };
+  if (opts.strict) {
+    if (plan.category === 'cleanup' && !(plan.severity === 'cleanup-proven' && plan.proof !== 'inferred')) return { ok: false, code: 'unjustified', reason: 'a cleanup needs severity cleanup-proven and a proof that the code is unused (including dynamic and plugin loading)' };
+    if (plan.proof === 'inferred' && !(ctx.signals || []).some((s) => similarity(text, s.text) >= 0.3)) return { ok: false, code: 'unjustified', reason: 'proof is only "inferred" and the task matches no backlog signal: a TODO, a large file or a missing neighbouring test does not justify a change' };
+    if (plan.severity === 'other' && plan.category !== 'correctness' && plan.category !== 'testing') return { ok: false, code: 'unjustified', reason: 'severity "other" is not one of the five priority classes' };
+  }
+  return { ok: true };
+}
+
+const rank = (severity) => { const c = CLASSES.find((x) => x.severity === severity); return c ? c.n : 9; };
+module.exports = { CLASSES, ENGINE_PROTECTED, similarity, blockedTasks, collectBacklog, inFlight, admit, rank, tokens, FAILED, SIMILAR };

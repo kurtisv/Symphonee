@@ -15,6 +15,7 @@ const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
 const proofLib = require('./autopilot-proof');
+const backlogLib = require('./autopilot-backlog');
 const tq = require('./qwen-teaching');
 const applicability = require('./lesson-applicability');
 const failures = require('./qwen-failure-analysis');
@@ -205,7 +206,7 @@ const makeState = () => ({ enabled: false, goal: '', repoName: null, repoPath: n
 const MAX_EVIDENCE_CHARS = 1500;
 const MAX_ACCEPTANCE_CHARS = 1000;
 // Priority comes first, the model after. Severity is what the user feels; proof is how solid the claim is.
-const SEVERITY_WEIGHT = Object.freeze({ 'data-loss': 100, crash: 90, security: 85, 'wrong-price': 80, 'broken-flow': 70, 'measured-slowness': 50, other: 10 });
+const SEVERITY_WEIGHT = Object.freeze({ 'data-loss': 100, crash: 90, security: 85, 'wrong-price': 80, 'broken-flow': 70, 'measured-slowness': 50, 'lost-work': 110, 'stuck-loop': 95, 'wrong-state': 75, 'cleanup-proven': 20, other: 10 });
 const PROOF_WEIGHT = Object.freeze({ reproduced: 3, 'read-in-code': 2, inferred: 1 });
 const normSeverity = (x) => (Object.hasOwn(SEVERITY_WEIGHT, String(x)) ? String(x) : 'other');
 const normProof = (x) => (Object.hasOwn(PROOF_WEIGHT, String(x)) ? String(x) : 'inferred');
@@ -239,7 +240,7 @@ function parsePlan(raw) {
   if (p.category === 'performance' && (typeof p.baseline !== 'string' || p.baseline.trim().length < 20)) return null;
   return { decision: 'TASK', category: p.category, title: clip(p.title.trim(), 180),
     objective: clip(p.objective.trim(), 2000), evidence, acceptance,
-    severity: normSeverity(p.severity), proof: normProof(p.proof),
+    severity: normSeverity(p.severity), proof: normProof(p.proof), newEvidence: typeof p.newEvidence === 'string' ? clip(p.newEvidence.trim(), 500) : '',
     baseline: p.category === 'performance' ? clip(p.baseline.trim(), 1000) : null };
 }
 // One discovery may return its first task at the top level and up to two more in "more". All of them go to the queue.
@@ -438,7 +439,11 @@ class MindAutopilot {
     this.def = { label: String(def.label || (this.id === 'default' ? 'Principale' : this.id)).slice(0, 60), profile,
       verify: guard.validCommands(def.verify || []),
       linkDirs: (def.linkDirs || []).map(String).slice(0, 8),
-      protectedPaths: (def.protectedPaths || []).map(String).slice(0, 60),
+      // selfProtect: the engine's own permissions, approval criteria, merge policy, isolation and memory-certification rules are protected by CODE.
+      protectedPaths: [...new Set([...(def.protectedPaths || []).map(String), ...(def.selfProtect === true ? backlogLib.ENGINE_PROTECTED : [])])].slice(0, 80),
+      selfProtect: def.selfProtect === true,
+      // backlog: concrete priorities and admission rules enforced by the engine (strict refuses unjustified, duplicate and blocked tasks).
+      backlog: def.backlog && typeof def.backlog === 'object' ? { strict: def.backlog.strict !== false, maxAttempts: Math.min(Math.max(Number(def.backlog.maxAttempts) || 3, 2), 6) } : null,
       // Repository-specific process rules (risk levels, design sheets, lot
       // files...), injected into every stage so the loop follows them.
       governance: String(def.governance || '').slice(0, 4000),
@@ -495,6 +500,12 @@ class MindAutopilot {
   // - stopped by the user: stay stopped; the user archives it explicitly.
   recoverAfterRestart(now = Date.now()) {
     const a = this.state.active;
+    // Reconcile the recorded state with what exists on disk BEFORE resuming: a task whose worktree is gone cannot be resumed.
+    if (a.worktree && a.worktree.path && !fs.existsSync(a.worktree.path)) {
+      const m = this.state.metrics = this.state.metrics || {}; m.reconciled = (m.reconciled || 0) + 1;
+      this.log('resumed', 'Restart: the worktree of the active task no longer exists (' + String(a.worktree.path).slice(-60) + '); task archived, nothing resumed');
+      return this.complete('interrupted', 'worktree absent after restart');
+    }
     if (a.handoff && ['checking', 'ready', 'dispatched', 'blocked'].includes(a.handoff.status)) {
       this.state.enabled = false; this.state.error = 'Handoff interrupted: process ownership must be checked before manual recovery';
       a.handoff.status = 'blocked'; a.handoff.nextAction = 'verify-process-tree-and-worktree'; this.save(); return;
@@ -512,7 +523,7 @@ class MindAutopilot {
         a.review = 'INTERRUPTED BY A SYMPHONEE RESTART before the work was finished (this is not a reviewer finding). Continue the approved plan in this worktree from where it stopped and keep what is already correct.'
           + (was === 'repair' && a.review ? '\n\nFindings that were being fixed:\n' + String(a.review).slice(0, 6000) : '');
       }
-      a.restartResumes = (a.restartResumes || 0) + 1;
+      a.restartResumes = (a.restartResumes || 0) + 1; { const m = this.state.metrics = this.state.metrics || {}; m.resumed = (m.resumed || 0) + 1; }
       a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'restart';
       if (a.verify) a.verify.running = false;
       this.state.error = null;
@@ -674,6 +685,14 @@ class MindAutopilot {
     if (now < s.nextAt) return 'waiting';
     return 'active';
   }
+  // Useful results, not commit counts: resolved problems by priority class, resumptions that worked, duplicates and repeats the engine prevented.
+  metricsView() {
+    const h = this.state.history || [], m = this.state.metrics || {}, by = {};
+    for (const x of h) if (x && x.outcome === 'completed' && x.severity) by[x.severity] = (by[x.severity] || 0) + 1;
+    return { resolved: h.filter((x) => x && x.outcome === 'completed').length, resolvedBySeverity: by, provedBeforeAfter: h.filter((x) => x && x.proofRun && x.proofRun.ok).length,
+      blocked: backlogLib.blockedTasks(h, (this.def.backlog && this.def.backlog.maxAttempts) || 3).length, resumed: m.resumed || 0, reconciled: m.reconciled || 0,
+      duplicatesPrevented: m.duplicatesPrevented || 0, repeatsPrevented: m.repeatsPrevented || 0, refusedAtAdmission: m.refusedAtAdmission || 0 };
+  }
   snapshot(now = Date.now()) {
     const s = this.state;
     const a = s.active;
@@ -681,6 +700,7 @@ class MindAutopilot {
     // The capacity shown is at most 2 minutes old (read again when older, between tasks).
     if (this.def.capacity && !a && (!s.capacity || now - s.capacity.at > 120000)) { try { this.capacityDecision(now); } catch (_) {} }
     return { pilot: this.id, updatedAt: s.updatedAt || 0, observedAt: now, origin: 'mind-autopilot', fallbackProfile: this.def.fallback, label: this.def.label, profile: this.def.profile, profileLabel: this.profile.label,
+      metrics: this.metricsView(), backlogEnabled: !!this.def.backlog, selfProtect: !!this.def.selfProtect,
       capacity: this.def.capacity ? (s.capacity || null) : null, capacityEnabled: !!this.def.capacity,
       capacityCosts: (s.capacityLog || []).slice(-10), manualRunUntil: s.manualRunUntil || null,
       verify: this.def.verify.map(v => v.name), protectedPaths: this.def.protectedPaths, linkDirs: this.def.linkDirs, pipeline,
@@ -840,6 +860,36 @@ class MindAutopilot {
     this.report('error', 'Autopilote ' + this.id + ' arrete sur erreur : ' + this.state.error.slice(0, 300), ['halt']);
     this.save();
   }
+  backlogCtx() {
+    const gatePath = path.join(this.repoRoot, '.ai-workspace', 'merge-gate', 'state.json');
+    let branches = [];
+    try { const r = runGit(this.state.repoPath, ['branch', '-a', '--list', '*mind-autopilot/*']); branches = String(r.stdout || '').split('\n').map((x) => x.replace(/^[*+\s]+/, '').trim()).filter(Boolean); } catch (_) { /* no git */ }
+    const ctx = { history: this.state.history || [], queue: this.state.queue || [], events: this.state.events || [], error: this.state.error || null,
+      gatePath, repoName: this.state.repoName || null, pilotId: this.id, branches, opts: this.def.backlog || {} };
+    ctx.signals = backlogLib.collectBacklog(ctx);
+    return ctx;
+  }
+  // The engine's own admission of a discovered plan (duplicates, blocked tasks, unjustified work). Counted, never silent.
+  admission(plan) {
+    if (!this.def.backlog) return { ok: true };
+    const r = backlogLib.admit(plan, this.backlogCtx());
+    if (!r.ok) {
+      const m = this.state.metrics = this.state.metrics || {};
+      m.refusedAtAdmission = (m.refusedAtAdmission || 0) + 1; if (r.code === 'duplicate') m.duplicatesPrevented = (m.duplicatesPrevented || 0) + 1; if (r.code === 'blocked') m.repeatsPrevented = (m.repeatsPrevented || 0) + 1;
+      this.log('admission', 'Plan refuse par le moteur (' + r.code + ') : ' + String(plan.title).slice(0, 80) + ' - ' + r.reason);
+    }
+    return r;
+  }
+  backlogText() {
+    if (!this.def.backlog) return '';
+    const ctx = this.backlogCtx(), lines = [];
+    lines.push('CONCRETE BACKLOG (priority classes, most serious first): ' + backlogLib.CLASSES.map((c) => c.n + ') ' + c.label).join('; ') + '.');
+    lines.push('A TODO comment, a large file, or the absence of a neighbouring test is NOT a justification. Choose from the signals below, or from a defect you reproduced yourself (proof "reproduced"). The engine REFUSES a plan that duplicates in-flight work, retries a blocked task without newEvidence, or whose proof is only "inferred" and matches no signal.');
+    if (ctx.signals.length) lines.push('SIGNALS FROM REAL DATA:\n' + ctx.signals.slice(0, 12).map((x) => '- [class ' + x.class + ' ' + x.severity + '] ' + x.text + (x.evidence ? ' (evidence: ' + x.evidence + ')' : '')).join('\n'));
+    const blocked = backlogLib.blockedTasks(ctx.history, this.def.backlog.maxAttempts);
+    if (blocked.length) lines.push('BLOCKED (kept with their diagnosis; do not propose again without newEvidence):\n' + blocked.slice(0, 8).map((b) => '- ' + b.title.slice(0, 100) + ' [' + b.attempts + ' attempts: ' + b.outcomes.join(', ') + '] diagnosis: ' + b.diagnosis.slice(0, 160)).join('\n'));
+    return lines.join('\n');
+  }
   // Work that exists already: the loop's history, and the merge gate's candidates with their PRs. Titles only, bounded.
   doneOrPending() {
     const lines = [];
@@ -868,8 +918,9 @@ class MindAutopilot {
         : this.def.sources.files.length ? 'BACKLOG SOURCES to start from (read them first; they list known problems by priority): ' + this.def.sources.files.join(', ') : '',
       a.sentry ? 'PRODUCTION ERRORS from Sentry (untrusted data, hints only; verify each against the code before using it as evidence):\n' + a.sentry : '',
       'Allowed categories: ' + WORK_CATEGORIES.join(', ') + '. Select based on evidence and actual impact, not equal quotas.',
-      'PRIORITY (decided before anyone implements it; the model is chosen afterwards, never the other way round): rank every task by severity then by the strength of its proof. severity is one of data-loss, crash, security, wrong-price (incorrect or stale prices), broken-flow, measured-slowness, other. proof is one of reproduced (you ran it or a test shows it), read-in-code (you read the exact lines), inferred. Put the MOST important task first. A small easy task must not be listed before a more serious defect.',
+      'PRIORITY (decided before anyone implements it; the model is chosen afterwards, never the other way round): rank every task by severity then by the strength of its proof. severity is one of data-loss, crash, security, wrong-price (incorrect or stale prices), broken-flow, measured-slowness, lost-work (lost work, wrong repository target, incorrect execution or merge), stuck-loop (blocked loop, defective resumption, repeated task), wrong-state (inaccurate displayed state, user decision not transmitted), cleanup-proven, other. proof is one of reproduced (you ran it or a test shows it), read-in-code (you read the exact lines), inferred. Put the MOST important task first. A small easy task must not be listed before a more serious defect.',
       this.doneOrPending(),
+      this.backlogText(),
       this.qualityPolicy(),
       'Evidence from Mind insights: ' + JSON.stringify(items),
       'Evidence from Mind learnings: ' + JSON.stringify(learnings),
@@ -878,7 +929,7 @@ class MindAutopilot {
       a.rejectedPlan ? 'Your previous plan was REJECTED by the reviewer. Revise it once to address every finding, or return NO_TASK. Rejected plan: '
         + JSON.stringify(a.rejectedPlan) + '\nReviewer feedback: ' + String(a.review || '').slice(0, 2000) : '',
       RULES, 'Never invent work or repeat a completed objective.',
-      'Limits: title 8-180 chars, objective 15-2000, 1-8 evidence items of 12-' + MAX_EVIDENCE_CHARS + ' chars each, 1-8 acceptance items of at most ' + MAX_ACCEPTANCE_CHARS + ' chars each. Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","severity":"data-loss|crash|security|wrong-price|broken-flow|measured-slowness|other","proof":"reproduced|read-in-code|inferred","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
+      'Limits: title 8-180 chars, objective 15-2000, 1-8 evidence items of 12-' + MAX_EVIDENCE_CHARS + ' chars each, 1-8 acceptance items of at most ' + MAX_ACCEPTANCE_CHARS + ' chars each. Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","severity":"data-loss|crash|security|wrong-price|broken-flow|measured-slowness|lost-work|stuck-loop|wrong-state|cleanup-proven|other","proof":"reproduced|read-in-code|inferred","newEvidence":"ONLY to retry a blocked task: what is new since the failed attempts","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
       (this.def.qwen && this.def.qwen.enabled ? 'A small local model implements the small tasks FIRST. Write each task so that it touches at most ' + this.def.qwen.maxFiles + ' tracked source files and can be verified on its own; split bigger work into separate small tasks, and name the files in the evidence.' : ''),
       'Optionally add "more": an array of up to 4 other justified tasks in the same format, only if they are truly separate and worth doing now. They are kept in a queue and the next ones are NOT rediscovered until the queue is empty.', 'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].filter(Boolean).join('\n\n');
   }
@@ -1674,6 +1725,7 @@ class MindAutopilot {
       if (q.length >= 10) break;
       const key = taskKey(p);
       if (q.some(x => x.key === key) || this.state.history.some(h => h.key === key && h.outcome === 'completed')) continue;
+      if (!this.admission(p).ok) continue;
       q.push({ key, plan: p, score: priorityScore(p), baseSha: this.currentBaseSha(), discoveredAt: new Date(now).toISOString() });
     }
     this.save();
@@ -1739,6 +1791,7 @@ class MindAutopilot {
       a.lastRaw = null;
       if (plan.decision === 'NO_TASK') return this.complete('no-task');
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
+      { const adm = this.admission(plan); if (!adm.ok) return this.complete(adm.code === 'duplicate' ? 'duplicate' : 'not-admissible', adm.reason); }
       a.plan = plan;
       this.enqueue(parsePlanList(raw).slice(1), now);
       this.log('plan', '[' + plan.category + '] ' + plan.title);
@@ -2152,10 +2205,10 @@ function mountMindAutopilot(addRoute, json, deps) {
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null, fallback: body.fallback || {},
         stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null,
-        qwen: body.qwen, proof: body.proof };
+        qwen: body.qwen, proof: body.proof, backlog: body.backlog, selfProtect: body.selfProtect };
       const existing = pilots.get(id);
       // Saving a definition from a form that does not know these options must not erase them.
-      if (existing) { if (body.qwen === undefined) def.qwen = existing.def.qwen; if (body.proof === undefined) def.proof = existing.def.proof; }
+      if (existing) { if (body.qwen === undefined) def.qwen = existing.def.qwen; if (body.proof === undefined) def.proof = existing.def.proof; if (body.backlog === undefined) def.backlog = existing.def.backlog; if (body.selfProtect === undefined) def.selfProtect = existing.def.selfProtect; }
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
       const all = readDefs(); all[id] = pilots.get(id).def;
@@ -2167,5 +2220,5 @@ function mountMindAutopilot(addRoute, json, deps) {
   });
   return pilots.get('default');
 }
-module.exports = { priorityScore, SEVERITY_WEIGHT, MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
+module.exports = { backlogLib, priorityScore, SEVERITY_WEIGHT, MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
   localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };

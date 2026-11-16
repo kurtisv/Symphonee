@@ -49,7 +49,7 @@ function fixture() {
 
 test('planner JSON accepts only grounded structured TASK or NO_TASK', () => {
   // severity and proof are optional in the answer and always present in the plan (normalised), so the queue can rank before choosing a model
-  assert.deepEqual(parsePlan(JSON.stringify(goodPlan)), { ...goodPlan, severity: 'other', proof: 'inferred' });
+  assert.deepEqual(parsePlan(JSON.stringify(goodPlan)), { ...goodPlan, severity: 'other', proof: 'inferred', newEvidence: '' });
   assert.deepEqual([parsePlan(JSON.stringify({ ...goodPlan, severity: 'data-loss', proof: 'reproduced' })).severity, parsePlan(JSON.stringify({ ...goodPlan, severity: 'data-loss', proof: 'reproduced' })).proof], ['data-loss', 'reproduced']);
   assert.deepEqual([parsePlan(JSON.stringify({ ...goodPlan, severity: 'made-up', proof: 'trust-me' })).severity, parsePlan(JSON.stringify({ ...goodPlan, severity: 'made-up', proof: 'trust-me' })).proof], ['other', 'inferred'], 'an unknown value never raises a priority');
   assert.deepEqual(parsePlan('{"decision":"NO_TASK"}'), { decision: 'NO_TASK' });
