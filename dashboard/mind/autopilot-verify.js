@@ -61,8 +61,8 @@ function unlinkDirs(worktreePath, dirs = []) {
 // Ignored directories are reported collapsed ("secrets/"), which is enough to
 // match a path pattern; `skip` lists the junctions Symphonee created itself.
 function changedPaths(cwd, base, { skip = [] } = {}) {
-  // core.quotepath=off: a path with non-ASCII characters is printed as written, never in Git's quoted form (which would escape every path pattern).
-  const lines = (args) => runGit(cwd, ['-c', 'core.quotepath=off', ...args]).split(/\r?\n/).filter(Boolean);
+  // -z: names are NUL-separated and never quoted, whatever characters they contain (tabs, quotes, non-ASCII).
+  const lines = (args) => runGit(cwd, [args[0], '-z', ...args.slice(1)]).split('\0').filter(Boolean);
   // --no-renames: a protected file renamed out of its folder shows as a deletion of the protected path AND an addition, never only the new name.
   const tracked = lines(['diff', '--name-only', '--no-renames', base, '--']);
   const untracked = lines(['ls-files', '--others', '--exclude-standard']);
@@ -103,13 +103,13 @@ function diffLint(cwd, base, { selfProtect = false } = {}) {
   }
   // A file that HOSTS a permission or approval call site cannot be changed by a routine task at all: the check that enforces the result is often on another line.
   if (selfProtect) {
-    for (const f of runGit(cwd, ['-c', 'core.quotepath=off', 'diff', '--name-only', '--no-renames', base, '--']).split(/\r?\n/).filter((x) => /\.[jt]sx?$/.test(x))) {
+    for (const f of runGit(cwd, ['diff', '-z', '--name-only', '--no-renames', base, '--']).split('\0').filter((x) => /\.[jt]sx?$/.test(x))) {
       let body = ''; try { body = fs.readFileSync(path.join(cwd, f), 'utf8'); } catch (_) { try { body = runGit(cwd, ['show', base + ':' + f]); } catch (__) { /* new file */ } }
       let before = ''; try { before = runGit(cwd, ['show', base + ':' + f]); } catch (_) { /* new file */ }
       if (ENGINE_CONTROL.test(body) || ENGINE_CONTROL.test(before)) findings.push(f + ': hosts a permission or approval call site (needs a dedicated, explicitly authorised mission)');
     }
   }
-  for (const f of runGit(cwd, ['-c', 'core.quotepath=off', 'ls-files', '--others', '--exclude-standard']).split(/\r?\n/).filter(Boolean)) {
+  for (const f of runGit(cwd, ['ls-files', '-z', '--others', '--exclude-standard']).split('\0').filter(Boolean)) {
     if (!/\.[jt]sx?$/.test(f)) continue;
     try { scan(f, fs.readFileSync(path.join(cwd, f), 'utf8').split(/\r?\n/)); } catch (_) {}
   }

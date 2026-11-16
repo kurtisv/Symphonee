@@ -197,7 +197,7 @@ test('review round 2: gate state with the wrong shape fails closed; a plan rejec
   const dirty = path.join(d, 'dirty.json'); fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: null, y: { repo: 'R', status: 'refused', history: 5 } }, stopped: { at: 'never' }, merges: [null] }));
   assert.doesNotThrow(() => B.collectBacklog({ history: [], gatePath: dirty, repoName: 'R' })); assert.doesNotThrow(() => B.admit(plan(), { ...base, gatePath: dirty }));
   assert.equal(B.admit(plan(), { ...base, gatePath: dirty }).code, 'unverifiable', 'a damaged candidate entry fails closed');
-  for (const bad of [{}, [], { status: 'pr-open', branch: 'b' }, { repo: 'R', status: 5, branch: 'b' }]) { fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: bad }, merges: [] })); assert.equal(B.admit(plan(), { ...base, gatePath: dirty, repoName: 'R' }).code, 'unverifiable', JSON.stringify(bad)); }
+  for (const bad of [{}, [], { status: 'pr-open', branch: 'b' }, { repo: 'R', status: 5, branch: 'b' }, { repo: 'R', status: 'pr-open', branch: 'mind-autopilot/fix-resume', origin: { pilot: 'default' } }]) { fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: bad }, merges: [] })); assert.equal(B.admit(plan(), { ...base, gatePath: dirty, repoName: 'R' }).code, 'unverifiable', JSON.stringify(bad)); }
   fs.writeFileSync(dirty, JSON.stringify({ candidates: {}, stopped: { at: 1e20, reason: 'x' }, merges: [] })); assert.doesNotThrow(() => B.collectBacklog({ history: [], gatePath: dirty }));
   const fails3 = ['a', 'b', 'c'].map((x) => H('Fix durations in the exporter module ' + x, 'verify-failed'));
   assert.equal(B.admit(plan({ title: 'Fix durations in the exporter module', newEvidence: 'the checkpoint file is read before it is written (seen in resume.js)' }), { ...base, history: fails3, rejected: [{ title: 'Fix durations in the exporter module', evidence: 'the checkpoint file is read before it is written (seen in resume.js)' }] }).code, 'blocked', 'a blocked task must not reuse a rejected finding as new evidence');
@@ -235,4 +235,13 @@ test('review round 5: paths with non-ASCII names are matched as written, not as 
   fs.writeFileSync(path.join(d, 'dashboard/s\u00e9curit\u00e9.js'), 'const ok = permGate(req);\n');
   assert.deepEqual(guard.changedPaths(d, base), ['dashboard/s\u00e9curit\u00e9.js'], 'raw name, no quotes');
   assert.ok(guard.diffLint(d, base, { selfProtect: true }).some((x) => /hosts a permission/.test(x)));
+});
+
+test('review round 6: names with tabs or quotes are matched as written (git -z), not as Git-quoted strings', (t) => {
+  if (process.platform === 'win32') return t.skip('such file names do not exist on Windows');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-tab-')); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  sh(d, 'init', '-q'); sh(d, 'config', 'user.email', 'a@b.invalid'); sh(d, 'config', 'user.name', 'a');
+  const name = 'agent\t"x".js'; fs.writeFileSync(path.join(d, name), 'const ok = permGate(req);\nif (!ok) return;\n'); sh(d, 'add', '-A'); sh(d, 'commit', '-qm', 'base');
+  const base = sh(d, 'rev-parse', 'HEAD'); fs.writeFileSync(path.join(d, name), 'const ok = permGate(req);\n');
+  assert.deepEqual(guard.changedPaths(d, base), [name]); assert.ok(guard.diffLint(d, base, { selfProtect: true }).some((x) => /hosts a permission/.test(x)));
 });
