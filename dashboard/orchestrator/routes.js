@@ -7,6 +7,7 @@ const path = require('path');
 const permissions = require('../permissions');
 const { CLI_MODELS, CLI_CONFIG } = require('./cli-config');
 const { LOCAL_PROVIDERS, isLocalProvider, isDirectLocal, canonicalProviderId, localFirstConfig, requiredContextTokens } = require('./local-providers');
+const { applyRoleCharter } = require('./role-charters');
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -275,6 +276,17 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
       }
     }
     if (!await gateSpawn(res, { cli, cwd, label: `Spawn ${cli} worker`, wait: !autoPermit })) return;
+    // Role charter: when the task has a known role (explicit hint or chosen by
+    // AUTO routing), prepend that role's fixed brief so it is performed the
+    // same way every time. Opt out per task with task.roleCharter=false, or
+    // globally with RoleChartersEnabled=false. The Mind worker is not a role.
+    // Direct local models are tool-less: the charter would be noise for them
+    // and its extra lines would fool the "nothing inline to read" guard in
+    // spawn-lmstudio. They get no charter, but a cloud fallback does.
+    const charterRole = (taskHints && taskHints.role) || (routing && routing.selectedRole) || null;
+    const charterOn = !!charterRole && cli !== 'symphonee-qwen-mind' && !(taskHints && taskHints.roleCharter === false)
+      && !(getConfig && getConfig().RoleChartersEnabled === false);
+    if (charterOn && !isDirectLocal(cli)) prompt = applyRoleCharter(prompt, charterRole);
     try {
       const resolvedSpace = resolveSpace(space);
       const spawnFor = (target) => {
@@ -338,7 +350,7 @@ function registerOrchestratorRoutes(addRoute, json, orch, { getConfig, broadcast
         // Cloud-only, de-duplicated fallback chain from the router (never another local model).
         const chain = routing.fallbackChain || (routing.candidates || []).slice(1).map(c => c.provider).filter(id => !isLocalProvider(id));
         task._escalationChain = task._automaticFallback ? chain.slice(0, maxFallback) : [];
-        task._escalationPrompt = prompt; task._escalationCwd = cwd;
+        task._escalationPrompt = charterOn ? applyRoleCharter(prompt, charterRole) : prompt; task._escalationCwd = cwd;
         task.taskClass = routing.taskClass; task.estimatedPromptTokens = routing.estimatedPromptTokens; task.routingLocality = routing.locality; task.localSkipped = routing.localSkipped;
         payload.taskClass = routing.taskClass; payload.routingLocality = routing.locality; payload.localSkipped = routing.localSkipped; payload.fallbackChain = task._escalationChain.slice();
         if (localPrepFailure) {
