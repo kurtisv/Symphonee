@@ -865,7 +865,10 @@ class MindAutopilot {
   rememberRejected(plan, raw) {
     if (!plan) return;
     const rp = this.state.rejectedPlans = this.state.rejectedPlans || [];
-    rp.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])], at: new Date().toISOString() });
+    // The same rejection reaches here twice (plan-review, then complete): one entry, with the larger text.
+    const same = rp.slice(-3).find((x) => x.title === plan.title && Date.now() - Date.parse(x.at || 0) < 60000);
+    if (same) { same.text = [same.text, String(raw || '')].filter(Boolean).join('\n').slice(0, 30000); same.items = [...new Set([...(same.items || []), ...backlogLib.reviewItems(raw)])].slice(0, 80); return; }
+    rp.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])], text: String(raw || '').slice(0, 30000), at: new Date().toISOString() });
     this.state.rejectedPlans = rp.slice(-30);
   }
   backlogCtx() {
@@ -1707,6 +1710,7 @@ class MindAutopilot {
       const endedAt = Math.max((last && last.completedAt) || 0, Date.now());
       this.state.pendingCosts = [...(this.state.pendingCosts || []), { before: a.usageBefore, launchedAt: a.launchedAt || null, endedAt, done: {} }].slice(-20);
     }
+    if (a.plan && ['review-rejected', 'verify-failed', 'plan-rejected'].includes(outcome) && this.def.backlog) this.rememberRejected(a.plan, [reviewerEvidence, ...(a.reviews || []).map((x) => x && x.text)].filter(Boolean).join('\n'));
     this.state.history.push({ category: a.plan?.category || null, severity: a.plan?.severity || null, proof: a.plan?.proof || null, proofRun: a.proofRun || null, newEvidence: a.plan?.newEvidence || null,
       title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
       evidence: a.plan?.evidence || [],

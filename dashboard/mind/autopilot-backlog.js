@@ -125,7 +125,14 @@ function reviewItems(raw, max = 60) {
   return [...new Set(out)].slice(0, max);
 }
 // A "new element" is compared with EACH earlier finding and each original evidence item on its own (a long reviewer text must not dilute a short observation).
+// Two tests: a close match with one earlier finding, OR (cap-free) almost every word of the "new" element already appears in the whole text of a rejection.
 function repeatsAny(ne, rejections) {
+  const N = tokens(ne);
+  if (N.size >= 3) for (const r of rejections || []) {
+    const known = tokens([r.text, ...(Array.isArray(r.items) ? r.items : []), r.evidence].filter(Boolean).join(' '));
+    let n = 0; for (const t of N) if (known.has(t)) n++;
+    if (n / N.size >= 0.85) return true;
+  }
   return (rejections || []).some((r) => (Array.isArray(r.items) ? r.items : [r.evidence]).concat(r.evidence && Array.isArray(r.items) ? [r.evidence] : []).some((x) => x && String(x).trim() && similarity(ne, String(x)) >= 0.6));
 }
 // Admission: the engine's own gate on a discovered plan. -> { ok, reason, code }.
@@ -137,7 +144,8 @@ function admit(plan, ctx) {
   if (flight.degraded && opts.strict) return { ok: false, code: 'unverifiable', reason: 'the merge gate state exists but cannot be read (' + String(flight.degraded).slice(0, 100) + '): in-flight work cannot be checked, so no new task is admitted' };
   const dup = flight.find((x) => (x.where === 'branch' ? (tokens(String(x.title).replace(/\d{4}-\d{2}-\d{2}/g, ' ')).size >= 3 && coverage(x.title, plan.title) >= 0.85) : (similarity(text, x.title) >= SIMILAR || similarity(plan.title, x.title) >= SIMILAR)));
   if (dup) return { ok: false, code: 'duplicate', reason: 'duplicates work that is ' + dup.where + ': ' + String(dup.title).slice(0, 90) };
-  const rejectedAll = (ctx.rejected || []).concat((history || []).filter((h) => h && ['plan-rejected', 'review-rejected'].includes(h.outcome)).map((h) => ({ title: h.title, items: [...reviewItems(h.reviewerEvidence), ...(Array.isArray(h.evidence) ? h.evidence : [])] })))
+  const rejectedAll = (ctx.rejected || []).concat((history || []).filter((h) => h && ['plan-rejected', 'review-rejected'].includes(h.outcome)).map((h) => ({ title: h.title, items: [...reviewItems(h.reviewerEvidence), ...(Array.isArray(h.evidence) ? h.evidence : [])],
+      text: [h.reviewerEvidence, ...(Array.isArray(h.evidence) ? h.evidence : []), ...(Array.isArray(h.reviews) ? h.reviews.map((x) => x && x.text) : [])].filter(Boolean).join('\n') })))
     .filter((r) => r && r.title && similarity(plan.title, r.title) >= SIMILAR);
   const rejected = rejectedAll[0];
   if (rejected && !blockedTasks(history, opts.maxAttempts || 3).some((b) => similarity(plan.title, b.title) >= SIMILAR)) {

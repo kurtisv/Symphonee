@@ -312,3 +312,12 @@ test('review round 12: terminal rejections keep their findings too; a finding la
     assert.equal(f.pilot.admission(plan({ newEvidence: 'The checkpoint file is read before it is written during resume.' })).code, 'blocked');
   } finally { f.cleanup(); }
 });
+
+test('review round 13: no cap on what counts as already known; earlier code reviews and long terminal reviews are all remembered', () => {
+  const many = Array.from({ length: 90 }, (_, i) => 'Finding number ' + i + ' concerns the module alpha' + i + ' and its configuration beta' + i + '.').join('\n') + '\nThe checkpoint file is read before it is written during resume.';
+  const rej = { history: [], queue: [], gatePath: null, branches: [], signals: [], opts: { strict: true }, rejected: [{ title: 'Fix the stuck resume of the video loop', text: many, items: B.reviewItems(many) }] };
+  assert.equal(B.admit(plan({ newEvidence: 'The checkpoint file is read before it is written during resume' }), rej).code, 'blocked', 'the 91st finding still counts');
+  assert.equal(B.admit(plan({ newEvidence: 'A new deterministic failing test in resume.test.js reproduces the loop without any network' }), rej).ok, true);
+  const hist = [{ title: 'Fix the stuck resume of the video loop', outcome: 'review-rejected', reviewerEvidence: 'only the terminal review: colours differ', evidence: ['x'], reviews: [{ text: 'first review: the checkpoint file is read before it is written during resume' }, { text: 'second review: colours differ' }] }];
+  assert.equal(B.admit(plan({ newEvidence: 'the checkpoint file is read before it is written during resume' }), { ...rej, rejected: [], history: hist }).code, 'blocked', 'an EARLIER code review counts');
+});
