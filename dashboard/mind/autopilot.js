@@ -892,7 +892,7 @@ class MindAutopilot {
       'For performance, verify a reproducible baseline and objective comparison method exist before implementation.',
       'For cleanup and quality, verify tests can demonstrate unchanged external behavior.',
       'Inspect evidence, scope, duplication, tests and safety. FAIL if not verifiable.',
-      a.revalidate ? 'REVALIDATION: this task was discovered on base ' + a.revalidate.from + ' and the base is now ' + a.revalidate.to + '. Re-derive the claimed defect on the CURRENT code; FAIL if it was fixed, moved or no longer reproduces.' : '',
+      a.revalidate ? 'REVALIDATION: this task was discovered on base ' + a.revalidate.from + ' and the base is now ' + a.revalidate.to + '. Re-derive the claimed defect on the CURRENT code of that base, reading files from the fetched ref (git show ' + (this.def.baseRef || 'HEAD') + ':<path>), NOT from the working copy, which may be older; FAIL if it was fixed, moved or no longer reproduces.' : '',
       this.profile.deep ? 'Deep plan review: re-derive the claimed defect or gap yourself from the code; FAIL if the plan would need a protected path, has no regression test, or bundles more than one concern.' : '',
       // Measured 2026-11-12: a review concluded "design tenable with
       // reservations" yet answered FAIL, partly for a proof (the red test run)

@@ -18,6 +18,9 @@ const TEST_FILE = /(^|\/)(__tests__\/.+|[^/]+\.(test|spec)\.[cm]?[jt]sx?)$/;
 const FAIL_PATTERN = /Tests?:\s+\d+ failed|✕|×|FAIL\b|# fail [1-9]|failing tests:/;
 // A test that fails because it cannot LOAD (missing module, syntax error) shows nothing about the defect.
 const LOAD_ERROR = /Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|SyntaxError|Test suite failed to run|ERR_REQUIRE_ESM|Unexpected token/;
+// A genuine red proof names a failing TEST (jest/vitest case, node:test case that is not the file itself); anything else (suite init error, crash) is not.
+const ANSI = /\x1b\[[0-9;]*m/g;
+const TEST_LEVEL = /^\s*✕|^\s*● .+ ›|^\s*[×✗] |^✖ (?!failing tests)(?![^\n]*\.[cm]?[jt]sx?\s*\()/m;
 const TIMEOUT_MS = 20 * 60000;
 
 const git = (cwd, args) => cp.execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 120000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim();
@@ -66,7 +69,15 @@ async function proofBeforeAfter(opts) {
     for (const f of files) { // only the tests come over: the sources stay UNFIXED
       const src = path.join(opts.cwd, f), dst = path.join(tmp, f);
       if (!fs.existsSync(src)) continue; // a deleted test is not a proof
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      // walk the parents one level at a time: a link is refused BEFORE anything is created through it
+      let cur = tmp, bad = false;
+      for (const part of path.relative(tmp, path.dirname(dst)).split(path.sep).filter(Boolean)) {
+        cur = path.join(cur, part);
+        let st = null; try { st = fs.lstatSync(cur); } catch (_) { /* absent */ }
+        if (st && st.isSymbolicLink()) { bad = true; break; }
+        if (!st) fs.mkdirSync(cur);
+      }
+      if (bad) return fail('a test path goes through a link of the base: ' + f);
       // Never write through a symlink of the base: the destination itself is replaced, a symlinked parent is refused.
       try { if (fs.lstatSync(dst).isSymbolicLink()) fs.unlinkSync(dst); } catch (_) { /* absent */ }
       const realRoot = fs.realpathSync(tmp), realDir = fs.realpathSync(path.dirname(dst));
@@ -77,7 +88,7 @@ async function proofBeforeAfter(opts) {
     for (const g of p.groups) {
       const r = await run(tmp, [asCheck(g, 'avant')]);
       const item = r.results[0] || {};
-      before.push({ group: g.name, ok: r.ok, red: !r.ok && !item.timedOut && FAIL_PATTERN.test(String(item.tail || '')) && !LOAD_ERROR.test(String(item.tail || '')), timedOut: !!item.timedOut });
+      before.push({ group: g.name, ok: r.ok, red: !r.ok && !item.timedOut && FAIL_PATTERN.test(String(item.tail || '')) && TEST_LEVEL.test(String(item.tail || '').replace(ANSI, '')) && !LOAD_ERROR.test(String(item.tail || '')), timedOut: !!item.timedOut });
     }
     if (before.some((b) => b.ok)) return fail('the new tests PASS on the unfixed code (' + before.filter((b) => b.ok).map((b) => b.group).join(', ') + '): they prove nothing about the defect.', { before });
     if (before.some((b) => !b.red)) return fail('the new tests could not be run on the unfixed code (not a clean test failure): the failure before the fix is not demonstrated.', { before });
@@ -94,4 +105,4 @@ async function proofBeforeAfter(opts) {
   return { ok: true, proofRun: { ok: true, files, failsBefore: true, passesAfter: true, groups: p.groups.map((g) => g.name) } };
 }
 
-module.exports = { proofBeforeAfter, testFilesOf, commandFor, plan, TEST_FILE, FAIL_PATTERN };
+module.exports = { asCheck, TEST_LEVEL, ANSI, proofBeforeAfter, testFilesOf, commandFor, plan, TEST_FILE, FAIL_PATTERN };

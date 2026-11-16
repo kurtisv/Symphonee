@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 const guard = require('./autopilot-verify');
-const { proofBeforeAfter, testFilesOf, commandFor, plan } = require('./autopilot-proof');
+const { proofBeforeAfter, testFilesOf, commandFor, plan, asCheck, TEST_LEVEL, ANSI } = require('./autopilot-proof');
 delete process.env.NODE_TEST_CONTEXT; // the nested `node --test` below must really run
 
 const sh = (cwd, ...a) => cp.execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8' }).trim();
@@ -70,7 +70,8 @@ test('a test that only fails because it imports a module the fix creates is not 
 
 test('vitest commands do not get the jest-only option', () => {
   const p = plan([{ name: 'vt', cmd: ['npx', 'vitest', 'run'] }], ['a.test.ts']);
-  assert.equal(p.groups[0].cmd.includes('--runTestsByPath'), false);
+  assert.equal(asCheck(p.groups[0], 'avant').cmd.includes('--runTestsByPath'), false, 'the REAL command');
+  assert.equal(asCheck(plan([{ name: 'j', cmd: ['node', 'jest.js'] }], ['a.test.ts']).groups[0], 'avant').cmd.includes('--runTestsByPath'), true);
   const j = plan([{ name: 'j', cmd: ['node', 'jest.js'] }], ['a.test.ts']);
   assert.equal(j.groups.length, 1);
 });
@@ -81,4 +82,26 @@ test('helpers: which files are tests, and the repository command that runs them 
   assert.deepEqual(commandFor(verify, 'src/a.test.ts').cwd, ''); const api = commandFor(verify, 'api/src/__tests__/b.test.ts'); assert.deepEqual([api.cwd, api.rel], ['api', 'src/__tests__/b.test.ts']);
   assert.equal(commandFor([{ name: 'types', cmd: ['tsc'] }], 'a.test.ts'), null);
   assert.match(plan([{ name: 'types', cmd: ['tsc'] }], ['a.test.ts']).error, /no repository test command/);
+});
+
+
+test('a suite that throws at load (TypeError in an imported module) is not a red proof, a failing named test is', async (t) => {
+  const r = repo(t);
+  fs.writeFileSync(path.join(r.dir, 'boom.js'), 'throw new TypeError("init");\n'); sh(r.dir, 'add', '-A'); sh(r.dir, 'commit', '-qm', 'boom');
+  const r2 = { ...r, base: sh(r.dir, 'rev-parse', 'HEAD') };
+  const w2 = fixWorktree(t, r2, { 'price.js': FIX, 'boom.js': 'exports.v = 1;\n', 'price.test.js': "const test = require('node:test'); require('./boom.js'); test('x', () => {});\n" });
+  const out = await proofBeforeAfter(opts(r2, w2, { changed: ['price.js', 'boom.js', 'price.test.js'] }));
+  assert.equal(out.ok, false); assert.match(out.proofRun.why, /could not be run on the unfixed code/);
+  assert.equal(TEST_LEVEL.test('\u2716 real one (1.5ms)'.replace(ANSI, '')), true); assert.equal(TEST_LEVEL.test('\u2716 b.test.js (60ms)'), false);
+});
+
+test('a symlinked directory of the base is refused before anything is created through it', async (t) => {
+  if (process.platform === 'win32') return t.skip('symlinks need privileges on Windows');
+  const r = repo(t), outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-out-')); t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.symlinkSync(outside, path.join(r.dir, 'linked')); sh(r.dir, 'add', '-A'); sh(r.dir, 'commit', '-qm', 'link');
+  const r2 = { ...r, base: sh(r.dir, 'rev-parse', 'HEAD') };
+  const w = fixWorktree(t, r2, { 'price.js': FIX });
+  fs.rmSync(path.join(w, 'linked'), { force: true }); fs.mkdirSync(path.join(w, 'linked', 'sub'), { recursive: true }); fs.writeFileSync(path.join(w, 'linked', 'sub', 'p.test.js'), TEST);
+  const out = await proofBeforeAfter(opts(r2, w, { changed: ['linked/sub/p.test.js'] }));
+  assert.equal(out.ok, false); assert.deepEqual(fs.readdirSync(outside), [], 'nothing was created outside');
 });

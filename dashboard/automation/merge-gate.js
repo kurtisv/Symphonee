@@ -302,7 +302,7 @@ async function step(c, repo, baseSha, state, io) {
   const source = repo.sources.find((s) => s.type === c.source);
   // Reconciliation after an interruption: the process can die between the push that lands the tested merge and the write of its state.
   // If that exact merge commit is already in the base, the work is done: record it (never push, merge or open a PR a second time).
-  if (pushesMerge(repo) && c.evaluatedMerge && ['pr-open', 'ci-green', 'waiting-governance', 'waiting-pace'].includes(c.status)
+  if (pushesMerge(repo) && c.evaluatedMerge && ['new', 'pr-open', 'ci-green', 'waiting-governance', 'waiting-pace'].includes(c.status) // 'new': a push that failed AFTER being accepted
       && c.pushIntent && c.pushIntent === c.evaluatedMerge // only if THIS gate recorded, before pushing, that it was about to push this very commit
       && !state.merges.some((m) => m.key === c.key && m.sha === c.evaluatedMerge)) {
     let landed = false;

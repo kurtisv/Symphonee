@@ -23,6 +23,8 @@ const ROOT = path.join(__dirname, '..');
 const POLICY = path.join(ROOT, 'config', 'merge-gate.json');
 const DIR = path.join(ROOT, '.ai-workspace', 'merge-gate');
 const STATE = path.join(DIR, 'state.json');
+// Atomic: write a temp file then rename, so a crash never leaves a truncated state (it holds the push intent used to reconcile).
+function writeState(st) { const tmp = STATE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(st, null, 2)); fs.renameSync(tmp, STATE); }
 const JOURNAL = path.join(DIR, 'journal.log');
 const LOCK = path.join(DIR, 'lock');
 const STOP = path.join(DIR, 'STOP');
@@ -215,14 +217,17 @@ async function main() {
   const t0 = Date.now();
   const ci = await sentry.checkIn({ slug: 'porte-fusion', status: 'in_progress', monitor: { schedule: { type: 'interval', value: 30, unit: 'minute' }, margin: 30, maxRuntime: 240 } });
   let state = {};
-  try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch (_) {}
+  // A missing file is a first run; an UNREADABLE one is never silently replaced by an empty state (candidates, merges and push intents would be lost).
+  try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch (e) {
+    if (fs.existsSync(STATE)) { log('etat illisible, arret sans rien modifier : ' + e.message); notify('error', 'Porte de fusion : state.json illisible, passage annule (rien n est ecrase)', ['porte-fusion', 'etat']); try { fs.unlinkSync(LOCK); } catch (_) {} process.exit(1); }
+  }
   let failed = null;
   try {
-    await gate.pass(policy, state, { git, api, runChain, openRevert, notify, log, readPilot, isAncestor, lesson, persist: (st) => fs.writeFileSync(STATE, JSON.stringify(st, null, 2)),
+    await gate.pass(policy, state, { git, api, runChain, openRevert, notify, log, readPilot, isAncestor, lesson, persist: writeState,
       now: () => Date.now(), stopFileExists: () => fs.existsSync(STOP) });
   } catch (e) { failed = e; log('ERREUR ' + e.stack); notify('error', 'Porte de fusion : erreur interne : ' + e.message, ['porte-fusion', 'erreur-interne']); }
   finally {
-    fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+    writeState(state);
     try { fs.unlinkSync(LOCK); } catch (_) {}
     await sentry.checkIn({ slug: 'porte-fusion', status: failed ? 'error' : 'ok', checkInId: ci.checkInId, durationSec: (Date.now() - t0) / 1000 });
   }

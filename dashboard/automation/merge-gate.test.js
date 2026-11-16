@@ -480,6 +480,27 @@ test('interruption (push intent recorded): the tested merge already landed but w
   assert.equal(state.merges.length, 1, 'recorded once'); assert.equal(w.pushes.length, pushesBefore, 'no second push'); assert.equal(w.prs.length, prsBefore, 'no second PR'); assert.equal(w.merges.length, 0);
 });
 
+test('a push accepted by the remote but reported as an error: the next pass records the merge, never re-verifies or pushes again', async () => {
+  const PT = { ...REPO, mergeMode: 'push-tested', base: 'integration' };
+  const { w, io } = world(); w.marker = true;
+  const M = 'm'.repeat(40);
+  w.headSha = M; w.checks = [{ name: 'verify', status: 'completed', conclusion: 'success', startedAt: '2026-11-13T10:00:00Z' }];
+  const git = io.git; let intents = 0; io.persist = (st) => { if (Object.values(st.candidates)[0].pushIntent === M) intents++; };
+  io.git = (cwd, args) => { const a = args.join(' ');
+    if (a === 'rev-parse origin/integration') return w.base;
+    if (a.startsWith('show origin/integration:AGENTS.md')) return '... ' + gate.MARK;
+    if (a.startsWith('push --force-with-lease')) throw new Error('connexion perdue apres acceptation');
+    return git(cwd, args); };
+  const state = {};
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(only(state).status, 'new', 'the error looks like a refused push'); assert.equal(intents, 1, 'the intent was persisted BEFORE the push');
+  io.isAncestor = (cwd, a) => a === M; // ... but the tested merge IS on the base
+  const chains = w.chainRuns;
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(only(state).status, 'merged'); assert.equal(state.merges[0].reconciled, true); assert.equal(w.chainRuns, chains, 'no new verification');
+});
+
 test('regenerate without a mode that pushes the tested merge: the repository is skipped', async () => {
   const { w, io } = world(); w.marker = true;
   await gate.pass({ enabled: true, repos: [{ ...REPO, regenerate: [{ cmd: ['node', 'x'] }] }] }, {}, io);
