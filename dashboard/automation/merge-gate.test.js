@@ -521,6 +521,9 @@ test('a candidate holding a push intent is neither dropped when its branch disap
   state.candidates[c.key] = c; c.status = 'new'; c.updatedAt = w.now; io.isAncestor = () => null; // could not tell: kept (for a week), not discarded
   await gate.pass({ enabled: true, repos: [PT] }, state, io);
   assert.equal(Object.keys(state.candidates).length, 1, 'indeterminate: kept');
+  const chainsHeld = w.chainRuns, pushesHeld = w.pushes.length;
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(w.chainRuns, chainsHeld, 'held: no verification'); assert.equal(w.pushes.length, pushesHeld, 'held: no push'); assert.equal(w.merges.length, 0);
   w.now += 8 * 86400000; c.status = 'new'; await gate.pass({ enabled: true, repos: [PT] }, state, io);
   assert.equal(Object.keys(state.candidates).length, 0, 'a week of doubt: released'); state.candidates[c.key] = c; c.status = 'new'; io.isAncestor = (cwd, a) => a === M; // the push DID land
   await gate.pass({ enabled: true, repos: [PT] }, state, io);

@@ -240,12 +240,14 @@ async function pass(policy, state, io) {
     // A candidate never started whose branch now points elsewhere (re-committed,
     // rebased) is replaced by the new commit: drop the stale entry.
     const live = new Set(found.map((c) => c.repo + '|' + c.branch + '|' + c.sha));
+    const held = new Set(); // withdrawn candidates whose ancestry is unknown: wait for reconciliation, never resume normal processing
     for (const [k, c] of Object.entries(state.candidates)) {
       if (c.repo === repo.name && c.status === 'new' && !live.has(k)) {
         // A withdrawn candidate is kept ONLY if its tested merge really is in the base (an accepted push to reconcile); otherwise it is dropped, never revived.
         // isAncestor: true / false (definitely not) / null (could not tell). Only a definite 'no' (or a week of doubt) lets the intent go.
         let r = false; try { r = c.pushIntent && c.pushIntent === c.evaluatedMerge ? io.isAncestor(repo.path, c.evaluatedMerge, baseSha) : false; } catch (_) { r = null; }
-        if (r === true || (r === null && io.now() - (c.updatedAt || 0) < 7 * 86400000)) continue;
+        if (r === true) continue;
+        if (r === null && io.now() - (c.updatedAt || 0) < 7 * 86400000) { held.add(k); continue; }
         delete state.candidates[k]; io.log('candidate remplacee ' + k); }
     }
     for (const c of found) {
@@ -256,7 +258,7 @@ async function pass(policy, state, io) {
         io.log('nouvelle candidate ' + key);
       }
     }
-    const mine = Object.values(state.candidates).filter((c) => c.repo === repo.name && !['merged', 'confirmed'].includes(c.status) && (c.status !== 'refused' || (c.pushIntent && !state.merges.some((m) => m.key === c.key))))
+    const mine = Object.values(state.candidates).filter((c) => c.repo === repo.name && !['merged', 'confirmed'].includes(c.status) && !held.has(c.key) && (c.status !== 'refused' || (c.pushIntent && !state.merges.some((m) => m.key === c.key))))
       .sort((a, b) => a.createdAt - b.createdAt);
     // A repository with its own chainWindows/chainsPerPass has its own budget;
     // the others share one chain per pass inside policy.chainWindows (as before).
