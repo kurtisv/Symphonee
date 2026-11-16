@@ -8,10 +8,10 @@ const kit = require('./qwen-repo-test-kit');
 
 const task = (title, extra = {}) => ({ category: 'testing', title, objective: 'Add a focused regression test for ' + title + ' in the module.', evidence: ['module.js:3 has no test for ' + title], acceptance: ['node --test passes'], ...extra });
 
-test('one discovery answer carries its first task and up to two more, all validated', () => {
-  const raw = JSON.stringify({ ...task('First helper test'), decision: 'TASK', more: [task('Second helper test'), task('Third helper test'), task('Fourth helper test'), { title: 'x' }] });
+test('one discovery answer carries its first task and up to four more, all validated', () => {
+  const raw = JSON.stringify({ ...task('First helper test'), decision: 'TASK', more: [task('Second helper test'), { title: 'x' }, task('Third helper test'), task('Fourth helper test'), task('Fifth helper test'), task('Sixth helper test')] });
   const plans = parsePlanList(raw);
-  assert.deepEqual(plans.map(p => p.title), ['First helper test', 'Second helper test', 'Third helper test'], 'at most 3 in total; invalid extras are dropped');
+  assert.deepEqual(plans.map(p => p.title), ['First helper test', 'Second helper test', 'Third helper test', 'Fourth helper test'], 'at most 5 in total, taken from the first four "more" entries; the invalid one is dropped');
   assert.ok(plans.every(p => p.decision === 'TASK'));
 });
 
@@ -33,10 +33,36 @@ test('the queue keeps discovered tasks, refuses duplicates, and exposes them in 
   } finally { f.cleanup(); }
 });
 
-test('the queue is capped at six, so a bad discovery cannot pile up work', () => {
+test('the queue is capped at ten, so a bad discovery cannot pile up work', () => {
   const f = kit.setup();
   try {
-    const many = Array.from({ length: 10 }, (_, i) => task('Helper number ' + i + ' test'));
-    assert.equal(f.pilot.enqueue(many), 6);
+    const many = Array.from({ length: 14 }, (_, i) => task('Helper number ' + i + ' test'));
+    assert.equal(f.pilot.enqueue(many), 10);
+  } finally { f.cleanup(); }
+});
+
+test('queue order: what Qwen can take comes first, Claude tasks only while paid units remain', () => {
+  const f = kit.setup();
+  try {
+    f.pilot.state.repoPath = f.repo;
+    const hard = task('Hard task on protected secrets', { evidence: ['secrets/key.txt:1 holds a value the task must change'] });
+    const easy = task('Easy task on the helper', { evidence: ['index.js:1 has no test for run()'] });
+    f.pilot.enqueue([hard, easy]);
+    assert.equal(f.pilot.qwenCanTake(easy), true); assert.equal(f.pilot.qwenCanTake(hard), false, 'a protected file is never given to Qwen');
+    assert.equal(f.pilot.pickQueued(false), 1, 'Qwen task first even though it was queued second');
+    assert.equal(f.pilot.pickQueued(true), 1);
+    f.pilot.state.queue = f.pilot.state.queue.filter(x => x.plan.title !== easy.title);
+    assert.equal(f.pilot.pickQueued(false), -1, 'only a Claude task left and no paid unit left: nothing starts');
+    assert.equal(f.pilot.pickQueued(true), 0, 'with a paid unit left, the Claude task starts');
+  } finally { f.cleanup(); }
+});
+
+test('paid units are the discoveries plus the tasks not written entirely by Qwen', () => {
+  const f = kit.setup();
+  try {
+    const now = Date.now(), at = new Date(now).toISOString();
+    f.pilot.state.history = [{ outcome: 'completed', at, implementer: 'qwen', key: 'a' }, { outcome: 'completed', at, implementer: 'claude', key: 'b' }, { outcome: 'completed', at, implementer: 'claude-after-qwen', key: 'c' }, { outcome: 'plan-rejected', at, key: 'd' }];
+    f.pilot.state.discoveryTimes = [now];
+    assert.equal(f.pilot.paidUnitsToday(now), 3, 'one Claude task + one hand-back to Claude + one discovery; the Qwen task is free; a rejected plan is not a completion');
   } finally { f.cleanup(); }
 });
