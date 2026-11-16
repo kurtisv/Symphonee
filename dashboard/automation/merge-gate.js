@@ -183,7 +183,7 @@ function discoverAutopilot(repo, source, io) {
     if (sha !== h.commit) { io.log && io.log('ignoree ' + h.worktree.branch + ' : la pointe n est plus le commit revu ' + String(h.commit).slice(0, 10)); continue; }
     // The repository the pilot worked on, captured now (the pilot may be reconfigured later).
     const repoName = st.repoPath && path.resolve(st.repoPath).toLowerCase() === path.resolve(repo.path).toLowerCase() ? st.repoName || null : null;
-    out.push({ repo: repo.name, source: source.type, branch: h.worktree.branch, sha, origin: { pilot: source.pilot, repoName, title: h.title, at: h.at },
+    out.push({ repo: repo.name, source: source.type, branch: h.worktree.branch, sha, origin: { pilot: source.pilot, repoName, title: h.title, at: h.at, severity: h.severity || null, proofStrength: h.proof || null, proofRun: h.proofRun || null, executor: h.executor || null },
       proof: { review: /^\s*VERDICT:\s*PASS\b/.test(String(h.reviewerEvidence || '')), verified: Array.isArray(h.verified) && h.verified.length > 0, verifiedList: h.verified || [] } });
   }
   return out;
@@ -539,6 +539,8 @@ function prBody(c, repo) {
     '- Taille : ' + c.stats.codeLines + ' lignes de code dans ' + c.stats.codeFiles + ' fichiers (' + c.stats.files + ' fichiers au total)',
     '- Preuve de la boucle : ' + (c.source === 'pleinsens-loop' ? 'revue finale Claude DECISION: GARDER (' + c.proof.reviewFile + ')' : 'revue Codex VERDICT: PASS ; verifications ' + c.proof.verifiedList.join(', ')),
     '- Chaine executee par la porte sur le resultat de la fusion : ' + c.chain.map((r) => r.name + ' ' + (r.ok ? 'OK' : 'ECHEC') + ' (' + r.s + ' s)').join(', '),
+    ...(c.origin.severity ? ['- Probleme : gravite ' + c.origin.severity + ', preuve ' + (c.origin.proofStrength || 'inconnue')] : []),
+    ...(c.origin.proofRun ? ['- Preuve avant/apres : ' + (c.origin.proofRun.ok ? 'le test echoue avant le correctif et passe apres (' + (c.origin.proofRun.files || []).join(', ') + ')' : 'NON etablie : ' + c.origin.proofRun.why)] : ['- Preuve avant/apres : non exigee pour ce changement (limite)']),
     '', 'Fusion seulement si la CI GitHub est verte sur ce commit et si toutes les regles tiennent encore juste avant. Aucun deploiement.',
     'Annulation apres fusion : `git revert -m 1 <commit de fusion>`.',
   ];
