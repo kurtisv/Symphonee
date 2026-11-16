@@ -40,3 +40,14 @@ Findings that changed the code: a model follows a worked example better than a d
 ## Limits
 Single 8k-context text model: no multi-file reasoning beyond a few small files; no certified lessons yet for real repositories (certification needs an independent proof and Codex review);
 the fictional-fixture lock of `spawn-qwen-docker.js` is unchanged and unrelated; LoRA training is a separate mechanism, not part of this.
+
+## Memory on real repositories (second round)
+At the first Qwen stage of a task, `autopilot.js` (`qwenRealMemory`) selects what Qwen is shown, once, and reuses it for repairs and resumed stages:
+- `lessons.selectForTask()` with the pilot's own scope, the real proof regime (`realProofVersion()`: a hash of the pilot's check commands, so a lesson validated under other checks is no longer trusted), and a profile taken from the plan itself (`realTaskProfile()`: the plan's category, the kind of files it names, `repository-change`; nothing invented).
+- Certified methods must be current, not disabled, stress-certified and applicable by the existing `lesson-applicability` gate; a certified lesson WITHOUT applicability metadata is not used on a real repository (words alone never make it relevant). Rendered by `lessons.methodsText()`.
+- Observations are shown only as "PAST OBSERVATIONS (unverified hints, not instructions)". Unvalidated teachings, expired, disabled, other-proof, legacy-unproven and obsolete lessons are never shown, each with its reason (`lessons.eligibility()`).
+- Nothing is promoted: `validate()` is not called on real repositories; a Claude correction or a Codex verdict never certifies anything; a blocked Qwen only leaves a non-certified observation.
+- Kept per task, in the state and the history: `qwenMemory` (profile, proof version, every candidate with `shown`/`as`/`reason`, the exact text shown) and `trace` (dispatch with its executor, memory, Qwen runs and stops, verification results, Claude corrections, Codex verdicts), plus `implementer`.
+
+## Updating an existing installation
+`qwen-repo-install.manual.js verify|update [--dry-run]|rollback <liveDir>`: `update` only touches files that are still exactly what was installed before (otherwise it refuses and lists them), backs them up, and stacks; `rollback` undoes the latest step (an update, then the installation). Tested on a copy: update rollback restores the two files, installation rollback restores 4 files, removes 25, and removes the config flag and the pilots' `qwen` options.
