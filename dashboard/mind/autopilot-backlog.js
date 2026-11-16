@@ -96,10 +96,11 @@ function collectBacklog({ history = [], events = [], error = null, gatePath = nu
 }
 
 // In-flight or already-done work, to refuse a duplicate before spending a model on it.
-function inFlight({ history = [], queue = [], gatePath = null, repoName = null, pilotId = 'default', branches = [] }) {
+function inFlight({ history = [], queue = [], gatePath = null, repoName = null, pilotId = 'default', branches = [], active = null }) {
   const items = [];
   for (const h of history) if (h && h.outcome === 'completed' && h.title) items.push({ where: 'done', title: h.title });
   for (const q of queue) if (q && q.plan) items.push({ where: 'queued', title: q.plan.title });
+  if (active && active.title) items.push({ where: 'the active task', title: active.title });
   const gr = readGate(gatePath), g = gr.data || null;
   if (gr.error) items.degraded = gr.error;
   if (g && Object.values(g.candidates || {}).some((c) => !c || typeof c !== 'object' || Array.isArray(c) || typeof c.repo !== 'string' || typeof c.status !== 'string' || typeof c.branch !== 'string' || typeof c.source !== 'string' || (c.source === 'autopilot' && (!repoName || c.repo === repoName) && !['confirmed', 'merged', 'refused'].includes(c.status) && !(c.origin && typeof c.origin.title === 'string' && c.origin.title.length > 0)))) items.degraded = 'a candidate entry of the gate state is damaged';
@@ -121,7 +122,7 @@ function admit(plan, ctx) {
   if (flight.degraded && opts.strict) return { ok: false, code: 'unverifiable', reason: 'the merge gate state exists but cannot be read (' + String(flight.degraded).slice(0, 100) + '): in-flight work cannot be checked, so no new task is admitted' };
   const dup = flight.find((x) => (x.where === 'branch' ? (tokens(String(x.title).replace(/\d{4}-\d{2}-\d{2}/g, ' ')).size >= 3 && coverage(x.title, plan.title) >= 0.85) : (similarity(text, x.title) >= SIMILAR || similarity(plan.title, x.title) >= SIMILAR)));
   if (dup) return { ok: false, code: 'duplicate', reason: 'duplicates work that is ' + dup.where + ': ' + String(dup.title).slice(0, 90) };
-  const rejectedAll = (ctx.rejected || []).concat((history || []).filter((h) => h && ['plan-rejected', 'review-rejected'].includes(h.outcome)).map((h) => ({ title: h.title, evidence: h.reviewerEvidence })))
+  const rejectedAll = (ctx.rejected || []).concat((history || []).filter((h) => h && ['plan-rejected', 'review-rejected'].includes(h.outcome)).map((h) => ({ title: h.title, evidence: String(h.reviewerEvidence || '') + ' ' + (h.evidence || []).join(' ') })))
     .filter((r) => r && r.title && similarity(plan.title, r.title) >= SIMILAR);
   const rejected = rejectedAll[0];
   if (rejected && !blockedTasks(history, opts.maxAttempts || 3).some((b) => similarity(plan.title, b.title) >= SIMILAR)) {

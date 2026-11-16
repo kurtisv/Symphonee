@@ -261,3 +261,17 @@ test('review round 7 (real data): the same task with an extra clause is still th
   assert.ok(B.similarity('Fix plugin tests', 'Fix plugin tests for the video plugin and the audio plugin helpers') < B.SIMILAR, 'fewer than four tokens: containment is not used');
   assert.ok(B.similarity('Reject inherited prototype ids in the EDL validator', 'Harden transcript normalizers for missing end times') < 0.3);
 });
+
+test('review round 9: the original evidence of a rejected plan is not new evidence; a queued duplicate of the active plan is refused', () => {
+  const base = { history: [], queue: [], gatePath: null, branches: [], signals: [], opts: { strict: true } };
+  const rej = { ...base, rejected: [{ title: 'Fix the stuck resume of the video loop', evidence: 'the reviewer wanted a failing test first loop.js:42 resumes the same task after restart (reproduced twice)' }] };
+  assert.equal(B.admit(plan({ newEvidence: 'loop.js:42 resumes the same task after restart (reproduced twice)' }), rej).code, 'blocked');
+  assert.equal(B.admit(plan({ title: 'Fix the stuck video loop resume', objective: 'x' }), { ...base, active: { title: 'Fix the stuck resume of the video loop' } }).code, 'duplicate', 'same task, other words, as the ACTIVE plan');
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    f.pilot.state.active = { stage: 'plan-review', plan: plan({ title: 'Fix the stuck resume of the video loop' }) };
+    f.pilot.enqueue([plan({ title: 'Fix the stuck video loop resume' })]);
+    assert.equal(f.pilot.state.queue.length, 0, 'the second plan of the same discovery duplicates the first');
+  } finally { f.cleanup(); }
+});

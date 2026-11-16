@@ -870,7 +870,7 @@ class MindAutopilot {
       branches = String(r.stdout || '').split('\n').map((x) => x.trim().split(' ')).filter((p) => p[0] && Date.now() / 1000 - Number(p[1]) < 14 * 86400).map((p) => p[0]);
     } catch (_) { /* no git */ }
     const ctx = { history: this.state.history || [], queue: this.state.queue || [], events: this.state.events || [], error: this.state.error || null,
-      gatePath, repoName: this.state.repoName || null, pilotId: this.id, branches, rejected: this.state.rejectedPlans || [], opts: this.def.backlog || {} };
+      gatePath, repoName: this.state.repoName || null, pilotId: this.id, branches, active: (this.state.active && this.state.active.plan) || null, rejected: this.state.rejectedPlans || [], opts: this.def.backlog || {} };
     ctx.signals = backlogLib.collectBacklog(ctx);
     return ctx;
   }
@@ -1817,7 +1817,7 @@ class MindAutopilot {
       // violations (tampering, writes outside the worktree, protected paths) halt.
       if (a.planRevisions > this.limits.planRevisions) return this.complete('plan-rejected', raw);
       if (this.state.queue && this.state.queue.length) return this.complete('plan-rejected', raw);
-      if (a.plan) { const rp = this.state.rejectedPlans = this.state.rejectedPlans || []; rp.push({ title: a.plan.title, objective: a.plan.objective, evidence: lessons.firstFinding(raw) || String(raw || '').slice(0, 400), at: new Date().toISOString() }); this.state.rejectedPlans = rp.slice(-30); }
+      if (a.plan) { const rp = this.state.rejectedPlans = this.state.rejectedPlans || []; rp.push({ title: a.plan.title, objective: a.plan.objective, evidence: (lessons.firstFinding(raw) || String(raw || '').slice(0, 400)) + ' ' + (a.plan.evidence || []).join(' '), at: new Date().toISOString() }); this.state.rejectedPlans = rp.slice(-30); }
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
       return this.dispatch('discover', now);
     }
