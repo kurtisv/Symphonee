@@ -870,10 +870,10 @@ class MindAutopilot {
     this._rejectedError = null;
     let file = [];
     if (fs.existsSync(this.rejectedFile())) {
-      try { const j = JSON.parse(fs.readFileSync(this.rejectedFile(), 'utf8')); if (!j || !Array.isArray(j.entries)) throw new Error('unexpected shape'); file = j.entries; }
+      try { const j = JSON.parse(fs.readFileSync(this.rejectedFile(), 'utf8')); if (!j || !Array.isArray(j.entries)) throw new Error('unexpected shape'); if (j.entries.some((x) => !x || typeof x !== 'object' || Array.isArray(x) || typeof x.title !== 'string' || (x.vocab !== undefined && !Array.isArray(x.vocab)) || (x.items !== undefined && !Array.isArray(x.items)))) throw new Error('damaged entry'); file = j.entries; }
       catch (e) { this._rejectedError = 'rejected-plans file unreadable: ' + e.message; }
     }
-    const buffer = Array.isArray(this.state.rejectedPlans) ? this.state.rejectedPlans : [];
+    const buffer = (Array.isArray(this.state.rejectedPlans) ? this.state.rejectedPlans : []).filter((x) => x && typeof x === 'object' && typeof x.title === 'string');
     const byTitle = new Map(file.map((x) => [x.title, x]));
     for (const b of buffer) {
       const same = byTitle.get(b.title);
@@ -887,21 +887,25 @@ class MindAutopilot {
     const entries = this.loadRejected();
     const vocab = backlogLib.vocabOf(raw);
     const same = entries.find((x) => x.title === plan.title);
+    let touched = same;
     if (same) {
       same.vocab = [...new Set([...(same.vocab || []), ...vocab])].slice(0, 20000);
       same.items = [...new Set([...(same.items || []), ...backlogLib.reviewItems(raw)])].slice(0, 80);
       same.at = new Date().toISOString(); same.count = (same.count || 1) + 1;
     } else {
-      entries.push({ title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])].slice(0, 80), vocab: vocab.slice(0, 20000), count: 1, at: new Date().toISOString() });
+      touched = { title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])].slice(0, 80), vocab: vocab.slice(0, 20000), count: 1, at: new Date().toISOString() };
+      entries.push(touched);
     }
+    // On any failure ONLY what this call touched (plus what the buffer already held) goes to the state buffer: never a truncated copy of the whole store.
+    const keep = () => { const b = new Map((Array.isArray(this.state.rejectedPlans) ? this.state.rejectedPlans : []).filter((x) => x && typeof x.title === 'string').map((x) => [x.title, x])); b.set(touched.title, touched); this.state.rejectedPlans = [...b.values()]; };
     if (this._rejectedError) { // never replace a file we could not read: keep the entries in the state buffer, which loadRejected merges
-      this.state.rejectedPlans = entries.slice(-300); this.log('warn', 'rejected plans kept in the pilot state: ' + this._rejectedError); return;
+      keep(); this.log('warn', 'rejected plans kept in the pilot state: ' + this._rejectedError); return;
     }
     try {
       fs.mkdirSync(path.dirname(this.rejectedFile()), { recursive: true });
       const tmp = this.rejectedFile() + '.tmp'; fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries })); fs.renameSync(tmp, this.rejectedFile());
       delete this.state.rejectedPlans; // migrated or saved: the file is the single source
-    } catch (e) { this.state.rejectedPlans = entries.slice(-300); this.log('warn', 'rejected plans kept in the pilot state (file not writable): ' + e.message); }
+    } catch (e) { keep(); this.log('warn', 'rejected plans kept in the pilot state (file not writable): ' + e.message); }
   }
   backlogCtx() {
     const gatePath = path.join(this.repoRoot, '.ai-workspace', 'merge-gate', 'state.json');

@@ -420,3 +420,22 @@ test('final: legacy state entries are migrated, a damaged store refuses admissio
     assert.ok(f.pilot.state.rejectedPlans.some((x) => x.title === 'Fourth task about caches'));
   } finally { f.cleanup(); }
 });
+
+test('final 2: a write failure keeps the UPDATED entry even with hundreds of entries; a structurally damaged store fails closed instead of crashing', () => {
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    for (let i = 0; i < 305; i++) f.pilot.rememberRejected(plan({ title: 'Task number ' + i + ' about module m' + i }), 'VERDICT: FAIL\nfinding about module m' + i + ' and its settings');
+    assert.equal(f.pilot.loadRejected().length, 305);
+    const realRename = fs.renameSync; fs.renameSync = () => { throw new Error('disk full'); };
+    try { f.pilot.rememberRejected(plan({ title: 'Task number 0 about module m0' }), 'VERDICT: FAIL\nThe checkpoint file is read before it is written during resume.'); } finally { fs.renameSync = realRename; }
+    const task0 = plan({ title: 'Task number 0 about module m0', newEvidence: 'The checkpoint file is read before it is written during resume' });
+    assert.equal(f.pilot.admission(task0).code, 'blocked', 'the update survived the failed write');
+    for (const body of ['{"entries":[null]}', '{"entries":[{"title":5}]}', '{"entries":[{"title":"x","vocab":"nope"}]}']) {
+      fs.writeFileSync(f.pilot.rejectedFile(), body);
+      let r; assert.doesNotThrow(() => { r = f.pilot.admission(plan({ title: 'Anything new about colours', newEvidence: '' })); }, body);
+      assert.equal(r.code, 'unverifiable', body);
+      assert.doesNotThrow(() => f.pilot.backlogText());
+    }
+  } finally { f.cleanup(); }
+});
