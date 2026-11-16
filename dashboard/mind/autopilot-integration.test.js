@@ -11,6 +11,12 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { execFileSync } = require('child_process');
 const { MindAutopilot } = require('./autopilot');
+// Hermetic: the adaptive capacity is on by default and would otherwise read
+// this machine's real subscription usage (~/.codex/sessions). Every pilot
+// built here (including a second one) sees both subscriptions fresh and unused.
+const FRESH_USAGE = () => { const at = Date.now(); const w = [{ name: '5 h', usedPct: 0, resetsAt: at + 3600000 }];
+  return { claude: { windows: w, readAt: at, source: 'test' }, codex: { windows: w, readAt: at, source: 'test' } }; };
+MindAutopilot.prototype.readUsage = FRESH_USAGE;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const gitc = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
