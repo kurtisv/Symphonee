@@ -57,12 +57,7 @@
   .tools { margin-left: auto; display: flex; gap: 6px; }
   .tools button { font: inherit; font-size: 11px; color: var(--dim); background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; cursor: pointer; }
   .tools button:hover { color: var(--text); border-color: #454a63; }
-  .tools button:focus-visible, .attn button:focus-visible, .count:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
-  .attn { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; padding: 9px 14px; border-radius: 12px; background: #3a2f12; border: 1px solid #7a6326; color: #ffe29a; }
-  .attn[hidden] { display: none; }
-  .attn .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--amber); flex: none; animation: blink 1.2s infinite; }
-  .attn b { color: #fff3cf; }
-  .attn button { margin-left: auto; font: inherit; font-size: 12px; font-weight: 700; color: #3a2f12; background: var(--amber); border: 0; border-radius: 999px; padding: 4px 14px; cursor: pointer; }
+  .tools button:focus-visible, .ask-card button:focus-visible, .ask-card input:focus-visible, .count:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
   .tip { position: absolute; z-index: 3; pointer-events: none; max-width: 240px; padding: 6px 10px; border-radius: 8px; font-size: 12px; line-height: 1.35;
     background: rgba(17,18,26,.94); border: 1px solid var(--line); color: var(--text); box-shadow: 0 6px 18px rgba(0,0,0,.4); }
   .tip[hidden], .calm[hidden] { display: none; }
@@ -71,6 +66,30 @@
   #sheet .sh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   #sheet b { color: var(--text); font-size: 14px; }
   #sheet .st { margin-top: 4px; overflow-wrap: anywhere; }
+  /* Requests for the user: one card each, with its own answer controls */
+  .asks { margin-bottom: 10px; display: grid; gap: 10px; }
+  .asks[hidden] { display: none; }
+  .asks-h { display: flex; align-items: center; gap: 8px; color: var(--amber); font-size: 12px; text-transform: uppercase; letter-spacing: .09em; }
+  .asks-h .n { background: var(--amber); color: #3a2f12; border-radius: 999px; padding: 0 8px; font-size: 11px; font-weight: 800; letter-spacing: 0; }
+  .ask-card { padding: 12px 14px; border-radius: 12px; background: #3a2f12; border: 1px solid #7a6326; color: #ffe29a; }
+  .ask-card .ask-h { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .ask-card .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--amber); flex: none; animation: blink 1.2s infinite; }
+  .ask-card .ask-h b { color: #fff3cf; }
+  .ask-card .src { margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #c9a84a; }
+  .ask-card .ask-t { font-weight: 700; color: #fff3cf; margin-bottom: 6px; overflow-wrap: anywhere; }
+  .ask-card .ask-ref { color: #c9a84a; font-size: 11px; margin: -2px 0 6px; }
+  .ask-card pre.ask { margin: 0 0 8px; padding: 8px 10px; max-height: 150px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+    background: #11121a; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: 12px/1.45 Consolas, "Cascadia Mono", monospace; }
+  .ask-card pre.ask.plain { font-family: inherit; font-size: 13px; }
+  .ask-card .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .ask-card button { font: inherit; font-size: 12px; font-weight: 700; color: #3a2f12; background: var(--amber); border: 0; border-radius: 999px; padding: 5px 14px; cursor: pointer; }
+  .ask-card button.alt { color: #ffd0d8; background: #5a2330; }
+  .ask-card button:disabled { opacity: .5; cursor: default; }
+  .ask-card .free { display: flex; gap: 6px; }
+  .ask-card input { flex: 1; min-width: 0; font: inherit; font-size: 12px; color: var(--text); background: #11121a; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  .ask-card .rs, .asks .rs { margin-top: 6px; min-height: 16px; font-size: 11px; color: var(--dim); }
+  .ask-card .rs.err, .asks .rs.err { color: var(--red); } .ask-card .rs.ok { color: var(--green); }
+    background: #11121a; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: 12px/1.45 Consolas, "Cascadia Mono", monospace; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--faint); font-size: 11px; }
   .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 
@@ -151,13 +170,13 @@
   <section aria-labelledby="hOffice">
     <div class="sechead"><h2 id="hOffice">Le bureau</h2>
       <span class="tools"><button type="button" id="calmBtn" aria-pressed="true" title="Activer ou couper les animations">Animations : oui</button></span></div>
-    <div id="attn" class="attn" role="status" hidden></div>
+    <div id="attn" class="asks" aria-live="polite" hidden></div>
     <div id="stage" class="stage">
       <canvas id="c" width="480" height="270" tabindex="0" role="application" aria-label="Bureau des agents. Fleches gauche et droite pour passer d'un agent a l'autre, Echap pour deselectionner. Les details sont aussi dans les cartes plus bas."></canvas>
       <div id="tip" class="tip" hidden aria-hidden="true"></div>
       <div id="calm" class="calm" hidden>Le bureau est calme : personne au travail.</div>
     </div>
-    <div id="sheet" aria-live="polite">Clique sur un personnage pour voir sa fiche.</div>
+    <div id="sheet"><div id="sheetInfo" aria-live="polite">Clique sur un personnage pour voir sa fiche.</div></div>
     <div class="legend" aria-hidden="true"><span><i style="background:#5fd39a"></i>travaille</span><span><i style="background:#7aa8ff"></i>reflechit</span><span><i style="background:#ffc95c"></i>attend ta reponse</span><span><i style="background:#ff7a8f"></i>echec</span><span><i style="background:#6f748c"></i>au repos</span></div>
   </section>
   <section aria-labelledby="hAlerts"><h2 id="hAlerts">Ce qui coince</h2><div id="alerts"><div class="empty">Diagnostic en cours...</div></div></section>
@@ -267,7 +286,9 @@
       out.push({
         id: 'term:' + t.id, kind: 'terminal', cli: String(cli), model: '',
         title: t.label ? 'Terminal ' + t.label : (t.id === 'main' ? 'Terminal principal' : 'Terminal ' + t.id),
-        state: state, since: act.firstSeen || now, endedAt: null
+        state: state, since: act.firstSeen || now, endedAt: null,
+        // What the terminal is asking, so the user can answer from the office.
+        termId: String(t.id), ask: state === 'waiting' ? cleanAsk(act.tail) : '', askSig: state === 'waiting' ? String(act.sig || '') : ''
       });
     });
 
@@ -296,6 +317,74 @@
   // ---------------------------------------------------------------------
   // Live source (inside Symphonee) and demo source (opened as a file)
   // ---------------------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // Answering a terminal that waits for the user. Only terminals: that is the
+  // one place where a keystroke is a real answer. The page shows the exact
+  // question, and refuses to send if the terminal changed since it was read.
+  // ---------------------------------------------------------------------
+  // Recent screen text of ANY terminal, kept by the terminal hub (the
+  // orchestrator's own read is empty for ordinary terminals).
+  var TERM_TAIL_URL = '/api/browser/server-log?lines=12&termId=';
+
+  // Last readable lines of a terminal: no colour codes, no control characters.
+  function cleanAsk(tail) {
+    var s = String(tail || '').replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '').replace(/\x1b[()][0-9A-B]/g, '').replace(/\r/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+    var lines = s.split('\n').map(function (l) { return l.replace(/\s+$/, ''); }).filter(function (l) { return l.trim(); });
+    return lines.slice(-8).join('\n').slice(-600);
+  }
+
+  // Buttons offered for a question: its numbered options, or Yes/No for a
+  // (y/n) prompt, and always "Enter" (accept the default).
+  function replyChoices(ask) {
+    var out = [], m, re = /^\s*[>*\u276f]?\s*(\d)\.\s+(.{1,60})/gm, text = String(ask || '');
+    while ((m = re.exec(text)) && out.length < 4) out.push({ act: 'opt:' + m[1], label: m[1] + '. ' + m[2].trim() });
+    if (!out.length && /\(y\/n\)|\[y\/n\]|\by\/n\b/i.test(text)) out = [{ act: 'yes', label: 'Oui (y)' }, { act: 'no', label: 'Non (n)' }];
+    out.push({ act: 'enter', label: 'Entree' });
+    return out;
+  }
+
+  // The exact keystrokes for an action, or null when there is nothing to send.
+  function payloadFor(act, text) {
+    if (act === 'enter') return '\r';
+    if (act === 'yes') return 'y\r';
+    if (act === 'no') return 'n\r';
+    if (/^opt:\d$/.test(act)) return act.slice(4);                 // a menu digit is taken at once, no Enter
+    if (act === 'text') {
+      var t = String(text || '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 500);
+      return t ? t + '\r' : null;
+    }
+    return null;
+  }
+
+  function canReply(a) { return !!(a && a.kind === 'terminal' && a.state === 'waiting' && a.termId); }
+
+  function openSocket() {
+    return new Promise(function (resolve, reject) {
+      var ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+      var timer = setTimeout(function () { try { ws.close(); } catch (e) { /* already closed */ } reject(new Error('connexion au terminal impossible')); }, 5000);
+      ws.onopen = function () { clearTimeout(timer); resolve(ws); };
+      ws.onerror = function () { clearTimeout(timer); reject(new Error('connexion au terminal impossible')); };
+    });
+  }
+
+  // Re-reads the terminal first: if it is no longer the screen the user read
+  // (askSig differs), nothing is sent. deps lets tests inject fakes.
+  function sendReply(termId, payload, expectSig, deps) {
+    deps = deps || {};
+    var read = deps.getJson || getJson, open = deps.openSocket || openSocket;
+    return read(TERM_TAIL_URL + encodeURIComponent(termId)).then(function (o) {
+      // The route falls back to ANOTHER terminal when the id is unknown: never answer that one.
+      if (!o || o.termId !== termId) { var gone = new Error('terminal introuvable'); gone.code = 'GONE'; throw gone; }
+      var tail = String((o && o.output) || ''), total = (o && o.totalLines) || 0;
+      if (expectSig && total + ':' + tail.length + ':' + hash(tail) !== expectSig) { var e = new Error('le terminal a change'); e.code = 'CHANGED'; throw e; }
+      return open();
+    }).then(function (ws) {
+      ws.send(JSON.stringify({ type: 'input', termId: termId, data: payload }));
+      setTimeout(function () { try { ws.close(); } catch (e) { /* already closed */ } }, 600);
+      return true;
+    });
+  }
+
   var termActivity = {};
   var aiByTerm = {};
   var lastDetect = 0;
@@ -376,13 +465,17 @@
         getJson('/api/orchestrator/heartbeats').catch(function () { liveSourcesPartial = true; return []; }),
         getJson('/api/terminals/diag').catch(function () { liveSourcesPartial = true; return { terminals: [] }; }),
         getJson('/api/symphonee/activity').catch(function () { liveSourcesPartial = true; return null; }),
-        getJson('/api/orchestrator/status').catch(function () { liveSourcesPartial = true; return null; })
+        getJson('/api/orchestrator/status').catch(function () { liveSourcesPartial = true; return null; }),
+        getJson('/api/graph-runs/pending-approvals').catch(function () { return null; }),
+        getJson('/api/decisions').catch(function () { return null; })      // absent until the server that has it is restarted
       ]);
     }).then(function (res) {
+      asksData = { approvals: Array.isArray(res[5]) ? res[5] : [], decisions: res[6] && Array.isArray(res[6].pending) ? res[6] : { pending: [] } };
       var terms = (res[2] && res[2].terminals) || [];
       var withAi = terms.filter(function (t) { return aiByTerm[t.id]; });
       return Promise.all(withAi.map(function (t) {
-        return getJson('/api/orchestrator/terminal-output?lines=12&termId=' + encodeURIComponent(t.id)).then(function (o) {
+        return getJson(TERM_TAIL_URL + encodeURIComponent(t.id)).then(function (o) {
+          if (!o || o.termId !== t.id) throw new Error('terminal introuvable');   // see sendReply: the route may answer for another terminal
           var tail = String((o && o.output) || '');
           var total = (o && o.totalLines) || 0;
           var a = termActivity[t.id] || (termActivity[t.id] = { firstSeen: Date.now(), lastChange: Date.now(), sig: '' });
@@ -402,13 +495,17 @@
     var now = Date.now(), t = (now - demoStart) / 1000;
     var cyc = function (period, offset) { return Math.floor((t + offset) / period); };
     var list = [
-      { id: 'term:main', kind: 'terminal', cli: 'claude', model: '', title: 'Terminal principal', state: ['working', 'working', 'waiting', 'working', 'thinking'][cyc(7, 0) % 5], since: demoStart },
+      { id: 'term:main', kind: 'terminal', cli: 'claude', model: '', title: 'Terminal principal', state: ['working', 'working', 'waiting', 'working', 'thinking'][cyc(7, 0) % 5], since: demoStart,
+        termId: 'main', ask: 'Do you want to run the tests?\n 1. Yes\n 2. Yes, and do not ask again\n 3. No (demo: nothing is sent)', askSig: 'demo' },
       { id: 'task:a1', kind: 'task', cli: 'codex', model: 'gpt-5.5', title: 'Revue de code adverse 10, lecture seule', state: ['working', 'thinking', 'working'][cyc(9, 2) % 3], since: demoStart + 4000 },
       { id: 'task:b2', kind: 'task', cli: 'gemini', model: 'gemini-pro', title: 'Resumer les changements du lot B', state: 'working', since: demoStart + 9000 },
       { id: 'task:c3', kind: 'task', cli: 'qwen', model: 'qwen2.5:1.5b', title: 'Classer la demande (local)', state: ['working', 'done'][Math.min(1, cyc(16, 0))], since: demoStart + 2000, endedAt: demoStart + 16000 },
       { id: 'task:d4', kind: 'task', cli: 'grok', model: 'grok-4', title: 'Chercher les appels restants', state: ['working', 'working', 'failed'][Math.min(2, cyc(11, 0))], since: demoStart + 6000, endedAt: demoStart + 22000 },
       { id: 'term:term-3', kind: 'terminal', cli: 'copilot', model: '', title: 'Terminal Shell 2', state: ['idle', 'working'][cyc(13, 5) % 2], since: demoStart }
     ];
+    asksData = { approvals: [{ runId: 'gr_demo', runName: 'Boucle PleinSens (demo)', nodeId: 'review', title: 'Valider le plan avant de lancer la mesure ?' }],
+      decisions: { pending: [{ id: 'dec_demo0001', from: 'Codex', title: 'R2 : consigner l\'exception de sequence M0 ?', body: 'Mesure de reference avant le controle M0 habituel.\nDecision a consigner au registre 2.3.', ref: 'fiche C1, section 16.8',
+        options: [{ id: 'oui', label: 'Oui, consigner' }, { id: 'non', label: 'Non' }], allowText: true }] } };
     return Promise.resolve(list.filter(function (a) { return now >= a.since; }));
   }
 
@@ -948,6 +1045,164 @@
       + (sub ? '<span>' + esc(sub) + '</span>' : '') + '<span>' + esc(when) + '</span></div><div class="st">' + esc(a.title) + '</div>';
   }
 
+  // ---------------------------------------------------------------------
+  // "A toi de repondre": every request for the user's opinion, in one place.
+  // Three sources: a terminal waiting at a prompt, a graph-run approval gate,
+  // and a question an agent posted (POST /api/decisions). Each card carries its
+  // own answer controls. The section is rebuilt only when the SET of requests
+  // changes, so what the user is typing is never wiped by a refresh.
+  // ---------------------------------------------------------------------
+  var asksData = { approvals: [], decisions: { pending: [] } };
+  var asksNow = [];               // the requests currently shown
+  var asksSig = '';               // what the DOM was last built from
+  var drafts = {};                // key -> text typed but not sent yet
+  var askNotes = {};              // key -> { ok, text, at }: the last result of an answer
+  var askLock = {};               // key -> time until which a second click is ignored
+  var askNotice = null;           // { text, at }: shown at the top of the section
+
+  function postJson(url, body) {
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error((j && j.error) || 'erreur ' + r.status);
+        return j;
+      });
+    });
+  }
+
+  // Merge the three sources into one list of requests.
+  function buildAsks(list, data) {
+    var out = [];
+    (list || []).forEach(function (a) {
+      if (!canReply(a)) return;
+      out.push({ key: 't|' + a.termId + '|' + a.askSig, kind: 'terminal', who: a.name || palFor(a.cli).name, title: a.title + ' attend ta reponse',
+        body: a.ask || '', empty: 'Rien de lisible : ouvre ce terminal pour voir la question.', choices: replyChoices(a.ask), allowText: true, termId: a.termId, sig: a.askSig });
+    });
+    ((data && data.approvals) || []).forEach(function (p) {
+      if (!p || !p.runId || !p.nodeId) return;
+      out.push({ key: 'a|' + p.runId + '|' + p.nodeId, kind: 'approval', who: String(p.runName || 'Graph run'), title: String(p.title || 'Approuver ?'), body: '',
+        choices: [{ act: 'approve', label: 'Approuver' }, { act: 'reject', label: 'Refuser' }], allowText: true, textHint: 'Une note (facultatif)', runId: String(p.runId), nodeId: String(p.nodeId) });
+    });
+    var pending = (data && data.decisions && data.decisions.pending) || [];
+    pending.forEach(function (d) {
+      if (!d || !d.id) return;
+      var opts = Array.isArray(d.options) ? d.options : [];
+      out.push({ key: 'd|' + d.id, kind: 'decision', who: String(d.from || 'Un agent'), title: String(d.title || ''), body: String(d.body || ''), ref: d.ref ? String(d.ref) : '',
+        choices: opts.map(function (o) { return { act: 'opt:' + o.id, label: String(o.label) }; }), allowText: !!d.allowText,
+        textHint: opts.length ? 'Ou precise (facultatif)' : 'Ecris ta reponse, puis Entree', decisionId: String(d.id) });
+    });
+    return out;
+  }
+
+  function askCardHtml(it, draft, note) {
+    var kinds = { terminal: 'terminal', approval: 'approbation', decision: 'question' };
+    var textSends = it.kind === 'terminal' || !it.choices.length;      // otherwise the text is a note attached to a choice
+    var buttons = it.choices.map(function (c) { return '<button type="button" data-act="' + esc(c.act) + '"' + (c.act === 'reject' ? ' class="alt"' : '') + '>' + esc(c.label) + '</button>'; }).join('');
+    var free = it.allowText || !it.choices.length
+      ? '<div class="free"><input type="text" maxlength="500" autocomplete="off" data-draft="' + esc(it.key) + '" placeholder="' + esc(it.textHint || 'Ou ecris ta reponse, puis Entree') + '" aria-label="Ta reponse" value="' + esc(draft || '') + '">'
+        + (textSends ? '<button type="button" data-act="text">Envoyer</button>' : '') + '</div>' : '';
+    var body = it.kind === 'terminal' ? '<pre class="ask">' + esc(it.body || it.empty) + '</pre>' : (it.body ? '<pre class="ask plain">' + esc(it.body) + '</pre>' : '');
+    var fresh = note && Date.now() - note.at < 20000;
+    return '<article class="ask-card" data-key="' + esc(it.key) + '"><div class="ask-h"><span class="pip"></span><b>' + esc(it.who) + '</b><span class="src">' + esc(kinds[it.kind] || '') + '</span></div>'
+      + '<div class="ask-t">' + esc(it.title) + '</div>' + (it.ref ? '<div class="ask-ref">' + esc(it.ref) + '</div>' : '') + body
+      + '<div class="choices">' + buttons + '</div>' + free
+      + '<div class="rs' + (fresh ? (note.ok ? ' ok' : ' err') : '') + '" role="status">' + (fresh ? esc(note.text) : '') + '</div></article>';
+  }
+
+  function renderAsks(items) {
+    asksNow = items;
+    // A notice ("the terminal changed, nothing was sent") stays visible for a
+    // while even when no request is left, so a card never just vanishes.
+    var noticeOn = !!(askNotice && Date.now() - askNotice.at < 20000);
+    var box = el('attn'), sig = items.map(function (i) { return i.key; }).join(',') + (noticeOn ? '#' + askNotice.at : '');
+    if (sig === asksSig) return;
+    asksSig = sig;
+    var active = document.activeElement, focusKey = active && active.getAttribute ? active.getAttribute('data-draft') : null;
+    if (!items.length && !noticeOn) { box.innerHTML = ''; box.hidden = true; return; }
+    var notice = noticeOn ? '<div class="rs err" role="status">' + esc(askNotice.text) + '</div>' : '';
+    box.innerHTML = '<div class="asks-h"><b>' + (items.length ? 'A toi de repondre' : 'Information') + '</b>' + (items.length ? '<span class="n">' + items.length + '</span>' : '') + '</div>' + notice
+      + items.map(function (it) { return askCardHtml(it, drafts[it.key], askNotes[it.key]); }).join('');
+    box.hidden = false;
+    if (focusKey && box.querySelector) {
+      var back = box.querySelector('input[data-draft="' + String(focusKey).replace(/"/g, '') + '"]');
+      if (back) back.focus();
+    }
+  }
+
+  // Send one answer to wherever the request came from. deps lets tests inject fakes.
+  function answerAsk(item, act, text, deps) {
+    deps = deps || {};
+    var post = deps.postJson || postJson, send = deps.sendReply || sendReply;
+    var note = String(text || '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 500);
+    if (item.kind === 'terminal') {
+      var payload = payloadFor(act, text);
+      if (payload == null) return Promise.reject(new Error('Ecris d\'abord ta reponse.'));
+      return send(item.termId, payload, item.sig, deps).then(function () { return 'Envoye a ' + item.who + '.'; });
+    }
+    if (item.kind === 'approval') {
+      if (act !== 'approve' && act !== 'reject') return Promise.reject(new Error('Choix inconnu.'));
+      return post('/api/graph-runs/' + encodeURIComponent(item.runId) + '/approve/' + encodeURIComponent(item.nodeId), { approved: act === 'approve', note: note })
+        .then(function () { return act === 'approve' ? 'Approuve.' : 'Refuse.'; });
+    }
+    if (item.kind === 'decision') {
+      var body = { id: item.decisionId };
+      if (/^opt:/.test(act)) { body.choice = act.slice(4); if (item.allowText && note) body.text = note; }
+      else if (act === 'text') { if (!note) return Promise.reject(new Error('Ecris d\'abord ta reponse.')); body.text = note; }
+      else return Promise.reject(new Error('Choix inconnu.'));
+      return post('/api/decisions/answer', body).then(function () { return 'Reponse enregistree : l\'agent la recevra.'; });
+    }
+    return Promise.reject(new Error('Demande inconnue.'));
+  }
+
+  function setAskNote(key, ok, text) {
+    askNotes[key] = { ok: ok, text: text, at: Date.now() };
+    var box = el('attn');
+    if (!box.querySelectorAll) return;
+    Array.prototype.forEach.call(box.querySelectorAll('.ask-card'), function (c) {
+      if (c.getAttribute('data-key') !== key) return;
+      var s = c.querySelector('.rs');
+      if (s) { s.className = 'rs ' + (ok ? 'ok' : 'err'); s.textContent = text; }
+    });
+  }
+
+  function runAsk(item, card, act) {
+    if (Date.now() < (askLock[item.key] || 0)) return;
+    var input = card.querySelector ? card.querySelector('input[data-draft]') : null, text = input ? input.value : '';
+    askLock[item.key] = Date.now() + 2500;
+    setAskNote(item.key, true, 'Envoi en cours...');
+    var run = forcedDemo ? function () { return new Promise(function (r) { setTimeout(function () { r('Demo : rien n\'est envoye.'); }, 300); }); } : answerAsk;
+    run(item, act, text).then(function (msg) {
+      setAskNote(item.key, true, msg + ' Mise a jour dans quelques secondes.');
+      if (input) { input.value = ''; delete drafts[item.key]; }
+      setTimeout(poll, 800);
+    }, function (err) {
+      askLock[item.key] = 0;
+      if (err && err.code === 'CHANGED') {
+        askNotice = { text: 'Le terminal a change depuis ta lecture : rien n\'a ete envoye. Relis la question mise a jour.', at: Date.now() };
+        setAskNote(item.key, false, 'Rien n\'a ete envoye : le terminal a change.');
+        asksSig = ''; poll();
+      } else setAskNote(item.key, false, (err && err.message || 'Envoi impossible') + '.' + (item.kind === 'terminal' ? ' Reponds dans le terminal.' : ''));
+    });
+  }
+  function askFromEvent(e) {
+    var card = e.target && e.target.closest ? e.target.closest('.ask-card') : null;
+    if (!card) return null;
+    var key = card.getAttribute('data-key'), item = asksNow.filter(function (i) { return i.key === key; })[0];
+    return item ? { item: item, card: card } : null;
+  }
+  el('attn').addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('[data-act]') : null, hit = b && askFromEvent(e);
+    if (hit) runAsk(hit.item, hit.card, b.getAttribute('data-act'));
+  });
+  el('attn').addEventListener('input', function (e) {
+    var k = e.target && e.target.getAttribute ? e.target.getAttribute('data-draft') : null;
+    if (k) drafts[k] = e.target.value;
+  });
+  el('attn').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' || !e.target || !e.target.getAttribute || !e.target.getAttribute('data-draft')) return;
+    var hit = askFromEvent(e);
+    if (hit && (hit.item.kind === 'terminal' || !hit.item.choices.length)) { e.preventDefault(); runAsk(hit.item, hit.card, 'text'); }
+  });
+
   // "22:00-04:00" -> [[22,24],[0,4]] in hours, for the day bar.
   function windowSpans(text) {
     var m = String(text || '').match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
@@ -1005,7 +1260,7 @@
     var now = Date.now(), order = { waiting: 0, working: 1, thinking: 2, failed: 3, unknown: 4, idle: 5, stopped: 6, done: 7 };
     var desks = deskAgents(list).sort(function (a, b) { return (order[a.state] - order[b.state]) || (a.since - b.since); });
     var active = list.filter(function (a) { return a.state === 'working' || a.state === 'thinking'; }).length;
-    var waiting = list.filter(function (a) { return a.state === 'waiting'; }).length;
+    var asks = buildAsks(list, asksData), waiting = asks.length;   // everything that asks for the user, not only terminals
     var failed = list.filter(function (a) { return a.state === 'failed'; }).length;
     // The counters are buttons: they jump to the next agent in that state.
     function chip(kind, n, label, style) {
@@ -1014,14 +1269,7 @@
     el('counts').innerHTML = chip('working', active, 'au travail', '')
       + chip('waiting', waiting, 'attend une reponse', 'border-color:#7a6326;color:var(--amber)')
       + chip('failed', failed, 'en echec', 'border-color:#6e3040;color:var(--red)');
-    // Strip above the office: the one thing that needs the user.
-    var waiters = desks.filter(function (a) { return a.state === 'waiting'; }), attn = el('attn');
-    if (waiters.length) {
-      var w = waiters[0], wn = w.kind === 'loop' ? w.name : (w.name || palFor(w.cli).name);
-      attn.innerHTML = '<span class="pip"></span><span><b>' + esc(wn) + '</b> attend ta reponse' + (shortLabel(w) ? ' (' + esc(shortLabel(w)) + ')' : '')
-        + (waiters.length > 1 ? ' et ' + (waiters.length - 1) + ' autre(s)' : '') + '</span><button type="button" data-jump="waiting">Voir</button>';
-      attn.hidden = false;
-    } else { attn.innerHTML = ''; attn.hidden = true; }
+    renderAsks(asks);
     el('calm').hidden = desks.length > 0;
     if (cv.setAttribute) cv.setAttribute('aria-label', 'Bureau des agents : ' + active + ' au travail, ' + waiting + ' en attente de ta reponse, ' + failed + ' en echec. Fleches gauche et droite pour passer d\'un agent a l\'autre.');
     el('nDesks').textContent = String(desks.length);
@@ -1037,25 +1285,31 @@
     el('alerts').innerHTML = alertsHtml(auxiliary.health);
     el('team').innerHTML = teamHtml();
     var chosen = selectedId && list.filter(function (a) { return a.id === selectedId; })[0];
-    el('sheet').innerHTML = sheetHtml(chosen || null, now);
+    el('sheetInfo').innerHTML = sheetHtml(chosen || null, now);
   }
   // Jump to the next agent in a given state (counters and the alert strip).
   function jumpTo(kind) {
+    if (kind === 'waiting') {                         // the requests live in the "A toi de repondre" section
+      var ready = deskAgents(lastList).filter(function (a) { return canReply(a); });
+      if (ready.length) selectedId = ready[0].id;
+      render(lastList);
+      var sec = el('attn');
+      if (!sec.hidden && sec.scrollIntoView) sec.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
+      return;
+    }
     var states = kind === 'working' ? ['working', 'thinking'] : [kind];
     var pool = deskAgents(lastList).filter(function (a) { return states.indexOf(a.state) >= 0; });
     if (!pool.length) return;
     var at = pool.map(function (a) { return a.id; }).indexOf(selectedId);
     selectedId = pool[(at + 1) % pool.length].id;
     render(lastList);
-    var st = el('stage');
-    if (st.scrollIntoView) st.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
+    if (el('stage').scrollIntoView) el('stage').scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
   }
   function onJump(e) {
     var b = e.target.closest ? e.target.closest('[data-jump]') : null;
     if (b && !b.disabled) jumpTo(b.getAttribute('data-jump'));
   }
   el('counts').addEventListener('click', onJump);
-  el('attn').addEventListener('click', onJump);
 
   function syncCalmButton() {
     var b = el('calmBtn');
@@ -1143,7 +1397,7 @@
 
   // Exposed for tests only.
   window.__agentOffice = { buildAgents: buildAgents, taskState: taskState, taskTitle: taskTitle, providerRows: providerRows, mergeTasks: mergeTasks, windowSpans: windowSpans, deskAgents: deskAgents,
-    shortLabel: shortLabel, sheetHtml: sheetHtml, actorAt: actorAt, isBusy: isBusy, setCalm: function (v) { calm = !!v; if (calm) particles.length = 0; }, scene: { actors: actors, particles: particles, deskOwner: deskOwner, syncActors: syncActors, step: step, DOOR: DOOR, overflow: function () { return overflow; } } };
+    shortLabel: shortLabel, sheetHtml: sheetHtml, cleanAsk: cleanAsk, replyChoices: replyChoices, payloadFor: payloadFor, canReply: canReply, sendReply: sendReply, buildAsks: buildAsks, askCardHtml: askCardHtml, answerAsk: answerAsk, actorAt: actorAt, isBusy: isBusy, setCalm: function (v) { calm = !!v; if (calm) particles.length = 0; }, scene: { actors: actors, particles: particles, deskOwner: deskOwner, syncActors: syncActors, step: step, DOOR: DOOR, overflow: function () { return overflow; } } };
 
   syncCalmButton(); fit(); tickClock(); poll(); startLoop(); setInterval(poll, 3000); setInterval(function () { tickClock(); render(lastList); }, 5000);
 })();
