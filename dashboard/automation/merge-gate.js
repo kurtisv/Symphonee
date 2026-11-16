@@ -312,8 +312,10 @@ async function step(c, repo, baseSha, state, io) {
   if (pushesMerge(repo) && c.evaluatedMerge && ['new', 'pr-open', 'ci-green', 'waiting-governance', 'waiting-pace', 'refused'].includes(c.status) // 'new': a push that failed AFTER being accepted
       && c.pushIntent && c.pushIntent === c.evaluatedMerge // only if THIS gate recorded, before pushing, that it was about to push this very commit
       && !state.merges.some((m) => m.key === c.key && m.sha === c.evaluatedMerge)) {
-    let landed = false;
-    try { landed = Boolean(io.isAncestor(repo.path, c.evaluatedMerge, baseSha)); } catch (_) { landed = false; }
+    let landed = false, unknown = false;
+    try { const r = io.isAncestor(repo.path, c.evaluatedMerge, baseSha); landed = r === true; unknown = r === null || r === undefined; } catch (_) { unknown = true; }
+    // Could not tell whether the intended push landed: wait for the next pass, never go on with a normal verification that could push it again.
+    if (unknown) return;
     if (landed) {
       c.mergeSha = c.evaluatedMerge;
       setStatus(c, 'merged', 'reconciliation : la fusion testee est deja dans ' + repo.base + ' (interruption avant l enregistrement)', io);

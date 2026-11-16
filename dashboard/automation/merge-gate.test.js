@@ -533,6 +533,20 @@ test('a candidate holding a push intent is neither dropped when its branch disap
   assert.equal(only(state).status, 'merged'); assert.equal(state.merges.length, 1);
 });
 
+test('push intent: a first ancestry check that says yes and a second that cannot tell never resumes normal processing', async () => {
+  const PT = { ...REPO, mergeMode: 'push-tested', base: 'integration' };
+  const { w, io } = world(); w.marker = true;
+  const M = 'm'.repeat(40); const git = io.git;
+  io.git = (cwd, args) => { const x = args.join(' '); if (x === 'rev-parse origin/integration') return w.base; if (x.startsWith('show origin/integration:AGENTS.md')) return '... ' + gate.MARK; return git(cwd, args); };
+  const state = {};
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  const c = only(state); c.pushIntent = M; c.evaluatedMerge = M; c.status = 'new'; io.readPilot = () => ({ history: [] });
+  let calls = 0; io.isAncestor = () => (++calls === 1 ? true : null);
+  const chains = w.chainRuns, pushes = w.pushes.length;
+  await gate.pass({ enabled: true, repos: [PT] }, state, io);
+  assert.equal(w.chainRuns, chains); assert.equal(w.pushes.length, pushes); assert.notEqual(only(state).status, 'merged');
+});
+
 test('regenerate without a mode that pushes the tested merge: the repository is skipped', async () => {
   const { w, io } = world(); w.marker = true;
   await gate.pass({ enabled: true, repos: [{ ...REPO, regenerate: [{ cmd: ['node', 'x'] }] }] }, {}, io);
