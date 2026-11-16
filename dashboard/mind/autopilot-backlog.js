@@ -100,7 +100,7 @@ function inFlight({ history = [], queue = [], gatePath = null, repoName = null, 
   for (const q of queue) if (q && q.plan) items.push({ where: 'queued', title: q.plan.title });
   const gr = readGate(gatePath), g = gr.data || null;
   if (gr.error) items.degraded = gr.error;
-  if (g && Object.values(g.candidates || {}).some((c) => !c || typeof c !== 'object')) items.degraded = 'a candidate entry of the gate state is damaged';
+  if (g && Object.values(g.candidates || {}).some((c) => !c || typeof c !== 'object' || Array.isArray(c) || typeof c.repo !== 'string' || typeof c.status !== 'string' || typeof c.branch !== 'string')) items.degraded = 'a candidate entry of the gate state is damaged';
   if (g) for (const c of Object.values(g.candidates || {})) {
     if (!c || typeof c !== 'object') continue;
     if ((repoName && c.repo !== repoName) || (c.origin && c.origin.pilot && c.origin.pilot !== pilotId)) continue;
