@@ -440,7 +440,7 @@ class MindAutopilot {
       verify: guard.validCommands(def.verify || []),
       linkDirs: (def.linkDirs || []).map(String).slice(0, 8),
       // selfProtect: the engine's own permissions, approval criteria, merge policy, isolation and memory-certification rules are protected by CODE.
-      protectedPaths: [...new Set([...(def.protectedPaths || []).map(String), ...(def.selfProtect === true ? backlogLib.ENGINE_PROTECTED : [])])].slice(0, 80),
+      protectedPaths: [...new Set([...(def.selfProtect === true ? backlogLib.ENGINE_PROTECTED : []), ...(def.protectedPaths || []).map(String)])].slice(0, 120),
       selfProtect: def.selfProtect === true,
       // backlog: concrete priorities and admission rules enforced by the engine (strict refuses unjustified, duplicate and blocked tasks).
       backlog: def.backlog && typeof def.backlog === 'object' ? { strict: def.backlog.strict !== false, maxAttempts: Math.min(Math.max(Number(def.backlog.maxAttempts) || 3, 2), 6) } : null,
@@ -501,7 +501,7 @@ class MindAutopilot {
   recoverAfterRestart(now = Date.now()) {
     const a = this.state.active;
     // Reconcile the recorded state with what exists on disk BEFORE resuming: a task whose worktree is gone cannot be resumed.
-    if (a.worktree && a.worktree.path && !fs.existsSync(a.worktree.path)) {
+    if (this.def.backlog && this.state.enabled && a.worktree && a.worktree.path && !fs.existsSync(a.worktree.path)) {
       const m = this.state.metrics = this.state.metrics || {}; m.reconciled = (m.reconciled || 0) + 1;
       this.log('resumed', 'Restart: the worktree of the active task no longer exists (' + String(a.worktree.path).slice(-60) + '); task archived, nothing resumed');
       return this.complete('interrupted', 'worktree absent after restart');
@@ -863,7 +863,11 @@ class MindAutopilot {
   backlogCtx() {
     const gatePath = path.join(this.repoRoot, '.ai-workspace', 'merge-gate', 'state.json');
     let branches = [];
-    try { const r = runGit(this.state.repoPath, ['branch', '-a', '--list', '*mind-autopilot/*']); branches = String(r.stdout || '').split('\n').map((x) => x.replace(/^[*+\s]+/, '').trim()).filter(Boolean); } catch (_) { /* no git */ }
+    // Only RECENT branches (14 days) count as in-flight work: a stale branch must not starve distinct tasks.
+    try {
+      const r = runGit(this.state.repoPath, ['for-each-ref', '--format=%(refname:short) %(committerdate:unix)', 'refs/heads/mind-autopilot/', 'refs/remotes/origin/mind-autopilot/']);
+      branches = String(r.stdout || '').split('\n').map((x) => x.trim().split(' ')).filter((p) => p[0] && Date.now() / 1000 - Number(p[1]) < 14 * 86400).map((p) => p[0]);
+    } catch (_) { /* no git */ }
     const ctx = { history: this.state.history || [], queue: this.state.queue || [], events: this.state.events || [], error: this.state.error || null,
       gatePath, repoName: this.state.repoName || null, pilotId: this.id, branches, opts: this.def.backlog || {} };
     ctx.signals = backlogLib.collectBacklog(ctx);
@@ -1695,7 +1699,7 @@ class MindAutopilot {
       const endedAt = Math.max((last && last.completedAt) || 0, Date.now());
       this.state.pendingCosts = [...(this.state.pendingCosts || []), { before: a.usageBefore, launchedAt: a.launchedAt || null, endedAt, done: {} }].slice(-20);
     }
-    this.state.history.push({ category: a.plan?.category || null, severity: a.plan?.severity || null, proof: a.plan?.proof || null, proofRun: a.proofRun || null,
+    this.state.history.push({ category: a.plan?.category || null, severity: a.plan?.severity || null, proof: a.plan?.proof || null, proofRun: a.proofRun || null, newEvidence: a.plan?.newEvidence || null,
       title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
       evidence: a.plan?.evidence || [],
       key: a.plan ? taskKey(a.plan) : null, outcome,
@@ -1748,6 +1752,7 @@ class MindAutopilot {
       const nowBase = this.currentBaseSha(true); // fetched first: the review and the implementation must see the same base
       a.revalidate = item.baseSha && nowBase && item.baseSha !== nowBase ? { from: item.baseSha.slice(0, 10), to: nowBase.slice(0, 10) } : null;
       if (this.state.history.some(h => h.key === item.key && h.outcome === 'completed')) continue;
+      if (!this.admission(item.plan).ok) continue; // it may have become a duplicate or a blocked task while it waited
       a.plan = item.plan; a.stage = 'plan-review';
       this.log('queue', 'Tache deja decouverte reprise sans nouvelle decouverte (' + q.length + ' en attente) : ' + String(item.plan.title).slice(0, 100));
       this.save();

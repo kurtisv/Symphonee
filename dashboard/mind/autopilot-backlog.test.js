@@ -94,8 +94,62 @@ test('engine admission in the pilot: duplicate and blocked plans are refused and
 test('restart reconciliation: an active task whose worktree is gone is archived, not resumed into nothing', () => {
   const f = kit.setup();
   try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } }); f.pilot.state.enabled = true;
     f.pilot.state.active = { stage: 'implement', plan: plan(), worktree: { path: path.join(os.tmpdir(), 'sym-gone-' + Date.now()), branch: 'mind-autopilot/gone' }, planRevisions: 0 };
     f.pilot.recoverAfterRestart();
     assert.equal(f.pilot.state.active, null); assert.equal(f.pilot.state.history.at(-1).outcome, 'interrupted'); assert.equal(f.pilot.metricsView().reconciled, 1);
+  } finally { f.cleanup(); }
+});
+
+test('review round 1: orchestrator and isolation helpers are protected, custom patterns cannot truncate the engine ones', () => {
+  const re = guard.compilePatterns([...B.ENGINE_PROTECTED]);
+  for (const p of ['dashboard/orchestrator/cli-config.js', 'dashboard/orchestrator/local-providers.js', 'dashboard/orchestrator/spawn-headless.js', 'dashboard/orchestrator.js', 'dashboard/mind/security.js', 'dashboard/mind/lock.js'])
+    assert.ok(re.some((r) => r.test(p)), p);
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, selfProtect: true, protectedPaths: Array.from({ length: 80 }, (_, i) => '^custom' + i + '/') });
+    for (const p of B.ENGINE_PROTECTED) assert.ok(f.pilot.def.protectedPaths.includes(p), 'kept: ' + p);
+    assert.ok(f.pilot.def.protectedPaths.includes('^custom79/'));
+  } finally { f.cleanup(); }
+});
+
+test('review round 1: weak evidence is refused whatever proof is claimed; new evidence must really be new; a task retried too often needs a human', () => {
+  const free = { history: [], queue: [], gatePath: null, branches: [], signals: [], opts: { strict: true, maxAttempts: 3 } };
+  assert.equal(B.admit(plan({ proof: 'reproduced', evidence: ['TODO: handle the empty case in pack.js', 'pack.js is 1200 lines long'] }), free).code, 'unjustified');
+  assert.equal(B.admit(plan({ proof: 'read-in-code', evidence: ['there is no neighbouring test for pack.js'] }), free).code, 'unjustified');
+  assert.equal(B.admit(plan({ proof: 'reproduced', evidence: ['pack.js:42 returns 1m 60.0s for 119.97s (reproduced with node -e)'] }), free).ok, true, 'a real observation passes');
+  const fails = (n) => Array.from({ length: n }, (_, i) => H('Fix durations in the exporter module ' + (i % 2 ? 'again' : 'now'), 'verify-failed', { reviewerEvidence: 'the exporter test 14 still fails with a rounding error', newEvidence: i === 3 ? 'The fixture in test 14 now reproduces the rounding error on Windows only' : null }));
+  const ctx3 = { ...free, history: fails(3) };
+  const p = plan({ title: 'Fix durations in the exporter module' });
+  assert.equal(B.admit({ ...p, newEvidence: 'the exporter test 14 still fails with a rounding error' }, ctx3).code, 'blocked', 'repeats what was already known');
+  assert.equal(B.admit({ ...p, newEvidence: 'A Windows-only code path in formatDuration uses toFixed differently' }, ctx3).ok, true);
+  assert.equal(B.admit({ ...p, newEvidence: 'A Windows-only code path in formatDuration uses toFixed differently' }, { ...free, history: fails(6) }).code, 'blocked', 'six attempts: human decision');
+});
+
+test('review round 1: an unreadable gate state fails closed, a missing one does not; stale branches do not count', (t) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-bl2-')); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  const bad = path.join(d, 'state.json'); fs.writeFileSync(bad, '{ not json');
+  const base = { history: [], queue: [], branches: [], signals: [], opts: { strict: true } };
+  assert.equal(B.admit(plan(), { ...base, gatePath: bad }).code, 'unverifiable');
+  assert.equal(B.admit(plan(), { ...base, gatePath: path.join(d, 'absent.json') }).ok, true, 'no gate yet is not an error');
+  assert.equal(B.admit(plan({ title: 'Fix login timeout on the admin API', objective: 'x' }), { ...base, gatePath: null, branches: ['origin/mind-autopilot/fix-login'] }).ok, true, 'a short slug is not enough to call it a duplicate');
+});
+
+test('review round 1: a queued task that became a duplicate while it waited never starts; reconciliation is opt-in', () => {
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    f.pilot.state.repoPath = f.repo; f.pilot.state.active = { stage: 'discover', plan: null };
+    f.pilot.state.queue = [{ key: 'k1', plan: plan({ title: 'Reject inherited prototype ids in the EDL validator' }), score: 1, baseSha: null, discoveredAt: new Date().toISOString() }];
+    f.pilot.state.history = [H('Reject inherited prototype ids in the EDL validator', 'completed', { key: 'other-key' })];
+    f.pilot.dispatch = () => { throw new Error('must not start'); };
+    assert.equal(f.pilot.popQueued(Date.now(), true), false); assert.equal(f.pilot.state.queue.length, 0);
+    assert.equal(f.pilot.metricsView().duplicatesPrevented, 1);
+    // a pilot WITHOUT the backlog keeps the previous behaviour for a missing worktree
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: null });
+    f.pilot.state.enabled = true; f.pilot.state.active = { stage: 'implement', plan: plan(), worktree: { path: path.join(os.tmpdir(), 'sym-gone2-' + Date.now()) }, planRevisions: 0 };
+    let archived = false; const c = f.pilot.complete; f.pilot.complete = (o) => { if (o === 'interrupted') archived = true; return c.call(f.pilot, o); };
+    try { f.pilot.recoverAfterRestart(); } catch (_) { /* old path may need more state */ }
+    assert.equal(archived, false, 'not archived by the new reconciliation');
   } finally { f.cleanup(); }
 });

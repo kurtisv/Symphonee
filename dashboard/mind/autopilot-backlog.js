@@ -20,7 +20,7 @@ const CLASSES = Object.freeze([
 const ENGINE_PROTECTED = Object.freeze([
   '^dashboard/permissions\\.js$', '^dashboard/automation/', '^scripts/merge-gate\\.js$', '^scripts/api-token\\.js$', '^scripts/_ApiInit\\.ps1$',
   '^dashboard/mind/autopilot[^/]*\\.js$', '^dashboard/mind/usage-capacity[^/]*\\.js$', '^dashboard/mind/lesson[^/]*\\.js$', '^dashboard/mind/qwen-[^/]*\\.js$',
-  '^dashboard/orchestrator/qwen-[^/]*\\.js$', '^dashboard/orchestrator/spawn-qwen[^/]*\\.js$',
+  '^dashboard/orchestrator/', '^dashboard/orchestrator\\.js$', '^dashboard/mind/(security|lock|checkpoint)\\.js$',
   '^FUSION_AUTOMATIQUE\\.md$', '^docs/FUSION_AUTOMATIQUE\\.md$', '(^|/)AGENTS\\.md$', '(^|/)CLAUDE\\.md$', '(^|/)GEMINI\\.md$', '^\\.github/',
   '^\\.symphonee/', '^config/', '(^|/)package(-lock)?\\.json$', '(^|/)\\.env', 'secret',
 ]);
@@ -34,8 +34,9 @@ function similarity(a, b) {
   return n / (A.size + B.size - n);
 }
 const SIMILAR = 0.6;
+const WEAK_EVIDENCE = /\b(TODO|FIXME|XXX)\b|no (neighbou?ring |adjacent |unit )?tests?\b|missing (a )?(neighbou?ring |unit )?tests?\b|lacks? (a )?tests?\b|\b\d{3,5}[- ]lines?( long)?\b|large file|big file|too (long|large|big)/i;
 // A branch name is a short slug: what matters is how much of it the plan covers.
-function coverage(slug, text) { const A = tokens(String(slug).replace(/d{4}-d{2}-d{2}/g, ' ')), B = tokens(text); if (A.size < 2) return 0; let n = 0; for (const t of A) if (B.has(t)) n++; return n / A.size; }
+function coverage(slug, text) { const A = tokens(String(slug).replace(/\d{4}-\d{2}-\d{2}/g, ' ')), B = tokens(text); if (A.size < 3) return 0; let n = 0; for (const t of A) if (B.has(t)) n++; return n / A.size; }
 const FAILED = new Set(['interrupted', 'verify-failed', 'review-rejected', 'plan-rejected', 'stuck', 'failed', 'repair-exhausted', 'abandoned']);
 
 // Tasks that failed again and again, with the diagnosis kept: a blocked task is kept, not retried (a new element is required).
@@ -54,6 +55,12 @@ function blockedTasks(history, maxAttempts = 3) {
 }
 
 function readJson(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return null; } }
+// { data } | { missing: true } | { error }: only a missing file means "nothing in flight"; an unreadable one is unknown.
+function readGate(f) {
+  if (!f) return { missing: true };
+  let raw; try { raw = fs.readFileSync(f, 'utf8'); } catch (e) { return e && e.code === 'ENOENT' ? { missing: true } : { error: String(e && e.message || e) }; }
+  try { return { data: JSON.parse(raw) }; } catch (e) { return { error: 'invalid JSON: ' + e.message }; }
+}
 
 // Real signals only. Each: { class, severity, key, text, evidence }.
 function collectBacklog({ history = [], events = [], error = null, gatePath = null, repoName = null, pilotId = 'default', now = Date.now() }) {
@@ -85,7 +92,8 @@ function inFlight({ history = [], queue = [], gatePath = null, repoName = null, 
   const items = [];
   for (const h of history) if (h && h.outcome === 'completed' && h.title) items.push({ where: 'done', title: h.title });
   for (const q of queue) if (q && q.plan) items.push({ where: 'queued', title: q.plan.title });
-  const g = gatePath ? readJson(gatePath) : null;
+  const gr = readGate(gatePath), g = gr.data || null;
+  if (gr.error) items.degraded = gr.error;
   if (g) for (const c of Object.values(g.candidates || {})) {
     if ((repoName && c.repo !== repoName) || (c.origin && c.origin.pilot && c.origin.pilot !== pilotId)) continue;
     if (!['confirmed', 'merged', 'refused'].includes(c.status) && c.origin && c.origin.title) items.push({ where: 'awaiting merge (' + c.status + (c.pr ? ', PR #' + c.pr : '') + ')', title: c.origin.title });
@@ -99,11 +107,21 @@ function admit(plan, ctx) {
   const { history = [], queue = [], opts = {} } = ctx;
   if (!plan || plan.decision === 'NO_TASK') return { ok: true };
   const text = plan.title + ' ' + plan.objective;
-  const dup = inFlight(ctx).find((x) => (x.where === 'branch' ? coverage(x.title, text) >= 0.75 : (similarity(text, x.title) >= SIMILAR || similarity(plan.title, x.title) >= SIMILAR)));
+  const flight = inFlight(ctx);
+  if (flight.degraded && opts.strict) return { ok: false, code: 'unverifiable', reason: 'the merge gate state exists but cannot be read (' + String(flight.degraded).slice(0, 100) + '): in-flight work cannot be checked, so no new task is admitted' };
+  const dup = flight.find((x) => (x.where === 'branch' ? coverage(x.title, text) >= 0.75 : (similarity(text, x.title) >= SIMILAR || similarity(plan.title, x.title) >= SIMILAR)));
   if (dup) return { ok: false, code: 'duplicate', reason: 'duplicates work that is ' + dup.where + ': ' + String(dup.title).slice(0, 90) };
   const blocked = blockedTasks(history, opts.maxAttempts || 3).find((b) => similarity(plan.title, b.title) >= SIMILAR);
-  if (blocked && String(plan.newEvidence || '').trim().length < 20) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times without success (' + blocked.outcomes.join(', ') + ') and the plan states no new element (newEvidence)' };
+  if (blocked) {
+    const ne = String(plan.newEvidence || '').trim(), maxA = opts.maxAttempts || 3;
+    if (blocked.attempts >= maxA * 2) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times: it needs a human decision or a dedicated mission, not another attempt' };
+    if (ne.length < 20) return { ok: false, code: 'blocked', reason: 'was attempted ' + blocked.attempts + ' times without success (' + blocked.outcomes.join(', ') + ') and the plan states no new element (newEvidence)' };
+    const seen = (history || []).filter((h) => h && h.title && similarity(plan.title, h.title) >= SIMILAR).flatMap((h) => [h.newEvidence, h.reviewerEvidence]).filter(Boolean);
+    if (seen.some((x) => similarity(ne, x) >= 0.6)) return { ok: false, code: 'blocked', reason: 'the stated new element repeats what was already known about the failed attempts' };
+  }
   if (opts.strict) {
+    const ev = (plan.evidence || []).map(String);
+    if (ev.length && ev.every((e) => WEAK_EVIDENCE.test(e))) return { ok: false, code: 'unjustified', reason: 'every evidence item is a TODO, a file size or a missing neighbouring test: that does not justify a change' };
     if (plan.category === 'cleanup' && !(plan.severity === 'cleanup-proven' && plan.proof !== 'inferred')) return { ok: false, code: 'unjustified', reason: 'a cleanup needs severity cleanup-proven and a proof that the code is unused (including dynamic and plugin loading)' };
     if (plan.proof === 'inferred' && !(ctx.signals || []).some((s) => similarity(text, s.text) >= 0.3)) return { ok: false, code: 'unjustified', reason: 'proof is only "inferred" and the task matches no backlog signal: a TODO, a large file or a missing neighbouring test does not justify a change' };
     if (plan.severity === 'other' && plan.category !== 'correctness' && plan.category !== 'testing') return { ok: false, code: 'unjustified', reason: 'severity "other" is not one of the five priority classes' };
