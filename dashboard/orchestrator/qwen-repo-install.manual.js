@@ -41,7 +41,8 @@ const active = () => manifests().filter((m) => !m.rolledBack);
 const saveManifest = (m) => { const { dir, ...rest } = m; fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(rest, null, 1)); };
 
 function target() { // the runtime files this branch adds or changes relative to master
-  const base = 'origin/master';
+  // Relative to the common ancestor: files that master gained after this branch last merged it are not "deletions" of this branch.
+  const base = git('merge-base', 'origin/master', 'HEAD').trim();
   const changes = git('diff', '--name-status', base, 'HEAD').split('\n').filter(Boolean).map((l) => l.split('\t')).filter(([, f]) => runtime(f));
   const bad = changes.filter(([s]) => !['M', 'A'].includes(s)); if (bad.length) throw new Error('Unsupported change kinds: ' + JSON.stringify(bad));
   return { base, files: changes.map(([s, f]) => ({ status: s, file: f })) };
