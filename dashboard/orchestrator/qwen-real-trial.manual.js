@@ -21,7 +21,7 @@ const stamp = () => new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
   const base = before.head;
   const t0 = Date.now();
   const task = orch.spawnQwenInWorktree({ repoPath, branch: 'qwen-trial/' + stamp() + '-' + crypto.randomBytes(2).toString('hex'), startPoint: base,
-    task: { title: 'Add a unit test for ' + target, objective: 'The module ' + target + ' has no test. Write a node:test unit test file next to it (named ' + target.replace(/\.js$/, '.test.js') + ') that checks its exported behaviour: what mark() records, what flush() returns, and that ENABLED reflects the environment. Do not modify ' + target + '. Use only node:test and node:assert/strict.', files: [target] },
+    task: { title: 'Add a unit test for ' + target, objective: 'The module ' + target + ' has no test. Write a node:test unit test file next to it (named ' + target.replace(/\.js$/, '.test.js') + ') that checks its exported behaviour with a few small, concrete inputs (read the module first and assert only what the code really does). Do not modify ' + target + '. Use only node:test and node:assert/strict.', files: [target] },
     verify: [{ name: 'unit-test', cmd: verifyCmd, timeoutMs: 120000 }], protectedPatterns: ['^secrets/', '(^|/)\\.env', '(^|/)package(-lock)?\\.json$', '^\\.github/'], skipDirs: [],
     memoryText: '', sessionFile, deadlineAt: Date.now() + 25 * 60000, from: 'qwen-real-trial', onEvent: (k, m) => events.push([Math.round((Date.now() - t0) / 1000), k, String(m).slice(0, 200)]) });
   while (['running', 'pending', 'queued'].includes(task.state)) await sleep(1000);

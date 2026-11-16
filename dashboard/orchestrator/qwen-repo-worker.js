@@ -273,7 +273,8 @@ async function runRepoWorker(opts) {
     if (s.turnsSinceChange >= LIMITS.noChangeStuckTurns && !s.changed.length) return finish('blocked', 'No change to the repository after ' + s.turnsSinceChange + ' turns of exploration');
     if (claimedStuck) {
       const failing = s.runs.filter((r) => !r.ok).length;
-      if (s.stuckRefusals < 2 && s.turns < 8 && failing < 3 && s.changed.length) { s.stuckRefusals++; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'STUCK refused (' + s.stuckRefusals + '/2): you have tried only ' + failing + ' time(s) to make the checks pass. Read the failure above carefully, find what differs from what you expected, and fix it with EDIT or a new CREATE of your own file.'; s.observations.push(lastObs); s.observations = s.observations.slice(-3); saveSession(opts.sessionFile, s); continue; }
+      // Counted by failed checks, not by turns: a model that spent turns planning has still tried only once.
+      if (s.stuckRefusals < 2 && failing < 3 && s.changed.length) { s.stuckRefusals++; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'STUCK refused (' + s.stuckRefusals + '/2): you have tried only ' + failing + ' time(s) to make the checks pass. Read the failure above carefully, find what differs from what you expected, and fix it with EDIT or a new CREATE of your own file.'; s.observations.push(lastObs); s.observations = s.observations.slice(-3); saveSession(opts.sessionFile, s); continue; }
       return finish('blocked', 'The model declared itself stuck: ' + clip(claimedStuck, 400));
     }
     if (claimedDone !== null) {
