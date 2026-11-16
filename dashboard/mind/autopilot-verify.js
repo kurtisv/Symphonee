@@ -100,6 +100,14 @@ function diffLint(cwd, base, { selfProtect = false } = {}) {
     if (line.startsWith('+') && !line.startsWith('+++')) scan(file, [line.slice(1)]);
     if (selfProtect && /^[+-](?![+-]{2} )/.test(line) && ENGINE_CONTROL.test(line)) findings.push(file + ': changes a permission or approval call site (needs a dedicated, explicitly authorised mission)');
   }
+  // A file that HOSTS a permission or approval call site cannot be changed by a routine task at all: the check that enforces the result is often on another line.
+  if (selfProtect) {
+    for (const f of runGit(cwd, ['diff', '--name-only', '--no-renames', base, '--']).split(/\r?\n/).filter((x) => /\.[jt]sx?$/.test(x))) {
+      let body = ''; try { body = fs.readFileSync(path.join(cwd, f), 'utf8'); } catch (_) { try { body = runGit(cwd, ['show', base + ':' + f]); } catch (__) { /* new file */ } }
+      let before = ''; try { before = runGit(cwd, ['show', base + ':' + f]); } catch (_) { /* new file */ }
+      if (ENGINE_CONTROL.test(body) || ENGINE_CONTROL.test(before)) findings.push(f + ': hosts a permission or approval call site (needs a dedicated, explicitly authorised mission)');
+    }
+  }
   for (const f of runGit(cwd, ['ls-files', '--others', '--exclude-standard']).split(/\r?\n/).filter(Boolean)) {
     if (!/\.[jt]sx?$/.test(f)) continue;
     try { scan(f, fs.readFileSync(path.join(cwd, f), 'utf8').split(/\r?\n/)); } catch (_) {}

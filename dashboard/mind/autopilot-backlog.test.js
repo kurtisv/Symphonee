@@ -188,8 +188,14 @@ test('review round 2: gate state with the wrong shape fails closed; a plan rejec
   assert.equal(B.admit(plan(), rej).code, 'blocked'); assert.equal(B.admit(plan({ newEvidence: 'the reviewer could not reproduce the failure on the base' }), rej).code, 'blocked');
   assert.equal(B.admit(plan({ newEvidence: 'a new failing test in resume.test.js now reproduces it deterministically' }), rej).ok, true);
   assert.equal(B.admit(plan({ proof: 'read-in-code', evidence: ['pack.js has 900 lines', 'refactor it for readability'] }), base).code, 'unjustified');
-  assert.equal(B.admit(plan({ proof: 'reproduced', evidence: ['pack.js:42 throws TypeError for an empty list (TODO comment above it is unrelated)'] }), base).ok, true, 'a real observation that mentions a TODO passes');
-  assert.equal(B.admit(plan({ title: 'Fix plugin tests for the video plugin', objective: 'fix plugin tests' }), { ...base, branches: ['origin/mind-autopilot/2026-11-15-fix-plugin-tests'] }).ok, true, 'a generic three-word slug does not block');
+  assert.equal(B.admit(plan({ proof: 'read-in-code', category: 'testing', evidence: ['TODO at module.js:42: missing unit tests'] }), base).code, 'unjustified', 'a located TODO is still a TODO');
+  assert.equal(B.admit(plan({ proof: 'reproduced', evidence: ['pack.js:42 throws TypeError for an empty list'] }), base).ok, true, 'a real observation passes');
+  assert.equal(B.admit(plan({ title: 'Normalize user email templates', objective: 'x' }), { ...base, branches: ['origin/mind-autopilot/2026-11-15-normalize-user-email-addresses'] }).ok, true, 'three of four slug words are not the same task');
+  assert.equal(B.admit(plan({ title: 'Fix plugin tests for the video plugin', objective: 'x' }), { ...base, branches: ['origin/mind-autopilot/2026-11-15-fix-plugin-tests'] }).code, 'duplicate', 'the whole slug is covered');
+  const two = { ...base, rejected: [{ title: 'Fix the stuck resume of the video loop', evidence: 'first finding about the resume timer' }, { title: 'Fix the stuck resume of the video loop', evidence: 'second finding: the checkpoint file is read before it is written' }] };
+  assert.equal(B.admit(plan({ newEvidence: 'second finding: the checkpoint file is read before it is written' }), two).code, 'blocked', 'novelty is checked against EVERY earlier rejection');
+  const dirty = path.join(d, 'dirty.json'); fs.writeFileSync(dirty, JSON.stringify({ candidates: { x: null, y: { repo: 'R', status: 'refused', history: 5 } }, stopped: { at: 'never' }, merges: [null] }));
+  assert.doesNotThrow(() => B.collectBacklog({ history: [], gatePath: dirty, repoName: 'R' })); assert.doesNotThrow(() => B.admit(plan(), { ...base, gatePath: dirty }));
   assert.equal(B.collectBacklog({ history: [H('A single interrupted task', 'interrupted')] }).some((x) => /ended without success/.test(x.text)), true, 'one interruption is already a signal');
 });
 
@@ -202,4 +208,15 @@ test('review round 2: the extended severity classes are in the discovery contrac
     f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
     assert.match(f.pilot.discoveryPrompt(), /"severity":"data-loss\|crash\|security\|wrong-price\|broken-flow\|measured-slowness\|lost-work\|stuck-loop\|wrong-state\|cleanup-proven\|other"/);
   } finally { f.cleanup(); }
+});
+
+test('review round 3: a file that hosts a permission call site cannot be changed by a selfProtect pilot, even on another line', (t) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-host-')); t.after(() => fs.rmSync(d, { recursive: true, force: true }));
+  sh(d, 'init', '-q'); sh(d, 'config', 'user.email', 'a@b.invalid'); sh(d, 'config', 'user.name', 'a');
+  fs.writeFileSync(path.join(d, 'agent.js'), 'const ok = permGate(req);\nif (!ok) return;\nlaunch();\n'); fs.writeFileSync(path.join(d, 'plain.js'), 'exports.a = 1;\n'); sh(d, 'add', '-A'); sh(d, 'commit', '-qm', 'base');
+  const base = sh(d, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(d, 'agent.js'), 'const ok = permGate(req);\nlaunch();\n');
+  assert.ok(guard.diffLint(d, base, { selfProtect: true }).some((x) => /agent\.js: hosts a permission/.test(x)), 'removing the line that enforces the result is caught');
+  fs.writeFileSync(path.join(d, 'agent.js'), 'const ok = permGate(req);\nif (!ok) return;\nlaunch();\n'); fs.writeFileSync(path.join(d, 'plain.js'), 'exports.a = 2;\n');
+  assert.deepEqual(guard.diffLint(d, base, { selfProtect: true }), [], 'an ordinary file is free');
 });
