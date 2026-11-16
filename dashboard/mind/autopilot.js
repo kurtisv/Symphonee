@@ -1790,7 +1790,8 @@ class MindAutopilot {
           const found = [...e.matchAll(/\[([A-Z]\d+)\]/g)].map(m => m[1]);
           return found.length > 0 && found.every(ref => refs.includes(ref)) && found.some(ref => projectRefs.includes(ref));
         });
-        const usable = plan && plan.decision === 'TASK' && !duplicate && cited;
+        // The local model's suggestion goes through the same engine admission as any discovered plan.
+        const usable = plan && plan.decision === 'TASK' && !duplicate && cited && this.admission(plan).ok;
         a.localSuggestion = { provider: 'ollama-mind', at: now, status: usable ? 'awaiting-review' : 'inconclusive', refs, duplicate: !!duplicate };
         a.handoff = null;
         if (usable) { a.plan = plan; a.stage = 'plan-review'; a.planOrigin = 'local-unverified'; }
@@ -1865,7 +1866,7 @@ class MindAutopilot {
       a.review = raw; a.repairs++;
       this.learn('revue', lessons.firstFinding(raw), 'revue du code par Codex : ' + (a.plan?.title || ''));
       // Keep every rejection: the reason of each repair stays visible after restarts.
-      a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 3000) }].slice(-6);
+      a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 12000) }].slice(-6);
       if (a.repairs > this.limits.repairs) return this.complete('review-rejected', raw);
       return this.dispatch('repair', now);
     }

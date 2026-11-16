@@ -321,3 +321,15 @@ test('review round 13: no cap on what counts as already known; earlier code revi
   const hist = [{ title: 'Fix the stuck resume of the video loop', outcome: 'review-rejected', reviewerEvidence: 'only the terminal review: colours differ', evidence: ['x'], reviews: [{ text: 'first review: the checkpoint file is read before it is written during resume' }, { text: 'second review: colours differ' }] }];
   assert.equal(B.admit(plan({ newEvidence: 'the checkpoint file is read before it is written during resume' }), { ...rej, rejected: [], history: hist }).code, 'blocked', 'an EARLIER code review counts');
 });
+
+test('review round 14: a local-model suggestion goes through the same admission; failed code reviews keep up to 12000 characters', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'autopilot.js'), 'utf8');
+  assert.ok(src.includes('cited && this.admission(plan).ok'), 'the local suggestion path calls admission');
+  assert.ok(src.includes("verdict: 'FAIL', text: String(raw || '').slice(0, 12000)"), 'long reviews are kept');
+  const f = kit.setup();
+  try {
+    f.pilot.applyDefinition({ ...f.pilot.def, backlog: { strict: true } });
+    f.pilot.state.history = [{ title: 'Fix the stuck resume of the video loop', outcome: 'completed' }];
+    assert.equal(f.pilot.admission(plan({ title: 'Fix the stuck resume of the video loop' })).ok, false, 'what the local path now asks');
+  } finally { f.cleanup(); }
+});
