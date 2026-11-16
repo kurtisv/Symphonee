@@ -697,7 +697,7 @@ class MindAutopilot {
   snapshot(now = Date.now()) {
     const s = this.state;
     const a = s.active;
-    const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length || this.profile.deep ? ['verify'] : []), 'code-review', 'repair', 'done'];
+    const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length || this.profile.deep || this.def.selfProtect ? ['verify'] : []), 'code-review', 'repair', 'done'];
     // The capacity shown is at most 2 minutes old (read again when older, between tasks).
     if (this.def.capacity && !a && (!s.capacity || now - s.capacity.at > 120000)) { try { this.capacityDecision(now); } catch (_) {} }
     return { pilot: this.id, updatedAt: s.updatedAt || 0, observedAt: now, origin: 'mind-autopilot', fallbackProfile: this.def.fallback, label: this.def.label, profile: this.def.profile, profileLabel: this.profile.label,
@@ -1848,7 +1848,8 @@ class MindAutopilot {
       if (hits.length) throw new Error('Protected path modified during ' + a.stage + ': ' + hits.slice(0, 6).join(', ') + '. Inspect ' + a.worktree.path);
       // The deep profile always passes through the gate: the diff lint runs
       // even when the repository has no check command configured.
-      if (this.def.verify.length || this.profile.deep) return this.startVerify();
+      // A selfProtect pilot always passes through the gate (the diff lint holds the permission call-site rule), even with no check command.
+      if (this.def.verify.length || this.profile.deep || this.def.selfProtect) return this.startVerify();
       return this.dispatch('code-review', now);
     }
     if (a.stage === 'code-review') {

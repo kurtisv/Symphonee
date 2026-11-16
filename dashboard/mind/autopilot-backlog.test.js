@@ -360,3 +360,21 @@ test('final defect: a finding at ANY position of an earlier review stays known, 
     assert.equal(f.pilot.admission(plan({ title: 'Fix the exporter rounding of durations', newEvidence: 'The exporter cache is read before it is written during resume' })).code, 'blocked');
   } finally { f.cleanup(); }
 });
+
+test('last defect: a selfProtect pilot without check commands still goes through the verification gate (real implement -> next stage transition)', () => {
+  const f = kit.setup();
+  const next = (selfProtect) => {
+    f.pilot.applyDefinition({ ...f.pilot.def, verify: [], selfProtect, backlog: selfProtect ? { strict: true } : null });
+    let went = null; f.pilot.startVerify = () => { went = 'verify'; return {}; }; f.pilot.dispatch = (s) => { went = s; return {}; };
+    const base = sh(f.repo, 'rev-parse', 'HEAD');
+    fs.appendFileSync(path.join(f.repo, 'index.js'), '\n// change made by the task\n');
+    f.pilot.state.active = { stage: 'implement', plan: plan(), repairs: 0, planRevisions: 0, worktree: { path: f.repo, branch: 'mind-autopilot/x' }, baseSha: base };
+    f.pilot.advance('done');
+    sh(f.repo, 'checkout', '--', 'index.js');
+    return went;
+  };
+  try {
+    assert.equal(next(true), 'verify', 'selfProtect: the diff lint gate runs');
+    assert.equal(next(false), 'code-review', 'other pilots keep the previous behaviour');
+  } finally { f.cleanup(); }
+});
