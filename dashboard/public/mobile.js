@@ -37,6 +37,7 @@
     rows.forEach(function (x) { d.appendChild(x); });
     return d;
   }
+  function loading() { var d = h('div'); d.appendChild(muted('Chargement...')); return d; }
   function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '...' : s; }
   function hhmm(ts) { var d = new Date(ts); return isNaN(d) ? '' : d.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }); }
   function arr(x, keys) {
@@ -259,7 +260,7 @@
       }).catch(function (err) { if (err && err.message !== 'session') results.replaceChildren(muted('Recherche impossible.')); });
     });
     box.appendChild(card('Rechercher dans Mind', (function () { var d = h('div'); d.appendChild(form); d.appendChild(results); return d; })()));
-    var statsBox = h('div'), learnBox = h('div'), wakeBox = h('div');
+    var statsBox = loading(), learnBox = loading(), wakeBox = loading();
     box.appendChild(card('Etat de la memoire', statsBox));
     box.appendChild(card('Apprentissages', learnBox));
     box.appendChild(card('Souvenirs recents', wakeBox));
@@ -281,7 +282,7 @@
   function showAutopilots() {
     var box = h('div');
     content.replaceChildren(box);
-    var a = h('div'), j = h('div');
+    var a = loading(), j = loading();
     box.appendChild(card('Autopilotes', a));
     box.appendChild(card('Boucles planifiees', j));
     box.appendChild(card('Controles', muted('Demarrer, arreter ou modifier un autopilote se fait depuis le PC. Le telephone consulte seulement.')));
@@ -309,6 +310,7 @@
     var box = h('div');
     content.replaceChildren(box);
     var chips = h('div', 'chips'), detail = h('div');
+    chips.appendChild(muted('Chargement...'));
     box.appendChild(card('Projets', chips));
     box.appendChild(detail);
     function open(name) {
