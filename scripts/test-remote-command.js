@@ -60,6 +60,14 @@ async function pendingRemote() {
   pc.ws.send(JSON.stringify({ type: 'create-term', termId: 'mobile-cmd-test', cols: 100, rows: 30, label: 'test-cmd' }));
   await wait(2500);
 
+  // 0. Default mode is auto; the approval scenarios below need 'ask'.
+  const m0 = await req('GET', '/api/remote/command-mode', LOCAL);
+  check('Mode par defaut : auto', (m0.json() || {}).mode === 'auto', JSON.stringify(m0.json()));
+  const phoneSet = await req('POST', '/api/remote/command-mode', PH(), { mode: 'ask' });
+  check('Le telephone ne peut PAS changer le mode', phoneSet.status === 403, 'status ' + phoneSet.status);
+  const m1 = await req('POST', '/api/remote/command-mode', LOCAL, { mode: 'ask' });
+  check('Le PC passe en mode ask', (m1.json() || {}).mode === 'ask');
+
   // 1. Approved command.
   const mark = 'SYMCMD_' + Math.random().toString(36).slice(2, 8).toUpperCase();
   const sent = req('POST', '/api/remote/terminal/command', PH(), { termId: 'mobile-cmd-test', text: 'echo ' + mark });
@@ -96,6 +104,26 @@ async function pendingRemote() {
   // 5. Without a session nothing works.
   const anon = await req('POST', '/api/remote/terminal/command', { Host: TAILHOST, Origin: ORIGIN }, { termId: 'mobile-cmd-test', text: 'ls' });
   check('Sans session : refuse (401)', anon.status === 401, 'status ' + anon.status);
+
+  // 6. Auto mode: straight through, destructive still asks, everything is logged.
+  await req('POST', '/api/remote/command-mode', LOCAL, { mode: 'auto' });
+  const mk = 'SYMAUTO_' + Math.random().toString(36).slice(2, 8).toUpperCase();
+  const a1 = await req('POST', '/api/remote/terminal/command', PH(), { termId: 'mobile-cmd-test', text: 'echo ' + mk });
+  check('Auto : envoi direct sans approbation (sent / auto)', a1.status === 200 && (a1.json() || {}).status === 'sent' && (a1.json() || {}).mode === 'auto', JSON.stringify(a1.json()));
+  const pend = await req('GET', '/api/permissions/pending', {});
+  check('Auto : aucune demande dans la file du PC', !(pend.json() || []).some(x => x.action && x.action.type === 'remote-terminal'));
+  await wait(3000);
+  const out2 = phone.msgs.filter(m => m.type === 'output' && m.termId === 'mobile-cmd-test').map(m => m.data).join('');
+  check('Auto : la commande s est executee et la reponse arrive sur le telephone', out2.includes(mk), out2.slice(-120));
+  const danger = req('POST', '/api/remote/terminal/command', PH(), { termId: 'mobile-cmd-test', text: 'echo ' + mk + ' ; Remove-Item C:\ne-pas-executer -Recurse' });
+  const pd = await pendingRemote();
+  check('Auto : une commande destructrice demande quand meme l accord du PC', !!pd);
+  if (pd) await req('POST', '/api/permissions/resolve', LOCAL, { id: pd.id, decision: 'deny' });
+  const rd = await danger;
+  check('Auto : destructrice refusee sur le PC = non executee', rd.status === 403 && (rd.json() || {}).status === 'denied', JSON.stringify(rd.json()));
+  const logf = path.join(__dirname, '..', '.symphonee', 'remote-commands.log');
+  const lg = fs.existsSync(logf) ? fs.readFileSync(logf, 'utf8') : '';
+  check('Journal : la commande auto y est inscrite', lg.includes(mk) && /"outcome":"auto"/.test(lg), lg.slice(-200));
 
   pc.ws.send(JSON.stringify({ type: 'kill-term', termId: 'mobile-cmd-test' }));
   await wait(800);

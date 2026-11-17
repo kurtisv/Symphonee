@@ -4,6 +4,7 @@
 //   node scripts/mobile-pair.js            -> shows a 6-digit pairing code (valid 5 minutes)
 //   node scripts/mobile-pair.js list       -> lists paired phones (id, created, expires)
 //   node scripts/mobile-pair.js revoke <id>|all
+//   node scripts/mobile-pair.js mode [auto|ask]   -> phone commands: auto = sent directly (default), ask = approve on the PC
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -32,5 +33,8 @@ function call(method, p, body) {
     const r = await call('POST', '/api/remote/sessions/revoke', arg === 'all' ? { all: true } : { id: arg });
     console.log(r.json && r.json.ok ? 'Revoque : ' + r.json.revoked : 'Echec : ' + JSON.stringify(r.json));
     if (!(r.json && r.json.ok)) process.exit(1);
-  } else { console.error('Usage : node scripts/mobile-pair.js [list | revoke <id>|all]'); process.exit(2); }
+  } else if (cmd === 'mode') {
+    if (!arg) { const r = await call('GET', '/api/remote/command-mode'); console.log('Commandes du telephone : ' + (r.json && r.json.mode === 'ask' ? 'validation sur le PC (ask)' : 'envoi direct (auto)')); }
+    else { const r = await call('POST', '/api/remote/command-mode', { mode: arg }); console.log(r.json && r.json.mode ? 'Mode : ' + r.json.mode : 'Echec : ' + JSON.stringify(r.json)); if (!(r.json && r.json.mode)) process.exit(1); }
+  } else { console.error('Usage : node scripts/mobile-pair.js [list | revoke <id>|all | mode [auto|ask]]'); process.exit(2); }
 })().catch(e => { console.error('Serveur injoignable : ' + e.message); process.exit(1); });

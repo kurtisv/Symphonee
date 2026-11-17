@@ -93,8 +93,8 @@ test('Terminal : liste les terminaux, affiche la sortie en direct, ouvre un WebS
   assert.equal(t.sockets[0].closed, true, 'WebSocket ferme en quittant l onglet');
 });
 
-test('Terminal : envoi de commande -> demande, attente de l accord PC, resultat affiche', async () => {
-  const cases = [['sent', 'Envoye au terminal.'], ['denied', 'Refuse sur le PC.'], ['timeout', 'Delai de 90 s']];
+test('Terminal : envoi de commande -> demande, envoi direct, resultat affiche', async () => {
+  const cases = [['sent', 'Envoye au terminal.'], ['denied', 'Commande sensible refusee sur le PC.'], ['timeout', 'accord non donne sur le PC']];
   for (const [status, msg] of cases) {
     const t = build(); t.ctx.__cmdResponse = { status }; t.run(); await tick();
     t.navs[1].fire('click'); await tick();
@@ -103,7 +103,7 @@ test('Terminal : envoi de commande -> demande, attente de l accord PC, resultat 
     const form = t.content.all('form')[0]; const input = form.all('input')[0];
     input.value = 'echo bonjour';
     form.fire('submit');
-    assert.match(form.textContent, /En attente de votre accord sur le PC/);
+    assert.match(form.textContent, /Envoi.../);
     await tick(10);
     const post = t.calls.find(c => c[0] === 'POST' && c[1] === '/api/remote/terminal/command');
     assert.deepEqual(JSON.parse(post[2]), { termId: 'main', text: 'echo bonjour' });
