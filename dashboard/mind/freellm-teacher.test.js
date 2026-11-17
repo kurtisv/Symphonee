@@ -54,7 +54,7 @@ test('appel nominal : adresse, en-tete, corps, jetons', async () => {
   assert.equal(calls[0].url, 'http://127.0.0.1:3001/v1/chat/completions');
   assert.equal(calls[0].init.headers.Authorization, 'Bearer freellmapi-test');
   const body = JSON.parse(calls[0].init.body);
-  assert.equal(body.model, 'auto'); assert.equal(body.messages[0].content, 'explique');
+  assert.equal(body.model, 'auto'); assert.equal(body.messages[1].content, 'explique');
 });
 
 test('erreurs : HTTP, reponse vide, injoignable, delai : jamais d exception, jamais la cle dans le message', async () => {
@@ -127,4 +127,30 @@ test('pont : annulation, et sans cle ready() est faux', async () => {
   w.cancelTask(id);
   assert.equal(w.getTask(id).state, 'cancelled');
   assert.equal(ft.createTaskBridge({ getConfig: () => ({ enabled: false }) }).ready(), false);
+});
+
+test('extractJson : retire le texte autour d un objet JSON valide, sinon laisse tel quel', () => {
+  assert.equal(ft.extractJson('Voici:\n{"a":1}\nFin'), '{"a":1}');
+  assert.equal(ft.extractJson('```json\n{"a":{"b":2}}\n```'), '{"a":{"b":2}}');
+  assert.equal(ft.extractJson('pas de json'), 'pas de json');
+  assert.equal(ft.extractJson('{pas valide} {'), '{pas valide} {');
+});
+
+test('la consigne systeme exige du JSON seul', async () => {
+  const calls = [];
+  await ft.callTeacher({ config: cfg, prompt: 'x', scope: ft.FIXTURE_SCOPE, fetchFn: okFetch(calls) });
+  const m = JSON.parse(calls[0].init.body).messages;
+  assert.equal(m[0].role, 'system'); assert.match(m[0].content, /ONE JSON object/); assert.equal(m[1].role, 'user');
+});
+
+test('reponse coupee par la limite de jetons : echec explicite, jamais un JSON tronque', async () => {
+  const cut = async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'length', message: { content: '..."tail' } }] }) });
+  const r = await ft.callTeacher({ config: cfg, prompt: 'x', scope: ft.FIXTURE_SCOPE, fetchFn: cut });
+  assert.equal(r.ok, false); assert.match(r.error, /cut by the token limit/);
+});
+
+test('la limite de jetons de sortie laisse la place a la reflexion interne', async () => {
+  const calls = [];
+  await ft.callTeacher({ config: cfg, prompt: 'x', scope: ft.FIXTURE_SCOPE, fetchFn: okFetch(calls) });
+  assert.ok(JSON.parse(calls[0].init.body).max_tokens >= 4000);
 });
