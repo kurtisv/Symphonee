@@ -98,6 +98,10 @@ function authTokenRequired() {
 const ROUTES = {
   '/':                        { file: path.join(publicDir, 'index.html'),                                          type: 'text/html' },
   '/remote':                  { file: path.join(publicDir, 'remote.html'),                                         type: 'text/html' },
+  '/mobile':                  { file: path.join(publicDir, 'mobile.html'),                                         type: 'text/html' },
+  '/mobile.css':              { file: path.join(publicDir, 'mobile.css'),                                          type: 'text/css' },
+  '/mobile.js':               { file: path.join(publicDir, 'mobile.js'),                                           type: 'application/javascript' },
+  '/mobile.webmanifest':      { file: path.join(publicDir, 'mobile.webmanifest'),                                  type: 'application/manifest+json' },
   '/styles/app.css':          { file: path.join(publicDir, 'styles', 'app.css'),                                   type: 'text/css' },
   '/js/app.js':               { file: path.join(publicDir, 'js', 'app.js'),                                        type: 'application/javascript' },
   // Extracted renderer ES-module bundles (built by scripts/build-renderer.js).

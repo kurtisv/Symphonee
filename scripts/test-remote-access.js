@@ -96,6 +96,18 @@ const LOCAL_TOKEN = { 'x-symphonee-token': TOKEN };
   r = await req({ path: '/api/busy', headers: phone({}, 'sym_remote=' + c2) });
   check('Nouvelle session valide apres appairage', r.status === 200);
 
+  // 6. Symphonee Mobile pages: session required, no token injected for a phone, PC unchanged.
+  r = await req({ path: '/mobile', headers: phone() });
+  check('Mobile sans session -> refuse (401 ou redirection)', r.status === 401 || r.status === 302, 'status ' + r.status);
+  r = await req({ path: '/mobile', headers: phone({}, 'sym_remote=' + c2) });
+  check('Mobile avec session -> page servie sans jeton', r.status === 200 && /mobile\.js/.test(r.text) && !r.text.includes(TOKEN) && !/__SYMPHONEE_TOKEN__/.test(r.text), 'status ' + r.status);
+  r = await req({ path: '/mobile.webmanifest', headers: phone({}, 'sym_remote=' + c2) });
+  check('Manifeste PWA servi au telephone', r.status === 200 && r.json() && r.json().display === 'standalone', 'status ' + r.status);
+  r = await req({ path: '/mobile', headers: { Host: '127.0.0.1:' + PORT } });
+  check('PC : /mobile servi (interface PC inchangee)', r.status === 200, 'status ' + r.status);
+  r = await req({ path: '/', headers: { Host: '127.0.0.1:' + PORT } });
+  check('PC : interface principale / toujours servie', r.status === 200 && /x-symphonee-token|__SYMPHONEE_TOKEN__|<html/i.test(r.text));
+
   const pass = results.filter(x => x.ok).length, fail = results.length - pass;
   console.log(`\nRESULTAT HTTP : ${pass}/${results.length} PASS, ${fail} FAIL`);
   process.exit(fail ? 1 : 0);
