@@ -8,6 +8,7 @@ import { escapeHtml } from './helpers.js';
 import { makeLatest } from './latest.js';
 import { createSnapshotStore } from './autopilot-state.js';
 import { cardModel, cardHtml, CARD_CSS } from './autopilot-card.js';
+import { pilotIdsFrom, calendarModel, kpiModel, kpiHtml, calendarHtml, OVERVIEW_CSS } from './autopilot-overview.js';
 const snapshots = createSnapshotStore();
 const statusRequests = makeLatest();
 
@@ -34,6 +35,11 @@ const statusRequests = makeLatest();
     clair: null };
   try { ap.pilot = localStorage.getItem('mind-autopilot-pilot') || 'default'; } catch (_) {}
   const esc = (v) => escapeHtml(v == null ? '' : String(v));
+  // Pilots come from the server list, never from a hard-coded pair (a third pilot appears without a code change).
+  const pilotIds = () => pilotIdsFrom(ap.pilots);
+  const readIsFresh = () => !(ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45000);
+  const overviewKpis = () => kpiHtml(kpiModel({ loops: ap.loops && ap.loops.loops, pilotSnaps: pilotIds().map(id => snapshots.get(id)).filter(Boolean), fresh: readIsFresh() }), esc);
+  const overviewCalendar = () => calendarHtml(calendarModel(ap.loops ? [...(ap.loops.loops || []), ...(ap.loops.services || [])] : null, new Date()), esc);
   const fmt = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('fr-CA') : '0');
   const when = (v) => { const t = typeof v === 'number' ? v : Date.parse(v); return t ? new Date(t).toLocaleString('fr-CA') : '-'; };
 
@@ -62,7 +68,7 @@ const statusRequests = makeLatest();
     if (ap.loopView) loadLoopDetail();
     loadClair();
     try {
-      const results = await Promise.all(['default', 'gas-saver'].map(async id => {
+      const results = await Promise.all([...new Set([...pilotIds(), pilot])].map(async id => {
         const r = await fetch('/api/mind/autopilot?pilot=' + encodeURIComponent(id), { cache: 'no-store', signal: controller.signal });
         if (!r.ok) { if (id === pilot) throw new Error('HTTP ' + r.status); return null; }
         return { ...(await r.json()), pilot: id };
@@ -217,7 +223,7 @@ const statusRequests = makeLatest();
     const a = p && p.active;
     const stage = a && (a.waitingStage || a.stage);
     const elapsed = a && a.startedAt ? Math.max(0, Math.floor((Date.now() - a.startedAt) / 60000)) + ' min' : '-';
-    return '<article class="ap-card"><h2>' + (id === 'default' ? 'Principale' : 'Gas Saver') + '</h2>'
+    return '<article class="ap-card"><h2>' + esc((p && p.label) || id) + '</h2>'
       + '<p>' + esc(p ? (STATUS[p.status] || {}).label || p.status : 'Etat non encore recu') + '</p>'
       + '<dl><dt>Depot</dt><dd>' + esc(p?.repoName || 'Inconnu') + '</dd>'
       + '<dt>Tache</dt><dd>' + esc(a?.plan?.title || (a ? 'Decouverte' : 'Aucune tache en cours')) + '</dd>'
@@ -400,7 +406,7 @@ const statusRequests = makeLatest();
     const st = STATUS[s.status] || STATUS.disabled;
     const b = s.budget || {}; const L = s.limits || {};
     const a = s.active;
-    const interventions = ['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && (['error', 'interrupted'].includes(p.status) || p.active?.handoff?.status === 'blocked')).length;
+    const interventions = pilotIds().map(id => snapshots.get(id)).filter(p => p && (['error', 'interrupted'].includes(p.status) || p.active?.handoff?.status === 'blocked')).length;
     const goalVal = ap.draftGoal != null ? ap.draftGoal : (s.goal || '');
     const repoVal = ap.draftRepo != null ? ap.draftRepo : (s.repoName || '');
     const consentKnown = !!(s.consent && s.consent.worktreeWrites);
@@ -466,15 +472,18 @@ const statusRequests = makeLatest();
         .ap-msg { font-size:11px; color:var(--subtext1); min-height:14px; }
         .ap-err { color:var(--red); font-size:12px; white-space:pre-wrap; }
         ${CARD_CSS}
+        ${OVERVIEW_CSS}
       </style>
       <div class="ap-wrap">
         <h1 style="font-size:22px;">Centre de controle des autopilotes</h1>
         <p>${interventions} pilote(s) a examiner : erreurs, interruptions ou releves bloquees.</p>
-        <p>${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.enabled).length} pilotes actifs | ${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.status === 'running').length} taches en cours | ${['default', 'gas-saver'].reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
+        <p>${pilotIds().map(id => snapshots.get(id)).filter(p => p && p.enabled).length} pilotes actifs | ${pilotIds().map(id => snapshots.get(id)).filter(p => p && p.status === 'running').length} taches en cours | ${pilotIds().reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
         <p role="status" aria-live="polite">${ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45000 ? 'Etat perime ou inaccessible' : 'Derniere lecture fiable : ' + esc(when(ap.lastRead))}</p>
+        ${overviewKpis()}
         ${ap.loopView ? '' : cardHtml(cardModel(s), esc, ap.busy)}
+        ${overviewCalendar()}
         <div class="ap-grid" aria-label="Pilotes">
-          ${['default', 'gas-saver'].map(pilotCard).join('')}
+          ${pilotIds().map(pilotCard).join('')}
         </div>
         ${overview()}
         ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ''}
