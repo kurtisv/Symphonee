@@ -13,7 +13,9 @@ function repo() {
   w('src/app.js', 'console.log("ok");');
   w('src/notes.txt', 'texte');
   w('src/image.png', 'binaire');
-  w('config/config.json', '{"GitHubPAT":"ghp_abcdefghijklmnopqrstuvwxyz0123456789"}');
+  // Fake secret-shaped values are assembled at run time so that no real-looking token sits in the source.
+  const FAKE_PAT = ['gh', 'p_', 'abcdefghijklmnopqrstuvwxyz', '0123456789'].join('');
+  w('config/config.json', JSON.stringify({ GitHubPAT: FAKE_PAT }));
   w('config/runtime.json', '{"token":"deadbeefdeadbeefdeadbeefdeadbeef"}');
   w('.env', 'API_KEY=supersecretvalue1234567890');
   w('.git/config', '[core]');
@@ -21,8 +23,8 @@ function repo() {
   w('src/secrets.js', 'module.exports = 1');
   w('src/api-token.js', 'module.exports = 2');
   w('src/leak.js', 'const apiKey = "abcdefghijklmnop1234567890";');
-  w('src/pem.js', '-----BEGIN RSA PRIVATE KEY-----\nxx\n-----END RSA PRIVATE KEY-----');
-  w('src/gh.js', 'const t = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";');
+  w('src/pem.js', ['-----BEGIN RSA ', 'PRIVATE KEY-----'].join('') + '\nxx\n-----END RSA PRIVATE KEY-----');
+  w('src/gh.js', 'const t = "' + FAKE_PAT + '";');
   w('src/big.txt', 'a'.repeat(rf.MAX_BYTES + 1));
   return root;
 }
