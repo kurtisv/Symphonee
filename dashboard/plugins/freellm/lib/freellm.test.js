@@ -90,6 +90,19 @@ test('manager : demarre node dist/index.js dans le dossier server, puis detecte 
   assert.equal(m.stop().ok, true); assert.equal(sp.proc.killed, true);
 });
 
+test('nodeBinary : sous Electron on utilise node du PATH, jamais electron.exe', () => {
+  assert.equal(lib.nodeBinary({ env: {}, versions: { electron: '33.0.0' }, execPath: 'C:/x/electron.exe' }), 'node');
+  assert.equal(lib.nodeBinary({ env: {}, versions: {}, execPath: 'C:/x/node.exe' }), 'C:/x/node.exe');
+  assert.equal(lib.nodeBinary({ env: { SYMPHONEE_NODE: 'D:/n/node.exe' }, versions: { electron: '33' }, execPath: 'e' }), 'D:/n/node.exe');
+});
+
+test('manager : le binaire lance est celui choisi (node), pas l executable courant', async () => {
+  const sp = fakeSpawn(); let up = false;
+  const m = lib.createManager({ installDir: path.join('X', 'A'), nodeBin: 'node', fetchFn: async () => { if (!up) throw new Error('d'); return { status: 401 }; }, spawnFn: (...a) => { setTimeout(() => { up = true; }, 30); return sp.fn(...a); } });
+  await m.start();
+  assert.equal(sp.calls[0].cmd, 'node');
+});
+
 test('manager : stop ne touche rien si Symphonee n a rien demarre', () => {
   const m = lib.createManager({ installDir: path.join('X', 'A'), fetchFn: async () => ({ status: 200 }), spawnFn: () => { throw new Error('ne doit pas etre appele'); } });
   assert.match(m.stop().note, /nothing started/);

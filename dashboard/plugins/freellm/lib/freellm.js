@@ -63,7 +63,14 @@ function findInstallDir({ env = process.env, repoRoot, exists = fs.existsSync } 
   return cands.find((d) => exists(path.join(d, 'server', 'dist', 'index.js'))) || null;
 }
 
-function createManager({ installDir, port = 3001, fetchFn = globalThis.fetch, spawnFn = spawn, getConfig = () => ({ enabled: false }), log = () => {} }) {
+// Inside Electron process.execPath is electron.exe, NOT node: running a script with it would start another Electron app.
+// The FreeLLMAPI server is built for the system Node (native modules), so use `node` from PATH (or SYMPHONEE_NODE).
+function nodeBinary({ env = process.env, versions = process.versions, execPath = process.execPath } = {}) {
+  if (env.SYMPHONEE_NODE) return env.SYMPHONEE_NODE;
+  return versions && versions.electron ? 'node' : execPath;
+}
+
+function createManager({ installDir, port = 3001, fetchFn = globalThis.fetch, spawnFn = spawn, getConfig = () => ({ enabled: false }), log = () => {}, nodeBin = nodeBinary() }) {
   let child = null;
   async function probe() {
     try { const r = await fetchFn(`http://127.0.0.1:${port}/api/auth/status`, { signal: AbortSignal.timeout(2500) }); return r.status > 0 && r.status < 500; }
@@ -77,7 +84,7 @@ function createManager({ installDir, port = 3001, fetchFn = globalThis.fetch, sp
     if (!installDir) return { ok: false, error: 'FreeLLMAPI is not installed (build server/dist first)' };
     if (await probe()) return { ok: true, already: true };
     if (child) return { ok: true, already: true };
-    child = spawnFn(process.execPath, ['dist/index.js'], { cwd: path.join(installDir, 'server'), windowsHide: true, stdio: 'ignore', env: Object.assign({}, process.env, { NODE_ENV: 'production' }) });
+    child = spawnFn(nodeBin, ['dist/index.js'], { cwd: path.join(installDir, 'server'), windowsHide: true, stdio: 'ignore', env: Object.assign({}, process.env, { NODE_ENV: 'production' }) });
     const mine = child;
     mine.on('error', (e) => { log('freellm failed to start: ' + e.message); if (child === mine) child = null; });
     mine.on('exit', (c) => { log('freellm exited (' + c + ')'); if (child === mine) child = null; });
@@ -93,4 +100,4 @@ function createManager({ installDir, port = 3001, fetchFn = globalThis.fetch, sp
   return { status, start, stop, probe };
 }
 
-module.exports = { guardPrompt, chat, findInstallDir, createManager, SCOPES, loadConfig: teacher.loadConfig };
+module.exports = { guardPrompt, chat, findInstallDir, createManager, nodeBinary, SCOPES, loadConfig: teacher.loadConfig };
