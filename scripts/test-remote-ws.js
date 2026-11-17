@@ -60,6 +60,26 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
     phone.ws.close();
   }
 
+  // Live view (ONLY with the 'live' argument, on a TEST server: it creates and closes its own terminal):
+  // a command typed on the PC side must appear on the phone connection.
+  if (process.argv[4] === 'live') {
+    const marker = 'SYM_LIVE_' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const watcher = await open({ Host: TAILHOST, Origin: ORIGIN, Cookie: cookie });
+    const pc = await open({ Host: '127.0.0.1:' + PORT, Origin: 'http://127.0.0.1:' + PORT });
+    check('Live : telephone et PC connectes', watcher.ok && pc.ok);
+    if (watcher.ok && pc.ok) {
+      pc.ws.send(JSON.stringify({ type: 'create-term', termId: 'mobile-live-test', cols: 100, rows: 30, label: 'test-live' }));
+      await wait(2500);
+      pc.ws.send(JSON.stringify({ type: 'input', termId: 'mobile-live-test', data: 'echo ' + marker + '\r' }));
+      await wait(3500);
+      const seen = watcher.msgs.filter(m => m.type === 'output' && m.termId === 'mobile-live-test').map(m => m.data).join('');
+      check('Live : la commande lancee sur le PC apparait sur le telephone', seen.includes(marker), seen.slice(-120));
+      pc.ws.send(JSON.stringify({ type: 'kill-term', termId: 'mobile-live-test' }));
+      await wait(800);
+      watcher.ws.close(); pc.ws.close();
+    }
+  }
+
   const local = await open({ Host: '127.0.0.1:' + PORT, Origin: 'http://127.0.0.1:' + PORT });
   check('WS PC (local) toujours accepte', local.ok, JSON.stringify(local));
   if (local.ok) local.ws.close();
