@@ -183,8 +183,8 @@
 
   var CMD_MSG = {
     sent: 'Envoye au terminal.',
-    denied: 'Refuse sur le PC.',
-    timeout: 'Delai de 90 s depasse : rien n a ete envoye.',
+    denied: 'Commande sensible refusee sur le PC.',
+    timeout: 'Commande sensible : accord non donne sur le PC en 90 s, rien n a ete envoye.',
     failed: 'Echec de l envoi au terminal.',
     CONTROL_CHARS: 'Une seule ligne de texte, sans caractere special.',
     EMPTY: 'Saisissez une commande.',
@@ -207,18 +207,18 @@
       T.fallback = pre('');
       host.appendChild(T.fallback);
     }
-    // Envoi d'une commande : toujours validee sur le PC (jamais de BYPASS).
+    // Envoi d'une commande : directe par defaut ; seules les commandes destructrices attendent l'accord du PC.
     var form = h('form', 'cmd');
     var input = h('input'); input.type = 'text'; input.maxLength = 2000; input.placeholder = 'Commande a envoyer au terminal...';
     input.setAttribute('autocomplete', 'off'); input.setAttribute('autocapitalize', 'none'); input.setAttribute('spellcheck', 'false'); input.setAttribute('enterkeyhint', 'send');
-    var send = h('button', 'btn', 'Envoyer au PC (a valider sur le PC)'); send.type = 'submit';
+    var send = h('button', 'btn', 'Envoyer au terminal'); send.type = 'submit';
     var res = muted('');
     form.appendChild(input); form.appendChild(send); form.appendChild(res);
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       if (!T.cur) { res.textContent = 'Aucun terminal selectionne.'; return; }
       var text = input.value;
-      send.disabled = true; res.textContent = 'En attente de votre accord sur le PC (90 s)...';
+      send.disabled = true; res.textContent = 'Envoi...';
       api('POST', '/api/remote/terminal/command', { termId: T.cur, text: text }).then(function (r) {
         var j = r.json || {};
         res.textContent = CMD_MSG[j.status === 'refused' ? j.code : j.status] || ('Reponse inattendue (' + r.status + ').');

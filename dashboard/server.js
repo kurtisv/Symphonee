@@ -89,6 +89,7 @@ const { createRemoteAccess, cookieFrom, sessionCookie, clearedCookie } = require
 const remoteGate = require('./lib/remote-gate');
 const remoteAccess = createRemoteAccess({ storePath: path.join(repoRoot, '.symphonee', 'remote-sessions.json') });
 const TAILNET_ORIGIN = process.env.SYMPHONEE_TAILNET_ORIGIN || null;
+const remoteSettings = require('./lib/remote-settings').createRemoteSettings({ filePath: path.join(repoRoot, '.symphonee', 'remote-settings.json') });
 let _remoteCommand = null; // created on first use (lib/remote-command.js)
 // Kill switch: enforcement is on unless config explicitly sets it false.
 function authTokenRequired() {
@@ -674,6 +675,11 @@ const server = http.createServer(async (req, res) => {
     }
     // PC-only (the gate refuses these to phones): start a pairing, list sessions.
     if (url.pathname === '/api/remote/pairing/start' && req.method === 'POST') return json(res, remoteAccess.startPairing());
+    if (url.pathname === '/api/remote/command-mode' && req.method === 'GET') return json(res, { mode: remoteSettings.getMode() });
+    if (url.pathname === '/api/remote/command-mode' && req.method === 'POST') {
+      let b = null; try { b = await readBody(req); } catch (_) { return json(res, { error: 'BAD_JSON' }, 400); }
+      try { return json(res, { mode: remoteSettings.setMode(b && b.mode) }); } catch (_) { return json(res, { error: 'bad_mode' }, 400); }
+    }
     if (url.pathname === '/api/remote/sessions' && req.method === 'GET')       return json(res, remoteAccess.listSessions());
     // PC-only: revoke one phone session ({id}) or all of them ({all:true}).
     if (url.pathname === '/api/remote/sessions/revoke' && req.method === 'POST') {
@@ -702,6 +708,8 @@ const server = http.createServer(async (req, res) => {
           inject: (termId, text) => orchestrator.inject(termId, text),
           listTerminals: () => Array.from(terminals.keys()),
           log: (m) => console.log('[remote] ' + m),
+          getMode: () => remoteSettings.getMode(),
+          audit: (e) => { try { fs.appendFileSync(path.join(repoRoot, '.symphonee', 'remote-commands.log'), JSON.stringify({ at: new Date().toISOString(), ...e }) + '\n'); } catch (_) {} },
         });
       }
       const r = await _remoteCommand.send({ termId: body && body.termId, text: body && body.text, sessionId: req.remoteSessionId || 'local' });

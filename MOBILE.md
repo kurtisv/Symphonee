@@ -26,10 +26,11 @@ Dans Chrome : menu des trois points, faire defiler, "Installer et creer un racco
 - Reglages : etat de la session, deconnexion.
 
 ## Envoyer une commande
-1. Onglet Terminal, choisir le terminal, ecrire une ligne, appuyer sur "Envoyer au PC".
-2. La demande apparait sur le PC dans la fenetre d'approbation. Il faut l'y accepter dans les 90 secondes.
-3. Rien ne s'execute sans cet accord, meme si le PC est en mode BYPASS. Le bouton "toujours autoriser" n'a aucun effet pour le telephone.
-4. Une seule ligne, 2000 caracteres au plus, sans caractere de controle.
+1. Onglet Terminal, choisir le terminal, ecrire une ligne, appuyer sur "Envoyer au terminal".
+2. Par defaut (mode `auto`) la commande part directement, sans rien valider sur le PC : prevu pour les deplacements. Chaque commande est inscrite dans `.symphonee/remote-commands.log` (heure, session, terminal, texte).
+3. Les commandes destructrices (`rm -rf`, `Remove-Item -Recurse`, `format`, `shutdown`, `git push --force`, `git reset --hard`, `git clean -f`, `git branch -D`, `| bash`, `iex`...) attendent toujours l'accord du PC (90 s), meme en mode `auto`.
+4. Pour revenir a la validation de CHAQUE commande sur le PC : `node scripts/mobile-pair.js mode ask` (et `mode auto` pour revenir). `mode` seul affiche le mode actuel. Le telephone ne peut pas changer ce reglage.
+5. Une seule ligne, 2000 caracteres au plus, sans caractere de controle.
 
 ## Ce que le telephone ne peut pas faire
 Approuver sa propre commande, lire la configuration ou les secrets (`config`, `.env`, cles, jetons), fusionner ou pousser du code, installer des plugins, redimensionner les terminaux du PC. Les fichiers caches, les dossiers `config` et `node_modules` et tout contenu qui ressemble a un secret sont invisibles.

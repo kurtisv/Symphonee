@@ -20,7 +20,7 @@ const MUTATING = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
 // The manifest and icon carry no data; the browser fetches them without the session cookie, so they must be public.
 const PUBLIC_REMOTE = new Set(['/remote', '/api/remote/pair', '/api/remote/session', '/mobile.webmanifest', '/icon.png']);
 // Never reachable from a phone, even with a session: pairing is started on the PC only.
-const LOCAL_ONLY = new Set(['/api/remote/pairing/start', '/api/remote/sessions', '/api/remote/sessions/revoke']);
+const LOCAL_ONLY = new Set(['/api/remote/pairing/start', '/api/remote/sessions', '/api/remote/sessions/revoke', '/api/remote/command-mode']);
 
 // DENY BY DEFAULT for a phone, even with a valid session. A session proves WHO is calling, not that every route is safe:
 // config and secrets stay on the PC, and the phone must never approve its own command (/api/permissions/resolve) or
