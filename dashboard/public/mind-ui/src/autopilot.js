@@ -472,7 +472,7 @@ const statusRequests = makeLatest();
         <p>${interventions} pilote(s) a examiner : erreurs, interruptions ou releves bloquees.</p>
         <p>${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.enabled).length} pilotes actifs | ${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.status === 'running').length} taches en cours | ${['default', 'gas-saver'].reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
         <p role="status" aria-live="polite">${ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45000 ? 'Etat perime ou inaccessible' : 'Derniere lecture fiable : ' + esc(when(ap.lastRead))}</p>
-        ${cardHtml(cardModel(s), esc, ap.busy)}
+        ${ap.loopView ? '' : cardHtml(cardModel(s), esc, ap.busy)}
         <div class="ap-grid" aria-label="Pilotes">
           ${['default', 'gas-saver'].map(pilotCard).join('')}
         </div>
