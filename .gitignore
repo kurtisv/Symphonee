@@ -13,6 +13,7 @@ dashboard/plugins/*
 !dashboard/plugins/browser-use/
 !dashboard/plugins/video-use/
 !dashboard/plugins/stagehand/
+!dashboard/plugins/freellm/
 dashboard/app-memory/*
 !dashboard/app-memory/README.md
 dashboard/app-recipes/*
