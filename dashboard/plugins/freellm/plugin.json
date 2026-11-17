@@ -1,0 +1,22 @@
+{
+  "id": "freellm",
+  "name": "FreeLLM",
+  "version": "0.1.0",
+  "sdkVersion": 2,
+  "description": "FreeLLMAPI on this PC: one local endpoint over several free model providers. Status and dashboard tab, automatic start, and a guarded provider for public or fictional tasks only (never real repositories, payroll or credentials).",
+  "icon": "sparkles",
+  "tint": "120, 200, 160",
+  "instructions": "instructions.md",
+  "aiKeywords": ["freellm", "free llm", "freellmapi", "free models", "gemini free", "free provider", "free tier", "provider gratuit"],
+  "activationConditions": { "always": true },
+  "settings": [
+    { "key": "autostart", "label": "Start FreeLLMAPI automatically with Symphonee", "type": "boolean", "default": true },
+    { "key": "installDir", "label": "FreeLLMAPI folder (empty = auto-detect, or SYMPHONEE_FREELLM_DIR)", "type": "string", "default": "" }
+  ],
+  "contributions": {
+    "routes": "routes.js",
+    "centerTabs": [
+      { "id": "freellm", "label": "FreeLLM", "icon": "sparkles", "html": "freellm.html" }
+    ]
+  }
+}
