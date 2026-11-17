@@ -228,7 +228,7 @@ function teachingProblems(t) {
   if (t.principle !== undefined && !isStr(t.principle, 20, 500)) p.push('principle');
   if (!Array.isArray(t.pitfalls) || t.pitfalls.length > 5 || t.pitfalls.some((x) => !isStr(x, 5, 220))) p.push('pitfalls');
   if (!isStr(t.verify, 10, 600)) p.push('verify');
-  if (!['claude', 'human'].includes(t.source)) p.push('source');
+  if (!['claude', 'human', 'freellm'].includes(t.source)) p.push('source');
   if (!isStr(t.model, 2, 60)) p.push('model');
   if (t.tokens !== null && !(Number.isInteger(t.tokens) && t.tokens >= 0)) p.push('tokens');
   if (!ERROR_CLASS.test(t.errorClass || '')) p.push('errorClass');

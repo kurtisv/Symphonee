@@ -15,6 +15,7 @@ const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
 const tq = require('./qwen-teaching');
+const freellmTeacher = require('./freellm-teacher');
 const applicability = require('./lesson-applicability');
 const failures = require('./qwen-failure-analysis');
 const { CHECKER_VERSION } = require('../orchestrator/qwen-pure-assertions');
@@ -403,7 +404,9 @@ class MindAutopilot {
       if (f.mind !== undefined && !['recallLessons', 'upsertLesson', 'recordLessonUse'].every(k => typeof f.mind?.[k] === 'function')) throw new Error('Invalid Qwen fixture Mind');
       this.qwenFixture = Object.freeze({ ...f });
     } else this.qwenFixture = null;
-    this.orch = orchestrator; this.repoRoot = repoRoot; this.getUiContext = getUiContext;
+    // Optional free teacher (FreeLLM on this machine): active only with a key, only for the fictional fixture.
+    this.freellm = freellmTeacher.createTaskBridge({ getConfig: () => freellmTeacher.loadConfig({ dataDir: path.join(repoRoot, '.symphonee') }) });
+    this.orch = this.freellm.wrap(orchestrator); this.repoRoot = repoRoot; this.getUiContext = getUiContext;
     this.getRepoPath = getRepoPath; this.getRepos = getRepos || (() => ({}));
     this.broadcast = broadcast || (() => {});
     if (!PILOT_ID.test(id)) throw new Error('Invalid pilot id');
@@ -1315,7 +1318,8 @@ class MindAutopilot {
   dispatchQwenFixture(stage, now) {
     const a = this.state.active, f = this.qwenFixture;
     if (!['implement', 'code-review', 'repair', 'teach'].includes(stage)) throw new Error('Qwen fixture uses only implement, code-review, repair and teach');
-    const cli = stage === 'code-review' ? 'codex' : stage === 'teach' ? 'claude' : 'qwen3-4b-docker';
+    const useFreellm = stage === 'teach' && this.freellm.ready();
+    const cli = stage === 'code-review' ? 'codex' : stage === 'teach' ? (useFreellm ? 'freellm' : 'claude') : 'qwen3-4b-docker';
     const charge = budget.reserveCall(this.state, { cli, stage, at: now, ref: crypto.randomUUID() }, this.limits);
     if (!charge) throw new Error('Fixture call budget reached');
     let task;
@@ -1324,7 +1328,7 @@ class MindAutopilot {
       const prompt = tq.buildTeacherPrompt({ fn: f.assertions[0].export, requirements: f.requirements, subset: FIXTURE_SUBSET, failures: p.observations,
         attempts: a.attempts.slice(-3).map(x => ({ attempt: x.attempt, code: tq.codeOf(x.diff), outcome: x.review ? 'Codex ' + x.review.decision : (x.technical && x.technical.passed ? 'checks passed' : 'refused by the independent checker') })),
         counterexamples: (a.extraCases || []).map(c => c.export + '(' + JSON.stringify(c.args).slice(1, -1) + ') must return ' + JSON.stringify(c.expected)) });
-      task = this.orch.spawnHeadless(tq.teacherSpawnOptions({ prompt, cwd: f.root, space: this.state.space }));
+      task = useFreellm ? this.freellm.spawn({ prompt, scope: freellmTeacher.FIXTURE_SCOPE }) : this.orch.spawnHeadless(tq.teacherSpawnOptions({ prompt, cwd: f.root, space: this.state.space }));
     } else if (stage === 'code-review') {
       const { buildFixtureReviewRequest } = require('../orchestrator/qwen-supervision');
       const reviewMs = Math.min(this.stepMs, 600000);
@@ -1434,7 +1438,7 @@ class MindAutopilot {
     try {
       const parsed = tq.parseTeaching(t.result, { fn: f.assertions[0].export });
       const tokens = tq.teacherTokens(t.usage);
-      const teaching = { ...parsed, source: 'claude', model: String(t.model || 'claude'), tokens, errorClass: p.errorClass, family: f.family };
+      const teaching = { ...parsed, source: t.freellm ? 'freellm' : 'claude', model: String(t.model || (t.freellm ? 'freellm' : 'claude')), tokens, errorClass: p.errorClass, family: f.family };
       lessons.attachTeaching(f.lessonsRoot, this.fixtureLessonScope(), p.lessonKey, teaching);
       a.teaching = { key: p.lessonKey, ...parsed, errorClass: p.errorClass, tokens, signature: p.signature, failedAttempts: p.failedAttempts, afterAttempt: a.attempts.length, at: now };
       note.accepted = true;
