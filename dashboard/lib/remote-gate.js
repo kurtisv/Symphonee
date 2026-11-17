@@ -20,13 +20,13 @@ const MUTATING = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
 // The manifest and icon carry no data; the browser fetches them without the session cookie, so they must be public.
 const PUBLIC_REMOTE = new Set(['/remote', '/api/remote/pair', '/api/remote/session', '/mobile.webmanifest', '/icon.png']);
 // Never reachable from a phone, even with a session: pairing is started on the PC only.
-const LOCAL_ONLY = new Set(['/api/remote/pairing/start', '/api/remote/sessions']);
+const LOCAL_ONLY = new Set(['/api/remote/pairing/start', '/api/remote/sessions', '/api/remote/sessions/revoke']);
 
 // DENY BY DEFAULT for a phone, even with a valid session. A session proves WHO is calling, not that every route is safe:
 // config and secrets stay on the PC, and the phone must never approve its own command (/api/permissions/resolve) or
 // run destructive routes (git push, merge, plugin install...) that BYPASS mode would otherwise let through.
 const REMOTE_GET_ALLOW = new Set([
-  '/mobile', '/mobile.css', '/mobile.js', '/mobile.webmanifest', '/icon.png',
+  '/mobile', '/mobile.css', '/mobile.js', '/mobile-settings.js', '/mobile-files.js', '/mobile.webmanifest', '/icon.png',
   '/xterm.js', '/xterm.css', '/xterm-addon-fit.js', '/xterm-addon-unicode11.js',
   '/ws', // WebSocket upgrade (terminal output); its own checks are in server.js
   '/api/busy', '/api/startup/status', '/api/ui/context', '/api/remote/session',
@@ -35,6 +35,7 @@ const REMOTE_GET_ALLOW = new Set([
   '/api/learnings', '/api/jobs', '/api/ledger', '/api/repos',
   '/api/git/status', '/api/git/branches', '/api/git/log',
   '/api/permissions/pending', '/api/github/pulls',
+  '/api/remote/files', '/api/remote/file', // read-only, sandboxed file browsing (lib/remote-files.js)
 ]);
 // Writes a phone may do: log out, ask for ONE terminal command (approved on the PC), and search Mind (read-only POST).
 const REMOTE_WRITE_ALLOW = new Set(['/api/remote/logout', '/api/remote/terminal/command', '/api/mind/recall']);

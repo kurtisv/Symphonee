@@ -102,6 +102,8 @@ const ROUTES = {
   '/mobile':                  { file: path.join(publicDir, 'mobile.html'),                                         type: 'text/html' },
   '/mobile.css':              { file: path.join(publicDir, 'mobile.css'),                                          type: 'text/css' },
   '/mobile.js':               { file: path.join(publicDir, 'mobile.js'),                                           type: 'application/javascript' },
+  '/mobile-settings.js':      { file: path.join(publicDir, 'mobile-settings.js'),                                  type: 'application/javascript' },
+  '/mobile-files.js':         { file: path.join(publicDir, 'mobile-files.js'),                                     type: 'application/javascript' },
   '/mobile.webmanifest':      { file: path.join(publicDir, 'mobile.webmanifest'),                                  type: 'application/manifest+json' },
   '/icon.png':                { file: path.join(publicDir, 'icon.png'),                                             type: 'image/png' },
   '/styles/app.css':          { file: path.join(publicDir, 'styles', 'app.css'),                                   type: 'text/css' },
@@ -673,6 +675,23 @@ const server = http.createServer(async (req, res) => {
     // PC-only (the gate refuses these to phones): start a pairing, list sessions.
     if (url.pathname === '/api/remote/pairing/start' && req.method === 'POST') return json(res, remoteAccess.startPairing());
     if (url.pathname === '/api/remote/sessions' && req.method === 'GET')       return json(res, remoteAccess.listSessions());
+    // PC-only: revoke one phone session ({id}) or all of them ({all:true}).
+    if (url.pathname === '/api/remote/sessions/revoke' && req.method === 'POST') {
+      let body = null;
+      try { body = await readBody(req); } catch (_) { return json(res, { ok: false, code: 'BAD_JSON' }, 400); }
+      if (body && body.all === true) { remoteAccess.revokeAll(); return json(res, { ok: true, revoked: 'all' }); }
+      if (body && typeof body.id === 'string' && remoteAccess.revoke(body.id)) return json(res, { ok: true, revoked: body.id });
+      return json(res, { ok: false, code: 'NOT_FOUND' }, 404);
+    }
+    // Phone: read-only file browsing, strictly sandboxed (lib/remote-files.js). The desktop /api/files is NOT exposed.
+    if ((url.pathname === '/api/remote/files' || url.pathname === '/api/remote/file') && req.method === 'GET') {
+      const rp = getRepoPath(url.searchParams.get('repo'));
+      if (!rp) return json(res, { ok: false, code: 'NO_REPO' }, 400);
+      const rfiles = require('./lib/remote-files');
+      const rel = url.searchParams.get('path') || '';
+      const r = url.pathname === '/api/remote/files' ? rfiles.listDir(rp, rel) : rfiles.readFile(rp, rel);
+      return json(res, r, r.ok ? 200 : (r.code === 'NOT_FOUND' ? 404 : 403));
+    }
     // Phone -> terminal: ONE command line, only after the owner approves it ON THE PC (never BYPASS).
     if (url.pathname === '/api/remote/terminal/command' && req.method === 'POST') {
       let body = null;

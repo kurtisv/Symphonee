@@ -104,6 +104,26 @@ const LOCAL_TOKEN = { 'x-symphonee-token': TOKEN };
   r = await req({ path: '/api/permissions/pending', headers: phone({}, 'sym_remote=' + c2) });
   check('Liste blanche : /api/permissions/pending (lecture) accessible', r.status === 200, 'status ' + r.status);
 
+  // 5c. Read-only files: sandboxed. Repo name comes from the PC's own repo list (first one), never from the phone.
+  const repos = (await req({ path: '/api/repos', headers: LOCAL_TOKEN })).json() || {};
+  const repoName = Object.keys(repos)[0];
+  if (repoName) {
+    const q = (p, extra) => '/api/remote/' + p + '?repo=' + encodeURIComponent(repoName) + (extra || '');
+    r = await req({ path: q('files', '&path='), headers: phone({}, 'sym_remote=' + c2) });
+    check('Fichiers : le telephone liste la racine du projet', r.status === 200 && r.json() && r.json().ok === true, 'status ' + r.status + ' ' + r.text.slice(0, 80));
+    const names = ((r.json() || {}).entries || []).map(e => e.name);
+    check('Fichiers : aucun fichier cache ni config dans la liste', !names.some(n => /^\.|^config$|^node_modules$/i.test(n)), names.join(','));
+    for (const bad of ['config/runtime.json', 'config/config.json', '.env', '.git/config', '../x', 'config/../config/runtime.json']) {
+      r = await req({ path: q('file', '&path=' + encodeURIComponent(bad)), headers: phone({}, 'sym_remote=' + c2) });
+      check('Fichiers : lecture de ' + bad + ' refusee', r.status >= 400 && !r.text.includes(TOKEN), 'status ' + r.status);
+    }
+    r = await req({ path: q('file', '&path=README.md'), headers: phone() });
+    check('Fichiers : sans session -> 401', r.status === 401, 'status ' + r.status);
+  }
+  // 5d. Session revocation is PC-only.
+  r = await req({ method: 'POST', path: '/api/remote/sessions/revoke', headers: phone({ Origin: ORIGIN }, 'sym_remote=' + c2), body: { all: true } });
+  check('Revocation : refusee au telephone (LOCAL_ONLY)', r.status === 403 && r.json().code === 'LOCAL_ONLY', 'status ' + r.status);
+
   // 6. Symphonee Mobile pages: session required, no token injected for a phone, PC unchanged.
   r = await req({ path: '/mobile', headers: phone() });
   check('Mobile sans session -> refuse (401 ou redirection)', r.status === 401 || r.status === 302, 'status ' + r.status);

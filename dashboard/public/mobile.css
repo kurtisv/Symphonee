@@ -60,3 +60,6 @@ pre {
 form.cmd { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 form.cmd input { width: 100%; min-height: 48px; padding: 10px 12px; font-size: 16px; border-radius: 8px; border: 1px solid #333; background: #161616; color: #fff; }
 .btn:disabled { opacity: .5; }
+
+.gear { background: none; border: 1px solid #333; color: #ccc; border-radius: 8px; min-height: 36px; padding: 4px 10px; font-size: 13px; margin-left: 8px; }
+.top { gap: 8px; }

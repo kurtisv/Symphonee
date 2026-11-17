@@ -7,6 +7,8 @@
   var buttons = Array.prototype.slice.call(document.querySelectorAll('.nav-bar .col'));
   var homeTimer = null;
   var current = 'home';
+  // Page modules written as separate small files register here: window.SymMobilePages.<name> = function (M, ...) {...}
+  window.SymMobilePages = window.SymMobilePages || {};
 
   // ---------- utilitaires d'affichage ----------
   function h(tag, cls, text) {
@@ -94,7 +96,8 @@
     ]).then(function (r) {
       if (current !== 'home') return;
       renderHome(box, { agents: r[0], tasks: r[1], pilots: r[2], jobs: r[3], ledger: r[4], pending: r[5], stats: r[6] });
-      status.textContent = 'en ligne';
+      var np = arr(r[5]).length;
+      status.textContent = np ? 'en ligne - ' + np + ' a valider sur le PC' : 'en ligne';
     }).catch(function (e) {
       if (e && e.message === 'session') return;
       status.textContent = 'hors ligne';
@@ -110,7 +113,7 @@
   }
 
   // ---------- Terminal ----------
-  var T = { ws: null, timer: null, retry: 0, cur: null, list: [], buf: {}, size: {}, xt: null, host: null, chips: null, note: null, fallback: null };
+  var T = { ws: null, timer: null, retry: 0, cur: null, picked: false, list: [], buf: {}, size: {}, xt: null, host: null, chips: null, note: null, fallback: null };
   var MAX_BUF = 120000;
 
   function plain(s) {
@@ -133,11 +136,12 @@
     T.chips.replaceChildren();
     T.list.forEach(function (id) {
       var b = h('button', 'chip' + (id === T.cur ? ' on' : ''), id);
-      b.addEventListener('click', function () { useTerm(id); });
+      b.addEventListener('click', function () { T.picked = true; useTerm(id); });
       T.chips.appendChild(b);
     });
   }
-  function addTerm(id) { if (T.list.indexOf(id) < 0) { T.list.push(id); if (!T.cur) T.cur = id; drawChips(); } }
+  // Le terminal principal (main) est choisi par defaut, sauf si l'utilisateur en a touche un autre.
+  function addTerm(id) { if (T.list.indexOf(id) < 0) { T.list.push(id); drawChips(); } if (!T.cur || (id === 'main' && !T.picked)) T.cur = id; }
 
   function onTermMessage(raw) {
     var m; try { m = JSON.parse(raw); } catch (e) { return; }
@@ -323,6 +327,14 @@
         detail.appendChild(card('Branches (' + br.length + ')', list(br.slice(0, 15).map(function (b) { return row(clip(typeof b === 'string' ? b : (b.name || ''), 48), b.current ? 'actuelle' : ''); }), 'Aucune branche lisible.')));
         var cm = arr(r[2], ['commits']);
         detail.appendChild(card('Derniers commits', list(cm.map(function (c) { return row(clip(c.message || c.subject || c.title || '', 50), String(c.hash || c.sha || '').slice(0, 7)); }), 'Aucun commit.')));
+        var fbtn = h('button', 'btn', 'Parcourir les fichiers (lecture seule)');
+        var fbox = h('div');
+        fbtn.addEventListener('click', function () {
+          var f = window.SymMobilePages && window.SymMobilePages.files;
+          if (typeof f !== 'function') { fbox.replaceChildren(muted('Indisponible.')); return; }
+          try { f(M, name, fbox); } catch (e) { fbox.replaceChildren(muted('Erreur du navigateur de fichiers.')); }
+        });
+        detail.appendChild(card('Fichiers', (function () { var d = h('div'); d.appendChild(fbtn); d.appendChild(fbox); return d; })()));
         var prs = arr(r[3], ['pulls', 'pullRequests', 'items']);
         detail.appendChild(card('Pull requests ouvertes (' + prs.length + ')', list(prs.slice(0, 10).map(function (p) { return row('#' + p.number + ' ' + clip(p.title, 40), p.author || (p.user && p.user.login) || ''); }), (r[3] && r[3].error) ? 'Indisponible : ' + r[3].error : 'Aucune pull request ouverte.')));
       });
@@ -336,8 +348,17 @@
     });
   }
 
+  // Helpers given to the page modules (settings, files). Read-only API access, no token.
+  var M = { h: h, card: card, muted: muted, pre: pre, row: row, list: list, clip: clip, hhmm: hhmm, arr: arr, api: api, getJson: getJson, quiet: quiet, content: content, status: status };
+  function modulePage(name, title) {
+    var f = window.SymMobilePages && window.SymMobilePages[name];
+    if (typeof f !== 'function') { content.replaceChildren(card(title, muted('Indisponible.'))); return; }
+    try { f(M); } catch (e) { content.replaceChildren(card(title, muted('Cette page a rencontre une erreur.'))); }
+  }
+
   // ---------- navigation ----------
-  var pages = { home: showHome, terminal: showTerminal, mind: showMind, autopilotes: showAutopilots, projets: showProjects };
+  var pages = {
+    settings: function () { modulePage('settings', 'Reglages'); }, home: showHome, terminal: showTerminal, mind: showMind, autopilotes: showAutopilots, projets: showProjects };
   function go(name) {
     clearInterval(homeTimer); homeTimer = null;
     if (name !== 'terminal') stopTerm();
@@ -348,5 +369,7 @@
     (pages[name] || pages.home)();
   }
   buttons.forEach(function (b) { b.addEventListener('click', function () { go(b.getAttribute('data-page')); }); });
+  var gear = document.getElementById('gear');
+  if (gear) gear.addEventListener('click', function () { go('settings'); });
   go('home');
 })();
