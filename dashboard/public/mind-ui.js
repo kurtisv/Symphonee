@@ -408,8 +408,8 @@
                       }
                       const r = radii[i] + radii[j] + padding;
                       if (dist < r) {
-                        const overlap = (r - dist) / dist * 0.5 * Math.min(1, alpha * 4 + 0.4);
-                        const mx = ddx * overlap, my = ddy * overlap;
+                        const overlap2 = (r - dist) / dist * 0.5 * Math.min(1, alpha * 4 + 0.4);
+                        const mx = ddx * overlap2, my = ddy * overlap2;
                         a.x -= mx;
                         a.y -= my;
                         b.x += mx;
@@ -2728,9 +2728,9 @@
     if (!rows || rows.length === 0) return '<div style="color:var(--subtext0);font-size:11px;font-style:italic;">empty</div>';
     const cap = Math.max(1, ...rows.map((r) => r.value));
     return '<div class="mind-list">' + rows.slice(0, maxRows || 12).map((r) => {
-      const pct = r.value / cap * 100;
+      const pct2 = r.value / cap * 100;
       const color = r.color || "#89b4fa";
-      return `<div class="mind-bar"><div class="mind-bar-label" title="${escapeHtml(r.label)}${r.hint ? " (" + escapeHtml(r.hint) + ")" : ""}">${escapeHtml(r.label)}</div><div class="mind-bar-track"><div class="mind-bar-fill" style="width:${pct.toFixed(1)}%;background:${color}"></div></div><div class="mind-bar-num">${escapeHtml(String(r.value))}</div></div>`;
+      return `<div class="mind-bar"><div class="mind-bar-label" title="${escapeHtml(r.label)}${r.hint ? " (" + escapeHtml(r.hint) + ")" : ""}">${escapeHtml(r.label)}</div><div class="mind-bar-track"><div class="mind-bar-fill" style="width:${pct2.toFixed(1)}%;background:${color}"></div></div><div class="mind-bar-num">${escapeHtml(String(r.value))}</div></div>`;
     }).join("") + "</div>";
   }
   function donut(slices, size) {
@@ -2752,21 +2752,21 @@
     return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${arcs}<circle cx="${cx}" cy="${cy}" r="${inner}" fill="var(--mantle)"/><text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="13" fill="var(--text)" font-family="monospace">${total}</text></svg>`;
   }
   function legendItem(color, label, value, total) {
-    const pct = total > 0 ? Math.round(value / total * 100) : 0;
-    return `<div style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;background:${color};border-radius:2px;flex-shrink:0;"></span><span style="color:var(--subtext1);min-width:80px;">${label}</span><span style="color:var(--text);font-variant-numeric:tabular-nums;">${value}</span><span style="color:var(--subtext0);font-size:10px;">(${pct}%)</span></div>`;
+    const pct2 = total > 0 ? Math.round(value / total * 100) : 0;
+    return `<div style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;background:${color};border-radius:2px;flex-shrink:0;"></span><span style="color:var(--subtext1);min-width:80px;">${label}</span><span style="color:var(--text);font-variant-numeric:tabular-nums;">${value}</span><span style="color:var(--subtext0);font-size:10px;">(${pct2}%)</span></div>`;
   }
   function godRow(x, max) {
-    const pct = x.degree / max * 100;
-    return `<a href="#" class="mind-rank-row mind-godlink" data-id="${escapeHtml(x.id)}"><span class="mind-rank-label" title="${escapeHtml(x.label)}">${escapeHtml(x.label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct.toFixed(1)}%;background:#fab387"></span></span><span class="mind-rank-meta"><strong>${x.degree}</strong><span>connections</span></span></a>`;
+    const pct2 = x.degree / max * 100;
+    return `<a href="#" class="mind-rank-row mind-godlink" data-id="${escapeHtml(x.id)}"><span class="mind-rank-label" title="${escapeHtml(x.label)}">${escapeHtml(x.label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct2.toFixed(1)}%;background:#fab387"></span></span><span class="mind-rank-meta"><strong>${x.degree}</strong><span>connections</span></span></a>`;
   }
   function contributorRow(label, value, max) {
-    const pct = value / max * 100;
-    return `<div class="mind-rank-row"><span class="mind-rank-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct.toFixed(1)}%;background:${cliColor(label)}"></span></span><span class="mind-rank-meta"><strong>${value}</strong><span>entries</span></span></div>`;
+    const pct2 = value / max * 100;
+    return `<div class="mind-rank-row"><span class="mind-rank-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct2.toFixed(1)}%;background:${cliColor(label)}"></span></span><span class="mind-rank-meta"><strong>${value}</strong><span>entries</span></span></div>`;
   }
   function communityRow(cid, c, maxSize) {
     const cohesionPct = Math.round((c.cohesion || 0) * 100);
-    const pct = (c.size || 0) / Math.max(1, maxSize) * 100;
-    return `<a href="#" class="mind-rank-row" data-cid="${escapeHtml(cid)}"><span class="mind-rank-label" title="${escapeHtml(c.label)}">#${cid} ${escapeHtml(c.label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct.toFixed(1)}%;background:${communityColor(parseInt(cid, 10))}"></span></span><span class="mind-rank-meta"><strong>${c.size} nodes</strong><span>${cohesionPct}% cohesion</span></span></a>`;
+    const pct2 = (c.size || 0) / Math.max(1, maxSize) * 100;
+    return `<a href="#" class="mind-rank-row" data-cid="${escapeHtml(cid)}"><span class="mind-rank-label" title="${escapeHtml(c.label)}">#${cid} ${escapeHtml(c.label)}</span><span class="mind-rank-track"><span class="mind-rank-fill" style="width:${pct2.toFixed(1)}%;background:${communityColor(parseInt(cid, 10))}"></span></span><span class="mind-rank-meta"><strong>${c.size} nodes</strong><span>${cohesionPct}% cohesion</span></span></a>`;
   }
   function convRow(n) {
     const cli = (n.createdBy || "unknown").split("-")[0];
@@ -3269,6 +3269,154 @@
   @keyframes apcPulse { 0%,100% { box-shadow:0 0 0 0 rgba(137,180,250,.5); } 50% { box-shadow:0 0 0 6px rgba(137,180,250,0); } }
 `;
 
+  // dashboard/public/mind-ui/src/autopilot-overview.js
+  var DAY = 1440;
+  var clip2 = (v, n) => {
+    const t = String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+    return t.length > n ? t.slice(0, n - 3) + "..." : t;
+  };
+  var hhmm = (m) => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+  function pilotIdsFrom(pilots, fallback = ["default", "gas-saver"]) {
+    const ids = (Array.isArray(pilots) ? pilots : []).map((p) => p && p.pilot).filter((x) => typeof x === "string" && x);
+    return ids.length ? [...new Set(ids)] : fallback.slice();
+  }
+  function parseWindow(text) {
+    const m = /(\d{1,2}):(\d{2})\s*[^\d\s:]+\s*(\d{1,2}):(\d{2})/.exec(String(text || ""));
+    if (!m) return null;
+    const a = Number(m[1]) * 60 + Number(m[2]);
+    const b = Number(m[3]) * 60 + Number(m[4]);
+    if (![a, b].every((x) => x >= 0 && x <= DAY) || m[1] > 24 || m[3] > 24 || a === b) return null;
+    return b > a ? { start: a, end: b, segments: [[a, b]] } : { start: a, end: b, segments: [[a, DAY], [0, b]] };
+  }
+  function overlap(a, b) {
+    const out = [];
+    for (const [s1, e1] of a) for (const [s2, e2] of b) {
+      const s = Math.max(s1, s2), e = Math.min(e1, e2);
+      if (e > s) out.push([s, e]);
+    }
+    return out;
+  }
+  var STATE_LABEL = { working: "travaille", resting: "en pause", stopped: "arretee", error: "en erreur" };
+  function calendarModel(loops, now = /* @__PURE__ */ new Date()) {
+    const list = Array.isArray(loops) ? loops : [];
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const rows = [];
+    const unscheduled = [];
+    for (const l of list) {
+      if (!l) continue;
+      const w = parseWindow(l.window);
+      const row = {
+        id: String(l.id || l.label || ""),
+        label: clip2(l.label || l.name || l.id || "Boucle", 60),
+        kind: l.kind || "",
+        status: l.status || "unknown",
+        statusLabel: l.statusLabel || STATE_LABEL[l.status] || "etat inconnu",
+        windowText: w ? hhmm(w.start) + " a " + hhmm(w.end) : "",
+        segments: w ? w.segments : []
+      };
+      row.inWindowNow = w ? w.segments.some(([s, e]) => nowMin >= s && nowMin < e) : null;
+      row.runningNow = l.status === "working";
+      if (w) rows.push(row);
+      else unscheduled.push({ id: row.id, label: row.label, text: clip2(l.window || "plage non fournie", 90), status: row.status, statusLabel: row.statusLabel });
+    }
+    const overlaps = [];
+    for (let i = 0; i < rows.length; i++) for (let j = i + 1; j < rows.length; j++) {
+      for (const [s, e] of overlap(rows[i].segments, rows[j].segments)) overlaps.push({ a: rows[i].label, b: rows[j].label, from: s, to: e, text: rows[i].label + " et " + rows[j].label + " se chevauchent de " + hhmm(s) + " a " + (e === DAY ? "24:00" : hhmm(e)) });
+    }
+    return { nowMin, nowText: hhmm(nowMin), rows, unscheduled, overlaps };
+  }
+  function kpiModel({ loops, pilotSnaps, now = Date.now(), fresh = true } = {}) {
+    const known = Array.isArray(loops);
+    const L = known ? loops.filter((l) => l && l.kind !== "script") : [];
+    const stale = !fresh;
+    const mk = (id, label, value, sub, formula, state2) => ({ id, label, value, sub, formula, state: state2 === "ok" && stale ? "stale" : state2 });
+    const active = L.filter((l) => l.status === "working" || l.status === "resting");
+    const errors = L.filter((l) => l.status === "error");
+    const resting = L.filter((l) => l.status === "resting");
+    const working = L.filter((l) => l.status === "working");
+    const k1 = known ? mk(
+      "active",
+      "Boucles actives",
+      String(active.length),
+      resting.length + " planifiee(s) / " + errors.length + " en erreur",
+      `Boucles dont l'etat est "travaille" ou "en pause" (activees). Les arretees et en erreur sont exclues. Source : /api/automation/loops.`,
+      "ok"
+    ) : mk("active", "Boucles actives", "-", "Indisponible", "Source : /api/automation/loops (non recue).", "unknown");
+    const k2 = known ? mk(
+      "running",
+      "Taches en cours",
+      String(working.length),
+      working.length ? working.map((l) => clip2(l.label || l.name || l.id, 28)).join(", ") : "Aucune tache en cours",
+      `Boucles a l'etat "travaille" (execution constatee), tous types confondus. Pas le nombre de pilotes actives. Source : /api/automation/loops.`,
+      "ok"
+    ) : mk("running", "Taches en cours", "-", "Indisponible", "Source : /api/automation/loops (non recue).", "unknown");
+    const snaps = (Array.isArray(pilotSnaps) ? pilotSnaps : []).filter((s) => s && Array.isArray(s.history));
+    let done = 0;
+    for (const s of snaps) for (const h of s.history) if (h && h.outcome === "completed" && Number.isFinite(h.at) && h.at >= now - 864e5 && h.at <= now + 6e4) done++;
+    const k3 = snaps.length ? mk(
+      "verified",
+      "Travaux locaux termines (24 h)",
+      String(done),
+      "Taches d'autopilote terminees avec succes (verification locale + revue). Pas une PR fusionnee.",
+      `Entrees d'historique des pilotes Mind avec le resultat "Reussie" datees de moins de 24 h. Ne couvre pas les boucles de graphe. Source : /api/mind/autopilot (historique).`,
+      "ok"
+    ) : mk("verified", "Travaux locaux termines (24 h)", "-", "Historique des pilotes non recu", "Source : /api/mind/autopilot (historique), non recue.", "unknown");
+    const k4 = mk(
+      "lessons",
+      "Nouvelles lecons Mind (24 h)",
+      "-",
+      "Non mesure : aucune source datee pour les lecons certifiees",
+      "Aucune route ne fournit les lecons certifiees avec leur date. Le chiffre sera affiche des qu'elle existe ; aucune valeur n'est supposee.",
+      "unknown"
+    );
+    return [k1, k2, k3, k4];
+  }
+  function kpiHtml(cards, esc2) {
+    if (!cards || !cards.length) return "";
+    return '<section class="apo-kpis" aria-label="Indicateurs">' + cards.map((c) => {
+      const note = c.state === "stale" ? ' <span class="apo-stale">donnee perimee</span>' : "";
+      return '<article class="apo-kpi" data-state="' + esc2(c.state) + '" title="' + esc2(c.formula) + '"><div class="apo-kpi-top"><span class="apo-kpi-ico" aria-hidden="true"></span><span class="apo-kpi-label">' + esc2(c.label) + '</span></div><div class="apo-kpi-val">' + esc2(c.value) + '</div><div class="apo-kpi-sub">' + esc2(c.sub) + note + "</div></article>";
+    }).join("") + "</section>";
+  }
+  var pct = (m) => (m / DAY * 100).toFixed(3) + "%";
+  function calendarHtml(m, esc2) {
+    if (!m) return "";
+    const ticks = [0, 4, 8, 12, 16, 20, 24].map((h) => '<span class="apo-tick" style="left:' + pct(h * 60) + '">' + (h === 0 ? "minuit" : h === 24 ? "" : String(h).padStart(2, "0") + " h") + "</span>").join("");
+    const rows = m.rows.map((r) => {
+      const segs = r.segments.map(([s, e]) => '<i class="apo-seg apo-' + esc2(r.status) + (r.runningNow && r.inWindowNow && s <= m.nowMin && m.nowMin < e ? " apo-live" : "") + '" style="left:' + pct(s) + ";width:" + pct(e - s) + '"></i>').join("");
+      return '<li class="apo-row"><div class="apo-name"><b>' + esc2(r.label) + "</b><span>" + esc2(r.windowText) + " | " + esc2(r.statusLabel) + (r.inWindowNow === false && r.status !== "stopped" ? " | hors plage maintenant" : "") + '</span></div><div class="apo-track" role="img" aria-label="' + esc2(r.label + " : " + r.windowText) + '">' + segs + '<b class="apo-now" style="left:' + pct(m.nowMin) + '"></b></div></li>';
+    }).join("");
+    const un = m.unscheduled.length ? '<div class="apo-unsched"><b>Sans plage fixe</b>' + m.unscheduled.map((u) => "<span>" + esc2(u.label) + " : " + esc2(u.text) + " (" + esc2(u.statusLabel) + ")</span>").join("") + "</div>" : "";
+    const ov = m.overlaps.length ? '<div class="apo-warn" role="status">' + m.overlaps.map((o) => esc2(o.text)).join(" ; ") + ". Une seule tache tourne a la fois, toutes boucles confondues.</div>" : '<div class="apo-ok">Aucun chevauchement de plages.</div>';
+    return '<section class="ap-card apo-cal" aria-label="Calendrier des boucles sur 24 h"><div class="ap-title">Boucles sur 24 h (heure locale, il est ' + esc2(m.nowText) + ")</div>" + (m.rows.length ? '<div class="apo-axis" aria-hidden="true">' + ticks + '</div><ul class="apo-rows">' + rows + "</ul>" : '<div class="ap-muted">Aucune plage horaire fournie par les boucles.</div>') + ov + un + `<div class="ap-note">Plages prevues, lues sur la configuration des boucles. Le trait "maintenant" suit l'horloge de ce poste ; une plage pleine ne prouve pas qu'une tache tourne.</div></section>`;
+  }
+  var OVERVIEW_CSS = `
+  .apo-kpis { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; }
+  .apo-kpi { background:var(--mantle); border:1px solid var(--surface1); border-radius:8px; padding:12px 14px; display:grid; gap:4px; min-width:0; }
+  .apo-kpi[data-state="unknown"] { border-style:dashed; } .apo-kpi[data-state="stale"] { border-color:var(--yellow); }
+  .apo-kpi-top { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--subtext0); }
+  .apo-kpi-ico { width:10px; height:10px; border-radius:50%; background:var(--accent); flex:none; }
+  .apo-kpi-val { font-size:30px; font-weight:700; color:var(--text); line-height:1.1; }
+  .apo-kpi-sub { font-size:13px; color:var(--subtext0); overflow-wrap:anywhere; }
+  .apo-stale { color:var(--yellow); font-weight:600; }
+  .apo-cal { display:grid; gap:10px; }
+  .apo-axis { position:relative; height:16px; margin-left:230px; font-size:12px; color:var(--subtext0); }
+  .apo-tick { position:absolute; transform:translateX(-50%); white-space:nowrap; }
+  .apo-rows { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+  .apo-row { display:grid; grid-template-columns:220px 1fr; gap:10px; align-items:center; }
+  .apo-name { display:grid; min-width:0; font-size:13px; } .apo-name b { color:var(--text); font-size:14px; overflow-wrap:anywhere; } .apo-name span { color:var(--subtext0); }
+  .apo-track { position:relative; height:22px; background:var(--surface0); border-radius:6px; overflow:hidden; }
+  .apo-seg { position:absolute; top:3px; bottom:3px; border-radius:4px; background:var(--surface2); border:1px solid var(--overlay0, var(--surface2)); box-sizing:border-box; }
+  .apo-seg.apo-working { background:var(--accent); border-color:var(--accent); } .apo-seg.apo-resting { background:color-mix(in srgb, var(--accent) 40%, var(--surface1)); border-color:var(--accent); }
+  .apo-seg.apo-error { background:color-mix(in srgb, var(--red) 55%, var(--surface1)); border-color:var(--red); } .apo-seg.apo-stopped { background:var(--surface1); }
+  .apo-seg.apo-live { box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+  .apo-now { position:absolute; top:0; bottom:0; width:2px; background:var(--text); }
+  .apo-warn { font-size:13px; color:var(--yellow); } .apo-ok { font-size:13px; color:var(--subtext0); }
+  .apo-unsched { display:grid; gap:2px; font-size:13px; color:var(--subtext0); } .apo-unsched b { color:var(--text); }
+  @media (max-width: 900px) { .apo-kpis { grid-template-columns:repeat(2, minmax(0,1fr)); } .apo-row { grid-template-columns:1fr; gap:4px; } .apo-axis { margin-left:0; } }
+  @media (max-width: 460px) { .apo-kpis { grid-template-columns:1fr; } }
+`;
+
   // dashboard/public/mind-ui/src/autopilot.js
   var snapshots = createSnapshotStore();
   var statusRequests = makeLatest();
@@ -3325,6 +3473,10 @@
   } catch (_) {
   }
   var esc = (v) => escapeHtml(v == null ? "" : String(v));
+  var pilotIds = () => pilotIdsFrom(ap.pilots);
+  var readIsFresh = () => !(ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45e3);
+  var overviewKpis = () => kpiHtml(kpiModel({ loops: ap.loops && ap.loops.loops, pilotSnaps: pilotIds().map((id) => snapshots.get(id)).filter(Boolean), fresh: readIsFresh() }), esc);
+  var overviewCalendar = () => calendarHtml(calendarModel(ap.loops ? [...ap.loops.loops || [], ...ap.loops.services || []] : null, /* @__PURE__ */ new Date()), esc);
   var fmt = (n) => typeof n === "number" && Number.isFinite(n) ? n.toLocaleString("fr-CA") : "0";
   var when = (v) => {
     const t = typeof v === "number" ? v : Date.parse(v);
@@ -3363,7 +3515,7 @@
     if (ap.loopView) loadLoopDetail();
     loadClair();
     try {
-      const results = await Promise.all(["default", "gas-saver"].map(async (id) => {
+      const results = await Promise.all([.../* @__PURE__ */ new Set([...pilotIds(), pilot])].map(async (id) => {
         const r = await fetch("/api/mind/autopilot?pilot=" + encodeURIComponent(id), { cache: "no-store", signal: controller.signal });
         if (!r.ok) {
           if (id === pilot) throw new Error("HTTP " + r.status);
@@ -3606,7 +3758,7 @@
     const a = p && p.active;
     const stage = a && (a.waitingStage || a.stage);
     const elapsed = a && a.startedAt ? Math.max(0, Math.floor((Date.now() - a.startedAt) / 6e4)) + " min" : "-";
-    return '<article class="ap-card"><h2>' + (id === "default" ? "Principale" : "Gas Saver") + "</h2><p>" + esc(p ? (STATUS[p.status] || {}).label || p.status : "Etat non encore recu") + "</p><dl><dt>Depot</dt><dd>" + esc(p?.repoName || "Inconnu") + "</dd><dt>Tache</dt><dd>" + esc(a?.plan?.title || (a ? "Decouverte" : "Aucune tache en cours")) + "</dd><dt>Agent actuel / etape</dt><dd>" + esc(a?.currentProvider || "Aucun agent rapporte") + " / " + esc(STAGE_LABELS[stage] || stage || "-") + "</dd><dt>Duree</dt><dd>" + esc(elapsed) + "</dd><dt>Prochain passage</dt><dd>" + esc(when(p?.nextAt)) + "</dd><dt>Dernier resultat local</dt><dd>" + esc(OUTCOME_LABELS[p?.history?.[0]?.outcome] || p?.history?.[0]?.outcome || "Aucun resultat rapporte") + '</dd></dl><button class="tab-bar-btn" data-pilot="' + id + '" onclick="MindAutopilot.select(this.dataset.pilot)" aria-pressed="' + (id === ap.pilot) + '">Voir ce pilote</button></article>';
+    return '<article class="ap-card"><h2>' + esc(p && p.label || id) + "</h2><p>" + esc(p ? (STATUS[p.status] || {}).label || p.status : "Etat non encore recu") + "</p><dl><dt>Depot</dt><dd>" + esc(p?.repoName || "Inconnu") + "</dd><dt>Tache</dt><dd>" + esc(a?.plan?.title || (a ? "Decouverte" : "Aucune tache en cours")) + "</dd><dt>Agent actuel / etape</dt><dd>" + esc(a?.currentProvider || "Aucun agent rapporte") + " / " + esc(STAGE_LABELS[stage] || stage || "-") + "</dd><dt>Duree</dt><dd>" + esc(elapsed) + "</dd><dt>Prochain passage</dt><dd>" + esc(when(p?.nextAt)) + "</dd><dt>Dernier resultat local</dt><dd>" + esc(OUTCOME_LABELS[p?.history?.[0]?.outcome] || p?.history?.[0]?.outcome || "Aucun resultat rapporte") + '</dd></dl><button class="tab-bar-btn" data-pilot="' + id + '" onclick="MindAutopilot.select(this.dataset.pilot)" aria-pressed="' + (id === ap.pilot) + '">Voir ce pilote</button></article>';
   }
   var LOOP_COLOR = { working: "var(--accent)", resting: "var(--yellow)", stopped: "var(--subtext0)", error: "var(--red)" };
   function overview() {
@@ -3705,9 +3857,9 @@
     return night + '<div class="ap-note">Garde-fous sans IA apres chaque implementation : ' + (names ? "verifications " + names + " ; " : "") + "refus des tests desactives (.skip/.only) et de @ts-ignore ; " + esc((s.protectedPaths || []).length) + " motifs de chemins proteges" + ((s.protectedPaths || []).length ? ' <span class="ap-muted" title="' + esc((s.protectedPaths || []).join("\n")) + '">(survoler pour la liste)</span>' : "") + ".</div>";
   }
   function meter(label, used, max, note) {
-    const pct = Math.max(0, Math.min(100, max ? used / max * 100 : 0));
-    const color = pct >= 100 ? "var(--red)" : pct >= 75 ? "var(--yellow)" : "var(--green)";
-    return '<div class="ap-meter"><div class="ap-meter-head"><span>' + esc(label) + "</span><b>" + esc(fmt(used)) + " / " + esc(fmt(max)) + '</b></div><div class="ap-bar"><div style="width:' + pct.toFixed(1) + "%;background:" + color + ';"></div></div>' + (note ? '<div class="ap-note">' + note + "</div>" : "") + "</div>";
+    const pct2 = Math.max(0, Math.min(100, max ? used / max * 100 : 0));
+    const color = pct2 >= 100 ? "var(--red)" : pct2 >= 75 ? "var(--yellow)" : "var(--green)";
+    return '<div class="ap-meter"><div class="ap-meter-head"><span>' + esc(label) + "</span><b>" + esc(fmt(used)) + " / " + esc(fmt(max)) + '</b></div><div class="ap-bar"><div style="width:' + pct2.toFixed(1) + "%;background:" + color + ';"></div></div>' + (note ? '<div class="ap-note">' + note + "</div>" : "") + "</div>";
   }
   function paint() {
     if (state.view !== "autopilot") return;
@@ -3722,7 +3874,7 @@
     const b = s.budget || {};
     const L = s.limits || {};
     const a = s.active;
-    const interventions = ["default", "gas-saver"].map((id) => snapshots.get(id)).filter((p) => p && (["error", "interrupted"].includes(p.status) || p.active?.handoff?.status === "blocked")).length;
+    const interventions = pilotIds().map((id) => snapshots.get(id)).filter((p) => p && (["error", "interrupted"].includes(p.status) || p.active?.handoff?.status === "blocked")).length;
     const goalVal = ap.draftGoal != null ? ap.draftGoal : s.goal || "";
     const repoVal = ap.draftRepo != null ? ap.draftRepo : s.repoName || "";
     const consentKnown = !!(s.consent && s.consent.worktreeWrites);
@@ -3776,15 +3928,18 @@
         .ap-msg { font-size:11px; color:var(--subtext1); min-height:14px; }
         .ap-err { color:var(--red); font-size:12px; white-space:pre-wrap; }
         ${CARD_CSS}
+        ${OVERVIEW_CSS}
       </style>
       <div class="ap-wrap">
         <h1 style="font-size:22px;">Centre de controle des autopilotes</h1>
         <p>${interventions} pilote(s) a examiner : erreurs, interruptions ou releves bloquees.</p>
-        <p>${["default", "gas-saver"].map((id) => snapshots.get(id)).filter((p) => p && p.enabled).length} pilotes actifs | ${["default", "gas-saver"].map((id) => snapshots.get(id)).filter((p) => p && p.status === "running").length} taches en cours | ${["default", "gas-saver"].reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
+        <p>${pilotIds().map((id) => snapshots.get(id)).filter((p) => p && p.enabled).length} pilotes actifs | ${pilotIds().map((id) => snapshots.get(id)).filter((p) => p && p.status === "running").length} taches en cours | ${pilotIds().reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
         <p role="status" aria-live="polite">${ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45e3 ? "Etat perime ou inaccessible" : "Derniere lecture fiable : " + esc(when(ap.lastRead))}</p>
+        ${overviewKpis()}
         ${ap.loopView ? "" : cardHtml(cardModel(s), esc, ap.busy)}
+        ${overviewCalendar()}
         <div class="ap-grid" aria-label="Pilotes">
-          ${["default", "gas-saver"].map(pilotCard).join("")}
+          ${pilotIds().map(pilotCard).join("")}
         </div>
         ${overview()}
         ${ap.loopView ? loopDetailHtml() + '<div style="display:none">' : ""}
