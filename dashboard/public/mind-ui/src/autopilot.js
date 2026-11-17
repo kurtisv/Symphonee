@@ -7,6 +7,7 @@ import { $, state } from './core.js';
 import { escapeHtml } from './helpers.js';
 import { makeLatest } from './latest.js';
 import { createSnapshotStore } from './autopilot-state.js';
+import { cardModel, cardHtml, CARD_CSS } from './autopilot-card.js';
 const snapshots = createSnapshotStore();
 const statusRequests = makeLatest();
 
@@ -130,6 +131,13 @@ const statusRequests = makeLatest();
     acknowledge() { return act('Archivage', () => call('/api/mind/autopilot/acknowledge', {})); },
     resume() { return act('Reprise', () => call('/api/mind/autopilot/resume', {})); },
     refresh() { return load(); },
+    // Scrolls to the full detail card of the selected pilot (the "Voir le detail" button of the summary card).
+    detail() {
+      const el = $('apDetail'); if (!el) return;
+      let calm = false; try { calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) {}
+      el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
+      if (el.focus) el.focus({ preventScroll: true });
+    },
     filterHistory(value) { ap.historyFilter = value; paint(); },
     advanced(open) { ap.advanced = open; },
     rememberFallback() {
@@ -457,12 +465,14 @@ const statusRequests = makeLatest();
         .ap-ev-quota b { color:var(--yellow); }
         .ap-msg { font-size:11px; color:var(--subtext1); min-height:14px; }
         .ap-err { color:var(--red); font-size:12px; white-space:pre-wrap; }
+        ${CARD_CSS}
       </style>
       <div class="ap-wrap">
         <h1 style="font-size:22px;">Centre de controle des autopilotes</h1>
         <p>${interventions} pilote(s) a examiner : erreurs, interruptions ou releves bloquees.</p>
         <p>${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.enabled).length} pilotes actifs | ${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.status === 'running').length} taches en cours | ${['default', 'gas-saver'].reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
         <p role="status" aria-live="polite">${ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45000 ? 'Etat perime ou inaccessible' : 'Derniere lecture fiable : ' + esc(when(ap.lastRead))}</p>
+        ${ap.loopView ? '' : cardHtml(cardModel(s), esc, ap.busy)}
         <div class="ap-grid" aria-label="Pilotes">
           ${['default', 'gas-saver'].map(pilotCard).join('')}
         </div>
@@ -471,7 +481,7 @@ const statusRequests = makeLatest();
         ${selector()}
         ${ap.loopView ? '' : capacityHtml(s)}
         ${ap.loopView ? '' : clairHtml()}
-        <div class="ap-card">
+        <div class="ap-card" id="apDetail" tabindex="-1">
           <div class="ap-status">
             <span class="ap-dot" style="background:${st.color};"></span>
             <span class="ap-big" id="apStatusLabel">${esc(st.label)}</span>
