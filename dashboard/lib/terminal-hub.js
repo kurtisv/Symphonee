@@ -21,7 +21,7 @@ const { createAiResume, resumeCommand, lastPromptDir } = require('./ai-resume');
 // sent automatically by xterm: not the user typing.
 const PROTOCOL_REPLY = /^(\x1b\[[?>]?[\d;]*[cRn]|\x1b\[[IO])+$/;
 
-function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
+function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade, canWrite }) {
   const terminals = new Map();   // termId -> { pty, cols, rows, cwd, label }
   const termAiMeta = new Map();  // termId -> { cli, launched, updatedAt }
   // AI conversations to resume after a restart (see ai-resume.js).
@@ -230,7 +230,9 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
     },
   });
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    // canWrite(req) is false for phone connections (see server.js); default true keeps local behaviour.
+    ws.canWrite = typeof canWrite === 'function' ? !!canWrite(req) : true;
     // First connection after an app restart: bring back saved shells.
     restoreTermSessionsOnce();
     const active = [];
@@ -246,6 +248,13 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade }) {
       try {
         const msg = JSON.parse(raw);
         const termId = msg.termId || 'main';
+        // Phone connections are read-only until remote command confirmation exists:
+        // they may watch terminals and resize them, never type, create, kill or restart.
+        const WRITE_TYPES = new Set(['input', 'create-term', 'kill-term', 'rename-term', 'restart']);
+        if (ws.canWrite === false && WRITE_TYPES.has(msg.type)) {
+          try { ws.send(JSON.stringify({ type: 'error', code: 'REMOTE_READ_ONLY', message: 'Consultation seulement depuis le telephone.' })); } catch (_) {}
+          return;
+        }
         switch (msg.type) {
           case 'input': {
             if (!PROTOCOL_REPLY.test(String(msg.data || ''))) cancelResume(termId); // the user typed first: never type over it

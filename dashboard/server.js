@@ -83,6 +83,12 @@ const { createAuthToken } = require('./lib/auth-token');
 const authToken = createAuthToken({ runtimePath: path.join(repoRoot, 'config', 'runtime.json'), port: PORT });
 authToken.persist();
 process.env.SYMPHONEE_TOKEN = authToken.value;
+// Phone access (Tailscale Serve). Sessions are stored hashed under .symphonee/ (gitignored).
+// SYMPHONEE_TAILNET_ORIGIN is the https origin Serve exposes, e.g. https://pc.<tailnet>.ts.net.
+const { createRemoteAccess, cookieFrom, sessionCookie, clearedCookie } = require('./lib/remote-access');
+const remoteGate = require('./lib/remote-gate');
+const remoteAccess = createRemoteAccess({ storePath: path.join(repoRoot, '.symphonee', 'remote-sessions.json') });
+const TAILNET_ORIGIN = process.env.SYMPHONEE_TAILNET_ORIGIN || null;
 // Kill switch: enforcement is on unless config explicitly sets it false.
 function authTokenRequired() {
   try { const s = getConfig().Security; return !s || s.RequireApiToken !== false; } catch (_) { return true; }
@@ -91,6 +97,7 @@ function authTokenRequired() {
 // ── Static file routes ─────────────────────────────────────────────────────
 const ROUTES = {
   '/':                        { file: path.join(publicDir, 'index.html'),                                          type: 'text/html' },
+  '/remote':                  { file: path.join(publicDir, 'remote.html'),                                         type: 'text/html' },
   '/styles/app.css':          { file: path.join(publicDir, 'styles', 'app.css'),                                   type: 'text/css' },
   '/js/app.js':               { file: path.join(publicDir, 'js', 'app.js'),                                        type: 'application/javascript' },
   // Extracted renderer ES-module bundles (built by scripts/build-renderer.js).
@@ -199,17 +206,38 @@ function gitExec(repoPath, cmd, timeoutMs) {
 const server = http.createServer(async (req, res) => {
   // Origin/Host firewall: block cross-site (CSRF) and DNS-rebinding before any
   // route runs. Local CLIs (no Origin) and the same-origin renderer pass.
-  if (!isRequestAllowed(req)) {
-    try { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Cross-origin request blocked' })); } catch (_) {}
-    return;
-  }
-  // Auth-token gate: state-mutating requests must carry the per-boot token.
-  // Reads (GET/HEAD) pass on the firewall alone. See lib/auth-token.js.
-  if (authTokenRequired() && !authToken.isAllowed(req)) {
-    try { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing or invalid API token', code: 'TOKEN_REQUIRED' })); } catch (_) {}
-    return;
-  }
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  // Local callers (PC, CLIs) keep the firewall + per-boot token below, unchanged.
+  // Remote callers (phone via Serve) are judged by their device session only; they
+  // never get the per-boot token. See lib/remote-gate.js.
+  const access = remoteGate.decide(req, {
+    method: req.method, pathname: url.pathname,
+    cookieValue: cookieFrom(req.headers.cookie),
+    check: (c) => remoteAccess.check(c),
+    allowedOrigin: TAILNET_ORIGIN,
+  });
+  if (access.mode === 'remote') {
+    if (!access.allow) {
+      try {
+        if (access.redirect) { res.writeHead(302, { Location: access.redirect }); res.end(); }
+        else { res.writeHead(access.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: access.code, code: access.code })); }
+      } catch (_) {}
+      return;
+    }
+    req.remoteAuthed = true;
+    req.remoteSessionId = access.sessionId;
+  } else {
+    if (!isRequestAllowed(req)) {
+      try { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Cross-origin request blocked' })); } catch (_) {}
+      return;
+    }
+    // Auth-token gate: state-mutating requests must carry the per-boot token.
+    // Reads (GET/HEAD) pass on the firewall alone. See lib/auth-token.js.
+    if (authTokenRequired() && !authToken.isAllowed(req)) {
+      try { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing or invalid API token', code: 'TOKEN_REQUIRED' })); } catch (_) {}
+      return;
+    }
+  }
 
   // Pluggable routes first
   for (const r of extraRoutes) {
@@ -619,6 +647,27 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/health' && req.method === 'GET')              return handleHealthCheck(res);
     if (url.pathname === '/api/busy' && req.method === 'GET')                return json(res, guard.activeLocks());
 
+    // ── Phone access (device sessions, see lib/remote-access.js) ──────────
+    if (url.pathname === '/api/remote/session' && req.method === 'GET') {
+      return json(res, { authenticated: access.mode === 'remote' ? !!req.remoteAuthed : true, remote: access.mode === 'remote' });
+    }
+    if (url.pathname === '/api/remote/pair' && req.method === 'POST') {
+      let body = null;
+      try { body = await readBody(req); } catch (_) { return json(res, { ok: false, reason: 'bad_json' }, 400); }
+      const r = remoteAccess.redeem(body && body.code);
+      if (!r.ok) return json(res, { ok: false, reason: r.reason, attemptsLeft: r.attemptsLeft }, 403);
+      res.setHeader('Set-Cookie', sessionCookie(r.value));
+      return json(res, { ok: true });
+    }
+    if (url.pathname === '/api/remote/logout' && req.method === 'POST') {
+      if (req.remoteSessionId) remoteAccess.revoke(req.remoteSessionId);
+      res.setHeader('Set-Cookie', clearedCookie());
+      return json(res, { ok: true });
+    }
+    // PC-only (the gate refuses these to phones): start a pairing, list sessions.
+    if (url.pathname === '/api/remote/pairing/start' && req.method === 'POST') return json(res, remoteAccess.startPairing());
+    if (url.pathname === '/api/remote/sessions' && req.method === 'GET')       return json(res, remoteAccess.listSessions());
+
     // ── Static files ──────────────────────────────────────────────────────
     // Cache-Control: no-store on dashboard assets. Without this header
     // Electron's renderer was holding onto /mind-ui.js and /index.html
@@ -637,7 +686,8 @@ const server = http.createServer(async (req, res) => {
       // (and any same-origin document) carries the token on mutating calls.
       if (route.type === 'text/html') {
         let html = fs.readFileSync(route.file, 'utf8');
-        html = authToken.injectHtml(html);
+        // A phone never receives the per-boot token: inject only for local callers.
+        if (access.mode !== 'remote') html = authToken.injectHtml(html);
         res.writeHead(200, headers);
         res.end(html);
       } else {
@@ -754,7 +804,25 @@ function getRepoPath(repoName) {
 // repo no longer exists in config, fall back to nothing.
 const { createUiContextStore } = require('./lib/ui-context');
 const { createTerminalHub } = require('./lib/terminal-hub');
-const _termHub = createTerminalHub({ httpServer: server, repoRoot, getConfig, verifyUpgrade: isRequestAllowed });
+// WebSocket upgrades (terminal). Local: the firewall as before. Phone: a valid
+// device session AND our own https origin (cross-site WebSocket hijacking is blocked).
+const _termHub = createTerminalHub({
+  httpServer: server, repoRoot, getConfig,
+  // Phone connections can watch but not type (remote command confirmation is not built yet).
+  canWrite: (req) => remoteGate.classify(req) !== 'remote',
+  verifyUpgrade: (req) => {
+    const a = remoteGate.decide(req, {
+      method: 'GET', pathname: '/ws',
+      cookieValue: cookieFrom(req.headers.cookie),
+      check: (c) => remoteAccess.check(c),
+      allowedOrigin: TAILNET_ORIGIN,
+    });
+    if (a.mode !== 'remote') return isRequestAllowed(req);
+    if (!a.allow) return false;
+    const origin = req.headers.origin;
+    return !!origin && !!TAILNET_ORIGIN && String(origin).toLowerCase() === String(TAILNET_ORIGIN).toLowerCase();
+  },
+});
 const { broadcast, terminals, termAiMeta, aiResume, rememberAi, createTerminal, killTerminal } = _termHub;
 
 // Terminal-size ground truth for debugging renderer/PTY desync (the scroll
