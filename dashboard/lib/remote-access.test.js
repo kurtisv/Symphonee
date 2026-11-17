@@ -129,7 +129,7 @@ test('cookieFrom lit le bon cookie parmi d autres', () => {
 
 test('cookie de session : HttpOnly, Secure, SameSite=Strict, Path=/', () => {
   const c = ra.sessionCookie('x.y');
-  for (const attr of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/', 'Max-Age=']) assert.ok(c.includes(attr), attr);
+  for (const attr of ['HttpOnly', 'Secure', 'SameSite=Lax', 'Path=/', 'Max-Age=']) assert.ok(c.includes(attr), attr);
   assert.ok(ra.clearedCookie().includes('Max-Age=0'));
 });
 

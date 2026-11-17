@@ -47,7 +47,9 @@ function cookieFrom(header) {
 // The Set-Cookie value that gives the phone its session.
 function sessionCookie(value, now = Date.now()) {
   const maxAge = Math.floor(SESSION_TTL_MS / 1000);
-  return `${COOKIE}=${value}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+  // SameSite=Lax : envoye aussi quand on ouvre le lien depuis une autre application (icone d'ecran d'accueil, lien).
+  // Les ecritures inter-sites restent bloquees : la verification d'origine (remote-gate) les refuse.
+  return `${COOKIE}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 }
 
 // The Set-Cookie value that removes the session on the phone.

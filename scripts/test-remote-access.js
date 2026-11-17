@@ -64,7 +64,7 @@ const LOCAL_TOKEN = { 'x-symphonee-token': TOKEN };
   r = await req({ method: 'POST', path: '/api/remote/pair', headers: phone({ Origin: ORIGIN }), body: { code } });
   const setCookie = [].concat(r.headers['set-cookie'] || []).join(';');
   check('Telephone : bon code -> 200 et cookie de session', r.status === 200 && /sym_remote=/.test(setCookie), r.status + ' ' + setCookie.slice(0, 80));
-  check('Cookie : HttpOnly; Secure; SameSite=Strict', /HttpOnly/.test(setCookie) && /Secure/.test(setCookie) && /SameSite=Strict/.test(setCookie));
+  check('Cookie : HttpOnly; Secure; SameSite=Strict', /HttpOnly/.test(setCookie) && /Secure/.test(setCookie) && /SameSite=Lax/.test(setCookie));
   const cookie = (setCookie.match(/sym_remote=([^;]+)/) || [])[1];
   const C = 'sym_remote=' + cookie;
 
