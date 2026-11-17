@@ -61,18 +61,18 @@ test('distant : demarrage d appairage et liste des sessions interdits meme avec 
 });
 
 test('distant : ecriture avec Origin etranger refusee (CSRF)', () => {
-  const d = g.decide(req('pc.tail1234.ts.net', { origin: 'https://evil.example' }), { method: 'POST', pathname: '/api/x', cookieValue: 'valid.session', check, allowedOrigin: ORIGIN });
+  const d = g.decide(req('pc.tail1234.ts.net', { origin: 'https://evil.example' }), { method: 'POST', pathname: '/api/remote/logout', cookieValue: 'valid.session', check, allowedOrigin: ORIGIN });
   assert.equal(d.allow, false);
   assert.equal(d.code, 'ORIGIN_NOT_ALLOWED');
 });
 
 test('distant : ecriture avec notre propre Origin acceptee ; sans Origin aussi (cookie SameSite=Strict protege)', () => {
-  assert.equal(g.decide(req('pc.tail1234.ts.net', { origin: ORIGIN }), { method: 'POST', pathname: '/api/x', cookieValue: 'valid.session', check, allowedOrigin: ORIGIN }).allow, true);
-  assert.equal(g.decide(req('pc.tail1234.ts.net'), { method: 'POST', pathname: '/api/x', cookieValue: 'valid.session', check, allowedOrigin: ORIGIN }).allow, true);
+  assert.equal(g.decide(req('pc.tail1234.ts.net', { origin: ORIGIN }), { method: 'POST', pathname: '/api/remote/logout', cookieValue: 'valid.session', check, allowedOrigin: ORIGIN }).allow, true);
+  assert.equal(g.decide(req('pc.tail1234.ts.net'), { method: 'POST', pathname: '/api/remote/logout', cookieValue: 'valid.session', check, allowedOrigin: ORIGIN }).allow, true);
 });
 
 test('distant : Origin present mais aucune origine configuree = refuse', () => {
-  const d = g.decide(req('pc.tail1234.ts.net', { origin: ORIGIN }), { method: 'POST', pathname: '/api/x', cookieValue: 'valid.session', check, allowedOrigin: null });
+  const d = g.decide(req('pc.tail1234.ts.net', { origin: ORIGIN }), { method: 'POST', pathname: '/api/remote/logout', cookieValue: 'valid.session', check, allowedOrigin: null });
   assert.equal(d.allow, false);
 });
 
@@ -85,4 +85,41 @@ test('une requete proxifiee sans session ne passe jamais pour locale', () => {
   const d = g.decide(req('127.0.0.1:3800', { 'x-forwarded-for': '1.2.3.4' }), { method: 'GET', pathname: '/api/busy', cookieValue: null, check, allowedOrigin: ORIGIN });
   assert.equal(d.mode, 'remote');
   assert.equal(d.allow, false);
+});
+
+test('liste blanche : le telephone ne peut JAMAIS approuver ses propres commandes ni toucher aux secrets', () => {
+  const d = (method, pathname) => g.decide(req('pc.tail1234.ts.net'), { method, pathname, cookieValue: 'valid.session', check, allowedOrigin: ORIGIN });
+  for (const [m, p] of [['POST', '/api/permissions/resolve'], ['POST', '/api/permissions/mode'], ['GET', '/api/config'], ['GET', '/api/settings'],
+    ['POST', '/api/orchestrator/spawn'], ['POST', '/api/orchestrator/inject'], ['POST', '/api/github/pulls/merge'], ['POST', '/api/git/push'],
+    ['POST', '/api/plugins/install'], ['DELETE', '/api/jobs'], ['PUT', '/api/config'], ['POST', '/api/mind/teach'], ['POST', '/api/mind/save-result'], ['GET', '/api/runtime']]) {
+    const r = d(m, p);
+    assert.equal(r.allow, false, m + ' ' + p);
+    assert.equal(r.code, 'REMOTE_NOT_ALLOWED', m + ' ' + p);
+  }
+});
+
+test('liste blanche : les lectures et les trois ecritures prevues passent', () => {
+  const d = (method, pathname) => g.decide(req('pc.tail1234.ts.net'), { method, pathname, cookieValue: 'valid.session', check, allowedOrigin: ORIGIN });
+  for (const p of ['/mobile', '/mobile.js', '/api/busy', '/api/orchestrator/agents', '/api/mind/stats', '/api/learnings', '/api/repos', '/api/git/status', '/api/permissions/pending', '/ws', '/xterm.js']) {
+    assert.equal(d('GET', p).allow, true, 'GET ' + p);
+  }
+  for (const p of ['/api/remote/logout', '/api/remote/terminal/command', '/api/mind/recall']) assert.equal(d('POST', p).allow, true, 'POST ' + p);
+});
+
+test('liste blanche : une ecriture sur une route de lecture, ou une lecture sur une route d ecriture, est refusee', () => {
+  const d = (method, pathname) => g.decide(req('pc.tail1234.ts.net'), { method, pathname, cookieValue: 'valid.session', check, allowedOrigin: ORIGIN });
+  assert.equal(d('POST', '/api/busy').allow, false);
+  assert.equal(d('DELETE', '/api/learnings').allow, false);
+  assert.equal(d('GET', '/api/remote/terminal/command').allow, false);
+});
+
+test('page d accueil du bureau : le telephone est redirige vers /mobile', () => {
+  const r = g.decide(req('pc.tail1234.ts.net'), { method: 'GET', pathname: '/', cookieValue: 'valid.session', check, allowedOrigin: ORIGIN });
+  assert.equal(r.allow, false);
+  assert.equal(r.redirect, '/mobile');
+});
+
+test('sans session, toujours 401 en premier (avant la liste blanche)', () => {
+  const r = g.decide(req('pc.tail1234.ts.net'), { method: 'GET', pathname: '/api/config', cookieValue: null, check, allowedOrigin: ORIGIN });
+  assert.equal(r.code, 'REMOTE_LOGIN_REQUIRED');
 });

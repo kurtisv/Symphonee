@@ -74,7 +74,7 @@ const LOCAL_TOKEN = { 'x-symphonee-token': TOKEN };
   r = await req({ path: '/api/busy', headers: phone({}, C) });
   check('Telephone avec session : /api/busy -> 200', r.status === 200, 'status ' + r.status);
   r = await req({ path: '/', headers: phone({}, C) });
-  check('Telephone avec session : / servi SANS jeton interne', r.status === 200 && !r.text.includes(TOKEN) && !/__SYMPHONEE_TOKEN__/.test(r.text));
+  check('Telephone avec session : / (bureau) renvoie vers /mobile, jamais la page du bureau', r.status === 302 && r.headers.location === '/mobile' && !r.text.includes(TOKEN));
   r = await req({ path: '/api/remote/sessions', headers: phone({}, C) });
   check('Telephone : liste des sessions reservee au PC -> 403 LOCAL_ONLY', r.status === 403 && r.json().code === 'LOCAL_ONLY', 'status ' + r.status);
   r = await req({ method: 'POST', path: '/api/remote/pairing/start', headers: phone({}, C), body: {} });
@@ -95,6 +95,14 @@ const LOCAL_TOKEN = { 'x-symphonee-token': TOKEN };
   check('PC : session visible sans secret dans la liste', r.status === 200 && r.json().length >= 1 && r.json().every(x => !('hash' in x) && !('value' in x)), r.text.slice(0, 120));
   r = await req({ path: '/api/busy', headers: phone({}, 'sym_remote=' + c2) });
   check('Nouvelle session valide apres appairage', r.status === 200);
+
+  // 5b. Deny by default: even with a valid session the phone cannot approve its own commands or read config.
+  for (const [m, p] of [['POST', '/api/permissions/resolve'], ['GET', '/api/config'], ['POST', '/api/orchestrator/inject'], ['POST', '/api/mind/teach'], ['POST', '/api/github/pulls/merge']]) {
+    r = await req({ method: m, path: p, headers: phone(m === 'GET' ? {} : { Origin: ORIGIN }, 'sym_remote=' + c2), body: m === 'GET' ? null : {} });
+    check('Liste blanche : ' + m + ' ' + p + ' refuse au telephone', r.status === 403 && r.json() && r.json().code === 'REMOTE_NOT_ALLOWED', 'status ' + r.status + ' ' + r.text.slice(0, 80));
+  }
+  r = await req({ path: '/api/permissions/pending', headers: phone({}, 'sym_remote=' + c2) });
+  check('Liste blanche : /api/permissions/pending (lecture) accessible', r.status === 200, 'status ' + r.status);
 
   // 6. Symphonee Mobile pages: session required, no token injected for a phone, PC unchanged.
   r = await req({ path: '/mobile', headers: phone() });

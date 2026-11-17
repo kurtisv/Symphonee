@@ -22,6 +22,23 @@ const PUBLIC_REMOTE = new Set(['/remote', '/api/remote/pair', '/api/remote/sessi
 // Never reachable from a phone, even with a session: pairing is started on the PC only.
 const LOCAL_ONLY = new Set(['/api/remote/pairing/start', '/api/remote/sessions']);
 
+// DENY BY DEFAULT for a phone, even with a valid session. A session proves WHO is calling, not that every route is safe:
+// config and secrets stay on the PC, and the phone must never approve its own command (/api/permissions/resolve) or
+// run destructive routes (git push, merge, plugin install...) that BYPASS mode would otherwise let through.
+const REMOTE_GET_ALLOW = new Set([
+  '/mobile', '/mobile.css', '/mobile.js', '/mobile.webmanifest', '/icon.png',
+  '/xterm.js', '/xterm.css', '/xterm-addon-fit.js', '/xterm-addon-unicode11.js',
+  '/ws', // WebSocket upgrade (terminal output); its own checks are in server.js
+  '/api/busy', '/api/startup/status', '/api/ui/context', '/api/remote/session',
+  '/api/orchestrator/agents', '/api/orchestrator/tasks', '/api/orchestrator/task',
+  '/api/mind/stats', '/api/mind/wakeup', '/api/mind/autopilots', '/api/mind/autopilot',
+  '/api/learnings', '/api/jobs', '/api/ledger', '/api/repos',
+  '/api/git/status', '/api/git/branches', '/api/git/log',
+  '/api/permissions/pending', '/api/github/pulls',
+]);
+// Writes a phone may do: log out, ask for ONE terminal command (approved on the PC), and search Mind (read-only POST).
+const REMOTE_WRITE_ALLOW = new Set(['/api/remote/logout', '/api/remote/terminal/command', '/api/mind/recall']);
+
 function hostname(req) {
   const h = String((req && req.headers && req.headers.host) || '').toLowerCase().trim();
   if (!h) return '';
@@ -48,6 +65,14 @@ function decideRemote({ method, pathname, cookieValue, check, allowedOrigin, ori
     return { allow: false, status: 401, code: 'REMOTE_LOGIN_REQUIRED', redirect: m === 'GET' && !pathname.startsWith('/api/') ? '/remote' : null };
   }
   if (LOCAL_ONLY.has(pathname)) return { allow: false, status: 403, code: 'LOCAL_ONLY' };
+  if (!PUBLIC_REMOTE.has(pathname)) {
+    const ok = MUTATING.has(m) ? REMOTE_WRITE_ALLOW.has(pathname) : REMOTE_GET_ALLOW.has(pathname);
+    if (!ok) {
+      // The desktop home page is not for phones: send them to the mobile one instead of a dead end.
+      if (m === 'GET' && pathname === '/') return { allow: false, status: 302, code: 'USE_MOBILE', redirect: '/mobile' };
+      return { allow: false, status: 403, code: 'REMOTE_NOT_ALLOWED' };
+    }
+  }
   if (MUTATING.has(m) && origin) {
     // A browser cross-site request always carries Origin. Only our own https origin is accepted.
     if (!allowedOrigin || String(origin).toLowerCase() !== String(allowedOrigin).toLowerCase()) {
@@ -65,4 +90,4 @@ function decide(req, { method, pathname, cookieValue, check, allowedOrigin }) {
   return Object.assign({ mode: 'remote' }, decideRemote({ method, pathname, cookieValue, check, allowedOrigin, origin }));
 }
 
-module.exports = { classify, decide, decideRemote, hostname, PUBLIC_REMOTE, LOCAL_ONLY, FORWARD_HEADERS };
+module.exports = { classify, decide, decideRemote, hostname, PUBLIC_REMOTE, LOCAL_ONLY, FORWARD_HEADERS, REMOTE_GET_ALLOW, REMOTE_WRITE_ALLOW };

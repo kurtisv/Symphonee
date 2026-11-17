@@ -42,3 +42,21 @@ pre {
   font-size: 13px; cursor: pointer;
 }
 .nav-bar .col[aria-current="page"] { color: #fff; font-weight: 600; }
+
+/* Ecrans complets */
+.card.warn { border-color: #b8860b; background: #2a2410; }
+.row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #262626; font-size: 14px; }
+.row:last-child { border-bottom: 0; }
+.row .l { color: #e2e2e2; overflow-wrap: anywhere; }
+.row .r { color: #9a9a9a; text-align: right; white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.chip { min-height: 44px; padding: 8px 14px; border: 0; border-radius: 8px; background: #2d2d2d; color: #ddd; font-size: 14px; }
+.chip.on { background: #2f81f7; color: #fff; }
+.hit { padding: 8px 0; border-bottom: 1px solid #262626; }
+.hit:last-child { border-bottom: 0; }
+.hit-t { font-size: 14px; color: #ececec; overflow-wrap: anywhere; }
+.termbox { overflow: auto; max-height: 52vh; background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 8px; padding: 6px; margin: 8px 0; }
+.termbox pre { font-size: 11px; }
+form.cmd { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+form.cmd input { width: 100%; min-height: 48px; padding: 10px 12px; font-size: 16px; border-radius: 8px; border: 1px solid #333; background: #161616; color: #fff; }
+.btn:disabled { opacity: .5; }

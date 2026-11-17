@@ -89,6 +89,7 @@ const { createRemoteAccess, cookieFrom, sessionCookie, clearedCookie } = require
 const remoteGate = require('./lib/remote-gate');
 const remoteAccess = createRemoteAccess({ storePath: path.join(repoRoot, '.symphonee', 'remote-sessions.json') });
 const TAILNET_ORIGIN = process.env.SYMPHONEE_TAILNET_ORIGIN || null;
+let _remoteCommand = null; // created on first use (lib/remote-command.js)
 // Kill switch: enforcement is on unless config explicitly sets it false.
 function authTokenRequired() {
   try { const s = getConfig().Security; return !s || s.RequireApiToken !== false; } catch (_) { return true; }
@@ -672,6 +673,21 @@ const server = http.createServer(async (req, res) => {
     // PC-only (the gate refuses these to phones): start a pairing, list sessions.
     if (url.pathname === '/api/remote/pairing/start' && req.method === 'POST') return json(res, remoteAccess.startPairing());
     if (url.pathname === '/api/remote/sessions' && req.method === 'GET')       return json(res, remoteAccess.listSessions());
+    // Phone -> terminal: ONE command line, only after the owner approves it ON THE PC (never BYPASS).
+    if (url.pathname === '/api/remote/terminal/command' && req.method === 'POST') {
+      let body = null;
+      try { body = await readBody(req); } catch (_) { return json(res, { status: 'refused', code: 'BAD_JSON' }, 400); }
+      if (!_remoteCommand) {
+        _remoteCommand = require('./lib/remote-command').createRemoteCommand({
+          requestApproval: (a, c, t) => permissions.requestApproval(a, c, t),
+          inject: (termId, text) => orchestrator.inject(termId, text),
+          listTerminals: () => Array.from(terminals.keys()),
+          log: (m) => console.log('[remote] ' + m),
+        });
+      }
+      const r = await _remoteCommand.send({ termId: body && body.termId, text: body && body.text, sessionId: req.remoteSessionId || 'local' });
+      return json(res, r, r.status === 'sent' ? 200 : r.status === 'refused' ? 400 : (r.status === 'denied' || r.status === 'timeout') ? 403 : 500);
+    }
 
     // ── Static files ──────────────────────────────────────────────────────
     // Cache-Control: no-store on dashboard assets. Without this header

@@ -249,8 +249,8 @@ function createTerminalHub({ httpServer, repoRoot, getConfig, verifyUpgrade, can
         const msg = JSON.parse(raw);
         const termId = msg.termId || 'main';
         // Phone connections are read-only until remote command confirmation exists:
-        // they may watch terminals and resize them, never type, create, kill or restart.
-        const WRITE_TYPES = new Set(['input', 'create-term', 'kill-term', 'rename-term', 'restart']);
+        // they may only watch terminals: no typing, creating, killing, restarting or resizing (resizing would reshape the PC terminal).
+        const WRITE_TYPES = new Set(['input', 'create-term', 'kill-term', 'rename-term', 'restart', 'resize', 'term-ai-state']);
         if (ws.canWrite === false && WRITE_TYPES.has(msg.type)) {
           try { ws.send(JSON.stringify({ type: 'error', code: 'REMOTE_READ_ONLY', message: 'Consultation seulement depuis le telephone.' })); } catch (_) {}
           return;
