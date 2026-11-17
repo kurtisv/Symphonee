@@ -102,6 +102,7 @@ const ROUTES = {
   '/mobile.css':              { file: path.join(publicDir, 'mobile.css'),                                          type: 'text/css' },
   '/mobile.js':               { file: path.join(publicDir, 'mobile.js'),                                           type: 'application/javascript' },
   '/mobile.webmanifest':      { file: path.join(publicDir, 'mobile.webmanifest'),                                  type: 'application/manifest+json' },
+  '/icon.png':                { file: path.join(publicDir, 'icon.png'),                                             type: 'image/png' },
   '/styles/app.css':          { file: path.join(publicDir, 'styles', 'app.css'),                                   type: 'text/css' },
   '/js/app.js':               { file: path.join(publicDir, 'js', 'app.js'),                                        type: 'application/javascript' },
   // Extracted renderer ES-module bundles (built by scripts/build-renderer.js).

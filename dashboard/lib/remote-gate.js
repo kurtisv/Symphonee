@@ -17,7 +17,8 @@ const FORWARD_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-pro
 const MUTATING = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
 
 // Reachable by a phone WITHOUT a session: the login page and the pairing calls only.
-const PUBLIC_REMOTE = new Set(['/remote', '/api/remote/pair', '/api/remote/session']);
+// The manifest and icon carry no data; the browser fetches them without the session cookie, so they must be public.
+const PUBLIC_REMOTE = new Set(['/remote', '/api/remote/pair', '/api/remote/session', '/mobile.webmanifest', '/icon.png']);
 // Never reachable from a phone, even with a session: pairing is started on the PC only.
 const LOCAL_ONLY = new Set(['/api/remote/pairing/start', '/api/remote/sessions']);
 

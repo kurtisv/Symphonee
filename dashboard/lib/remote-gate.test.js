@@ -34,7 +34,7 @@ test('distant sans session : refuse 401, sauf page et appairage', () => {
   assert.equal(a.status, 401);
   assert.equal(a.code, 'REMOTE_LOGIN_REQUIRED');
   assert.equal(g.decide(req('pc.tail1234.ts.net'), { method: 'GET', pathname: '/', cookieValue: null, check, allowedOrigin: ORIGIN }).redirect, '/remote', 'page racine -> login');
-  for (const p of ['/remote', '/api/remote/pair', '/api/remote/session']) {
+  for (const p of ['/remote', '/api/remote/pair', '/api/remote/session', '/mobile.webmanifest', '/icon.png']) {
     assert.equal(g.decide(req('pc.tail1234.ts.net'), { method: 'POST', pathname: p, cookieValue: null, check, allowedOrigin: ORIGIN }).allow, true, p);
   }
 });
