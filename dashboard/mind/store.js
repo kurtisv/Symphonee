@@ -182,7 +182,8 @@ function repairGraph(graph, validationErrors) {
   return out;
 }
 
-function saveGraph(repoRoot, space, graph) {
+// Validation, repair and stats shared by the sync and async savers.
+function prepareForSave(repoRoot, space, graph) {
   ensureDirs(repoRoot, space);
   let errors = validateGraph(graph);
   if (errors.length) {
@@ -202,10 +203,26 @@ function saveGraph(repoRoot, space, graph) {
     communities: Object.keys(graph.communities || {}).length,
     tokenCost: (graph.stats && graph.stats.tokenCost) || 0,
   };
+  return graph;
+}
+
+function saveGraph(repoRoot, space, graph) {
+  graph = prepareForSave(repoRoot, space, graph);
   const large = graph.nodes.length + graph.edges.length > COMPACT_THRESHOLD;
   atomicWrite(graphPath(repoRoot, space), large ? JSON.stringify(graph) : JSON.stringify(graph, null, 2));
   // The caller keeps (and may keep mutating) `graph`, so it is not adopted as
   // the shared instance: the next shared read re-parses the file once.
+  invalidateShared(repoRoot, space);
+  return graph.stats;
+}
+
+// Same result as saveGraph, but a large graph is written in slices that yield to the event loop (the file is
+// byte-identical). Use it from async code paths: a 280 MB sync write froze the whole server for 10 to 30 s.
+async function saveGraphAsync(repoRoot, space, graph) {
+  graph = prepareForSave(repoRoot, space, graph);
+  const large = graph.nodes.length + graph.edges.length > COMPACT_THRESHOLD;
+  if (large) await require('./async-json').writeJsonChunked(graphPath(repoRoot, space), graph);
+  else atomicWrite(graphPath(repoRoot, space), JSON.stringify(graph, null, 2));
   invalidateShared(repoRoot, space);
   return graph.stats;
 }
@@ -232,6 +249,7 @@ function statsFor(repoRoot, space) {
 }
 
 module.exports = {
+  saveGraphAsync,
   namespaceFromSpace,
   mindRoot,
   spaceDir,

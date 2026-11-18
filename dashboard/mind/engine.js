@@ -217,7 +217,7 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
   }
 
   cp('merging');
-  manifest.flushSync();
+  await manifest.flush();
 
   onProgress('Merging fragments...');
   let graph;
@@ -297,7 +297,7 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
 
   cp('saving');
   onProgress(`Saving graph (${out.nodes.length} nodes, ${out.edges.length} edges)...`);
-  const stats = store.saveGraph(repoRoot, space, out);
+  const stats = await store.saveGraphAsync(repoRoot, space, out);
 
   // Optional report
   try {
@@ -365,10 +365,9 @@ async function refreshEmbeddings({ repoRoot, space, graph, onProgress = () => {}
       store_.upsert(slice[j].id, vectors[j]);
     }
     processed += slice.length;
-    if (processed % 64 === 0) {
-      store_.save();
-      onProgress(`Embedded ${processed}/${candidates.length}`);
-    }
+    if (processed % 64 === 0) onProgress(`Embedded ${processed}/${candidates.length}`);
+    // Each save rewrites the whole matrix synchronously (tens of MB): every 512 vectors, not every 64.
+    if (processed % 512 === 0) store_.save();
   }
   store_.save();
   return { embedded: processed, dim: store_.dim, provider };
