@@ -246,7 +246,8 @@ async function addMemoryCard({ repoRoot, space, spec }) {
       },
     };
 
-    store.saveGraph(repoRoot, space, out);
+    // Large graphs are written in slices that yield to the event loop (a sync write froze the server for seconds).
+    await store.saveGraphAsync(repoRoot, space, out);
     return { node, edges };
   } finally {
     lock.release(space, 'graph');

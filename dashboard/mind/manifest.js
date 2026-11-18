@@ -16,6 +16,10 @@ const crypto = require('crypto');
 const { spaceDir, ensureDirs } = require('./store');
 
 const FLUSH_DEBOUNCE_MS = 500;
+// A manifest past LARGE_ENTRIES is ~100 MB: rewriting it every half second during an update froze the server.
+const LARGE_ENTRIES = 2000;
+const FLUSH_DEBOUNCE_LARGE_MS = 60 * 1000;
+const { writeJsonChunked } = require('./async-json');
 
 function manifestPath(repoRoot, space) {
   return path.join(spaceDir(repoRoot, space), 'manifest.json');
@@ -46,8 +50,18 @@ class Manifest {
     if (this._flushTimer) return;
     this._flushTimer = setTimeout(() => {
       this._flushTimer = null;
-      if (this._dirty) this.flushSync();
-    }, FLUSH_DEBOUNCE_MS);
+      if (this._dirty) this.flush().catch(() => { this._dirty = true; });
+    }, this.entries.size > LARGE_ENTRIES ? FLUSH_DEBOUNCE_LARGE_MS : FLUSH_DEBOUNCE_MS);
+    if (this._flushTimer.unref) this._flushTimer.unref();
+  }
+
+  // Non-blocking flush: large manifests are written in slices (same bytes as flushSync), small ones synchronously.
+  async flush() {
+    if (!this._dirty) return;
+    if (this.entries.size <= LARGE_ENTRIES) return this.flushSync();
+    this._dirty = false;
+    try { await writeJsonChunked(manifestPath(this.repoRoot, this.space), { entries: Object.fromEntries(this.entries) }); }
+    catch (e) { this._dirty = true; throw e; }
   }
 
   flushSync() {

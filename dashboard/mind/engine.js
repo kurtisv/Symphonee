@@ -217,7 +217,7 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
   }
 
   cp('merging');
-  manifest.flushSync();
+  await manifest.flush();
 
   onProgress('Merging fragments...');
   let graph;
@@ -297,7 +297,7 @@ async function _runBuildInner({ repoRoot, space, sources = [], incremental = fal
 
   cp('saving');
   onProgress(`Saving graph (${out.nodes.length} nodes, ${out.edges.length} edges)...`);
-  const stats = store.saveGraph(repoRoot, space, out);
+  const stats = await store.saveGraphAsync(repoRoot, space, out);
 
   // Optional report
   try {
