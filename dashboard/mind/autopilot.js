@@ -14,6 +14,8 @@ const localBrief = require('./local-brief');
 const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
+const proofLib = require('./autopilot-proof');
+const backlogLib = require('./autopilot-backlog');
 const tq = require('./qwen-teaching');
 const freellmTeacher = require('./freellm-teacher');
 const applicability = require('./lesson-applicability');
@@ -98,6 +100,7 @@ function validQwen(q) {
   return { enabled: true, maxFiles: n(q.maxFiles, 1, 6, 4), maxBytes: n(q.maxBytes, 4000, 120000, 48000), maxRepairs: n(q.maxRepairs, 0, 4, 2), maxResumes: n(q.maxResumes, 1, 30, 12) };
 }
 const windowEndAfter = (sched, now) => { if (!sched) return null; const [h, m] = sched.end.split(':').map(Number); const d = new Date(now); let t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime(); if (t <= now) t += 86400000; return t; };
+const QUEUE_MAX_AGE_MS = 3 * 86400000;
 const LIMIT_RANGES = { dailyCompletions: [1, 50], dailyDiscoveries: [1, 100], dailyCalls: [1, 300],
   dailyTokenBudget: [100000, 500000000], reservedTokensPerCall: [10000, 2000000], repairs: [0, 5], planRevisions: [0, 3] };
 function mergeLimits(base, over) {
@@ -203,6 +206,15 @@ const makeState = () => ({ enabled: false, goal: '', repoName: null, repoPath: n
 // the former 350-char cap. The caps are now generous and stated in the prompt.
 const MAX_EVIDENCE_CHARS = 1500;
 const MAX_ACCEPTANCE_CHARS = 1000;
+// Priority comes first, the model after. Severity is what the user feels; proof is how solid the claim is.
+const SEVERITY_WEIGHT = Object.freeze({ 'data-loss': 100, crash: 90, security: 85, 'wrong-price': 80, 'broken-flow': 70, 'measured-slowness': 50, 'lost-work': 110, 'stuck-loop': 95, 'wrong-state': 75, 'cleanup-proven': 20, other: 10 });
+const PROOF_WEIGHT = Object.freeze({ reproduced: 3, 'read-in-code': 2, inferred: 1 });
+const normSeverity = (x) => (Object.hasOwn(SEVERITY_WEIGHT, String(x)) ? String(x) : 'other');
+const normProof = (x) => (Object.hasOwn(PROOF_WEIGHT, String(x)) ? String(x) : 'inferred');
+function priorityScore(plan) {
+  if (!plan) return 0;
+  return SEVERITY_WEIGHT[normSeverity(plan.severity)] * 10 + PROOF_WEIGHT[normProof(plan.proof)] * 5 + Math.min((plan.evidence || []).length, 4);
+}
 function parsePlan(raw) {
   if (typeof raw !== 'string') return null;
   let p;
@@ -229,6 +241,7 @@ function parsePlan(raw) {
   if (p.category === 'performance' && (typeof p.baseline !== 'string' || p.baseline.trim().length < 20)) return null;
   return { decision: 'TASK', category: p.category, title: clip(p.title.trim(), 180),
     objective: clip(p.objective.trim(), 2000), evidence, acceptance,
+    severity: normSeverity(p.severity), proof: normProof(p.proof), newEvidence: typeof p.newEvidence === 'string' ? clip(p.newEvidence.trim(), 500) : '',
     baseline: p.category === 'performance' ? clip(p.baseline.trim(), 1000) : null };
 }
 // One discovery may return its first task at the top level and up to two more in "more". All of them go to the queue.
@@ -429,7 +442,11 @@ class MindAutopilot {
     this.def = { label: String(def.label || (this.id === 'default' ? 'Principale' : this.id)).slice(0, 60), profile,
       verify: guard.validCommands(def.verify || []),
       linkDirs: (def.linkDirs || []).map(String).slice(0, 8),
-      protectedPaths: (def.protectedPaths || []).map(String).slice(0, 60),
+      // selfProtect: the engine's own permissions, approval criteria, merge policy, isolation and memory-certification rules are protected by CODE.
+      protectedPaths: [...new Set([...(def.selfProtect === true ? backlogLib.ENGINE_PROTECTED : []), ...(def.protectedPaths || []).map(String)])].slice(0, 120),
+      selfProtect: def.selfProtect === true,
+      // backlog: concrete priorities and admission rules enforced by the engine (strict refuses unjustified, duplicate and blocked tasks).
+      backlog: def.backlog && typeof def.backlog === 'object' ? { strict: def.backlog.strict !== false, maxAttempts: Math.min(Math.max(Number(def.backlog.maxAttempts) || 3, 2), 6) } : null,
       // Repository-specific process rules (risk levels, design sheets, lot
       // files...), injected into every stage so the loop follows them.
       governance: String(def.governance || '').slice(0, 4000),
@@ -449,6 +466,8 @@ class MindAutopilot {
       localBrief: validLocalBrief(def.localBrief),
       // Qwen3.5-4B (local) as the first candidate for small tasks on this repository; Claude stays the fallback. Off unless enabled.
       qwen: validQwen(def.qwen),
+      // Engine-enforced proof of a defect fix (the new test fails on the unfixed code and passes on the fix). Off unless asked.
+      proof: { beforeAfter: Boolean(def.proof && def.proof.beforeAfter === true) },
       fallback: fallback.profile(def.fallback),
       // Adaptive task capacity (0..6 per work window) from the real remaining
       // subscription capacity; false turns it off (fixed daily limit again).
@@ -484,6 +503,13 @@ class MindAutopilot {
   // - stopped by the user: stay stopped; the user archives it explicitly.
   recoverAfterRestart(now = Date.now()) {
     const a = this.state.active;
+    // Reconcile the recorded state with what exists on disk BEFORE resuming: a task whose worktree is gone cannot be resumed.
+    const handedOff = a.handoff && ['checking', 'ready', 'dispatched', 'blocked'].includes(a.handoff.status);
+    if (this.def.backlog && this.state.enabled && !handedOff && a.worktree && a.worktree.path && !fs.existsSync(a.worktree.path)) {
+      const m = this.state.metrics = this.state.metrics || {}; m.reconciled = (m.reconciled || 0) + 1;
+      this.log('resumed', 'Restart: the worktree of the active task no longer exists (' + String(a.worktree.path).slice(-60) + '); task archived, nothing resumed');
+      return this.complete('interrupted', 'worktree absent after restart');
+    }
     if (a.handoff && ['checking', 'ready', 'dispatched', 'blocked'].includes(a.handoff.status)) {
       this.state.enabled = false; this.state.error = 'Handoff interrupted: process ownership must be checked before manual recovery';
       a.handoff.status = 'blocked'; a.handoff.nextAction = 'verify-process-tree-and-worktree'; this.save(); return;
@@ -501,7 +527,7 @@ class MindAutopilot {
         a.review = 'INTERRUPTED BY A SYMPHONEE RESTART before the work was finished (this is not a reviewer finding). Continue the approved plan in this worktree from where it stopped and keep what is already correct.'
           + (was === 'repair' && a.review ? '\n\nFindings that were being fixed:\n' + String(a.review).slice(0, 6000) : '');
       }
-      a.restartResumes = (a.restartResumes || 0) + 1;
+      a.restartResumes = (a.restartResumes || 0) + 1; { const m = this.state.metrics = this.state.metrics || {}; m.resumed = (m.resumed || 0) + 1; }
       a.waitingStage = stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'restart';
       if (a.verify) a.verify.running = false;
       this.state.error = null;
@@ -663,13 +689,22 @@ class MindAutopilot {
     if (now < s.nextAt) return 'waiting';
     return 'active';
   }
+  // Useful results, not commit counts: resolved problems by priority class, resumptions that worked, duplicates and repeats the engine prevented.
+  metricsView() {
+    const h = this.state.history || [], m = this.state.metrics || {}, by = {};
+    for (const x of h) if (x && x.outcome === 'completed' && x.severity) by[x.severity] = (by[x.severity] || 0) + 1;
+    return { resolved: h.filter((x) => x && x.outcome === 'completed').length, resolvedBySeverity: by, provedBeforeAfter: h.filter((x) => x && x.proofRun && x.proofRun.ok).length,
+      blocked: backlogLib.blockedTasks(h, (this.def.backlog && this.def.backlog.maxAttempts) || 3).length, resumed: m.resumed || 0, reconciled: m.reconciled || 0,
+      duplicatesPrevented: m.duplicatesPrevented || 0, repeatsPrevented: m.repeatsPrevented || 0, refusedAtAdmission: m.refusedAtAdmission || 0 };
+  }
   snapshot(now = Date.now()) {
     const s = this.state;
     const a = s.active;
-    const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length || this.profile.deep ? ['verify'] : []), 'code-review', 'repair', 'done'];
+    const pipeline = ['discover', 'plan-review', 'implement', ...(this.def.verify.length || this.profile.deep || this.def.selfProtect ? ['verify'] : []), 'code-review', 'repair', 'done'];
     // The capacity shown is at most 2 minutes old (read again when older, between tasks).
     if (this.def.capacity && !a && (!s.capacity || now - s.capacity.at > 120000)) { try { this.capacityDecision(now); } catch (_) {} }
     return { pilot: this.id, updatedAt: s.updatedAt || 0, observedAt: now, origin: 'mind-autopilot', fallbackProfile: this.def.fallback, label: this.def.label, profile: this.def.profile, profileLabel: this.profile.label,
+      metrics: this.metricsView(), backlogEnabled: !!this.def.backlog, selfProtect: !!this.def.selfProtect,
       capacity: this.def.capacity ? (s.capacity || null) : null, capacityEnabled: !!this.def.capacity,
       capacityCosts: (s.capacityLog || []).slice(-10), manualRunUntil: s.manualRunUntil || null,
       verify: this.def.verify.map(v => v.name), protectedPaths: this.def.protectedPaths, linkDirs: this.def.linkDirs, pipeline,
@@ -829,6 +864,98 @@ class MindAutopilot {
     this.report('error', 'Autopilote ' + this.id + ' arrete sur erreur : ' + this.state.error.slice(0, 300), ['halt']);
     this.save();
   }
+  // Every rejection keeps its plan and the whole vocabulary of its reviews, so the same line cannot come back dressed as new.
+  // Stored in its OWN append-only file (not in the pilot state, whose history is bounded): a rejection is never forgotten because other tasks followed.
+  rejectedFile() { return path.join(this.repoRoot, '.symphonee', 'rejected-plans-' + this.id + '.json'); }
+  // The durable file, PLUS the pilot-state buffer (entries written by an older version, or whose write failed). A file that exists but cannot be
+  // read is an ERROR (this._rejectedError), never an empty store: admission then refuses instead of forgetting a rejection.
+  loadRejected() {
+    this._rejectedError = null;
+    let file = [];
+    if (fs.existsSync(this.rejectedFile())) {
+      try { const j = JSON.parse(fs.readFileSync(this.rejectedFile(), 'utf8')); if (!j || !Array.isArray(j.entries)) throw new Error('unexpected shape'); if (j.entries.some((x) => !x || typeof x !== 'object' || Array.isArray(x) || typeof x.title !== 'string' || (x.vocab !== undefined && !Array.isArray(x.vocab)) || (x.items !== undefined && !Array.isArray(x.items)))) throw new Error('damaged entry'); file = j.entries; }
+      catch (e) { this._rejectedError = 'rejected-plans file unreadable: ' + e.message; }
+    }
+    const buffer = (Array.isArray(this.state.rejectedPlans) ? this.state.rejectedPlans : []).filter((x) => x && typeof x === 'object' && typeof x.title === 'string');
+    const byTitle = new Map(file.map((x) => [x.title, x]));
+    for (const b of buffer) {
+      const same = byTitle.get(b.title);
+      if (!same) { const c = { ...b }; byTitle.set(b.title, c); file.push(c); }
+      else { same.vocab = [...new Set([...(same.vocab || []), ...(b.vocab || backlogLib.vocabOf([b.text, ...(b.items || []), b.evidence].filter(Boolean).join(' ')))])]; same.items = [...new Set([...(same.items || []), ...(b.items || [])])].slice(0, 80); }
+    }
+    return file;
+  }
+  rememberRejected(plan, raw) {
+    if (!plan || !this.def.backlog) return; // opt-in: other pilots neither write nor read this store
+    const entries = this.loadRejected();
+    const vocab = backlogLib.vocabOf(raw);
+    const same = entries.find((x) => x.title === plan.title);
+    let touched = same;
+    if (same) {
+      same.vocab = [...new Set([...(same.vocab || []), ...vocab])].slice(0, 20000);
+      same.items = [...new Set([...(same.items || []), ...backlogLib.reviewItems(raw)])].slice(0, 80);
+      same.at = new Date().toISOString(); same.count = (same.count || 1) + 1;
+    } else {
+      touched = { title: plan.title, objective: plan.objective, items: [...backlogLib.reviewItems(raw), ...(plan.evidence || [])].slice(0, 80), vocab: vocab.slice(0, 20000), count: 1, at: new Date().toISOString() };
+      entries.push(touched);
+    }
+    // On any failure ONLY what this call touched (plus what the buffer already held) goes to the state buffer: never a truncated copy of the whole store.
+    const keep = () => { const b = new Map((Array.isArray(this.state.rejectedPlans) ? this.state.rejectedPlans : []).filter((x) => x && typeof x.title === 'string').map((x) => [x.title, x])); b.set(touched.title, touched); this.state.rejectedPlans = [...b.values()]; };
+    if (this._rejectedError) { // never replace a file we could not read: keep the entries in the state buffer, which loadRejected merges
+      keep(); this.log('warn', 'rejected plans kept in the pilot state: ' + this._rejectedError); return;
+    }
+    try {
+      fs.mkdirSync(path.dirname(this.rejectedFile()), { recursive: true });
+      const tmp = this.rejectedFile() + '.tmp'; fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries })); fs.renameSync(tmp, this.rejectedFile());
+      delete this.state.rejectedPlans; // migrated or saved: the file is the single source
+    } catch (e) { keep(); this.log('warn', 'rejected plans kept in the pilot state (file not writable): ' + e.message); }
+  }
+  backlogCtx() {
+    const gatePath = path.join(this.repoRoot, '.ai-workspace', 'merge-gate', 'state.json');
+    let branches = [];
+    // Only RECENT branches (14 days) count as in-flight work: a stale branch must not starve distinct tasks.
+    try {
+      const r = runGit(this.state.repoPath, ['for-each-ref', '--format=%(refname:short) %(committerdate:unix)', 'refs/heads/mind-autopilot/', 'refs/remotes/origin/mind-autopilot/']);
+      branches = String(r.stdout || '').split('\n').map((x) => x.trim().split(' ')).filter((p) => p[0] && Date.now() / 1000 - Number(p[1]) < 14 * 86400).map((p) => p[0]);
+    } catch (_) { /* no git */ }
+    const ctx = { history: this.state.history || [], queue: this.state.queue || [], events: this.state.events || [], error: this.state.error || null,
+      gatePath, repoName: this.state.repoName || null, pilotId: this.id, branches, active: (this.state.active && this.state.active.plan) || null, rejected: this.loadRejected(), rejectedError: this._rejectedError, opts: this.def.backlog || {} };
+    ctx.signals = backlogLib.collectBacklog(ctx);
+    return ctx;
+  }
+  // The engine's own admission of a discovered plan (duplicates, blocked tasks, unjustified work). Counted, never silent.
+  admission(plan) {
+    if (!this.def.backlog) return { ok: true };
+    const r = backlogLib.admit(plan, this.backlogCtx());
+    if (!r.ok) {
+      const m = this.state.metrics = this.state.metrics || {};
+      m.refusedAtAdmission = (m.refusedAtAdmission || 0) + 1; if (r.code === 'duplicate') m.duplicatesPrevented = (m.duplicatesPrevented || 0) + 1; if (r.code === 'blocked') m.repeatsPrevented = (m.repeatsPrevented || 0) + 1;
+      this.log('admission', 'Plan refuse par le moteur (' + r.code + ') : ' + String(plan.title).slice(0, 80) + ' - ' + r.reason);
+    }
+    return r;
+  }
+  backlogText() {
+    if (!this.def.backlog) return '';
+    const ctx = this.backlogCtx(), lines = [];
+    lines.push('CONCRETE BACKLOG (priority classes, most serious first): ' + backlogLib.CLASSES.map((c) => c.n + ') ' + c.label).join('; ') + '.');
+    lines.push('A TODO comment, a large file, or the absence of a neighbouring test is NOT a justification. Choose from the signals below, or from a defect you reproduced yourself (proof "reproduced"). The engine REFUSES a plan that duplicates in-flight work, retries a blocked task without newEvidence, or whose proof is only "inferred" and matches no signal.');
+    if (ctx.signals.length) lines.push('SIGNALS FROM REAL DATA:\n' + ctx.signals.slice(0, 12).map((x) => '- [class ' + x.class + ' ' + x.severity + '] ' + x.text + (x.evidence ? ' (evidence: ' + x.evidence + ')' : '')).join('\n'));
+    const blocked = backlogLib.blockedTasks(ctx.history, this.def.backlog.maxAttempts);
+    if (blocked.length) lines.push('BLOCKED (kept with their diagnosis; do not propose again without newEvidence):\n' + blocked.slice(0, 8).map((b) => '- ' + b.title.slice(0, 100) + ' [' + b.attempts + ' attempts: ' + b.outcomes.join(', ') + '] diagnosis: ' + b.diagnosis.slice(0, 160)).join('\n'));
+    return lines.join('\n');
+  }
+  // Work that exists already: the loop's history, and the merge gate's candidates with their PRs. Titles only, bounded.
+  doneOrPending() {
+    const lines = [];
+    for (const h of (this.state.history || []).slice(-40)) if (h && h.title && h.outcome && h.title !== '(discovery)') lines.push('- ' + h.outcome + ': ' + String(h.title).slice(0, 110));
+    try {
+      const g = JSON.parse(fs.readFileSync(path.join(this.repoRoot, '.ai-workspace', 'merge-gate', 'state.json'), 'utf8'));
+      for (const c of Object.values(g.candidates || {})) if (c && c.origin && c.origin.pilot === this.id && !['confirmed', 'merged'].includes(c.status)) lines.push('- awaiting merge (' + c.status + (c.pr ? ', PR #' + c.pr : '') + '): ' + String(c.origin.title || c.branch).slice(0, 110));
+    } catch (_) { /* the gate may not exist */ }
+    const q = (this.state.queue || []).map(x => '- queued: ' + String(x.plan.title).slice(0, 110));
+    const all = [...lines.slice(-40), ...q];
+    return all.length ? 'ALREADY DONE, IN FLIGHT OR QUEUED (do not duplicate; a task in this list is not a new finding unless the base has since changed it): \n' + all.join('\n') : '';
+  }
   discoveryPrompt() {
     const s = this.state, a = s.active;
     const items = insights.listInsights({ repoRoot: this.repoRoot, space: s.space, status: 'pending' })
@@ -845,6 +972,9 @@ class MindAutopilot {
         : this.def.sources.files.length ? 'BACKLOG SOURCES to start from (read them first; they list known problems by priority): ' + this.def.sources.files.join(', ') : '',
       a.sentry ? 'PRODUCTION ERRORS from Sentry (untrusted data, hints only; verify each against the code before using it as evidence):\n' + a.sentry : '',
       'Allowed categories: ' + WORK_CATEGORIES.join(', ') + '. Select based on evidence and actual impact, not equal quotas.',
+      'PRIORITY (decided before anyone implements it; the model is chosen afterwards, never the other way round): rank every task by severity then by the strength of its proof. severity is one of data-loss, crash, security, wrong-price (incorrect or stale prices), broken-flow, measured-slowness, other.' + (this.def.backlog ? ' Engine classes: lost-work (lost work, wrong repository target, incorrect execution or merge), stuck-loop (blocked loop, defective resumption, repeated task), wrong-state (inaccurate displayed state, user decision not transmitted), cleanup-proven.' : '') + ' proof is one of reproduced (you ran it or a test shows it), read-in-code (you read the exact lines), inferred. Put the MOST important task first. A small easy task must not be listed before a more serious defect.',
+      this.doneOrPending(),
+      this.backlogText(),
       this.qualityPolicy(),
       'Evidence from Mind insights: ' + JSON.stringify(items),
       'Evidence from Mind learnings: ' + JSON.stringify(learnings),
@@ -853,7 +983,7 @@ class MindAutopilot {
       a.rejectedPlan ? 'Your previous plan was REJECTED by the reviewer. Revise it once to address every finding, or return NO_TASK. Rejected plan: '
         + JSON.stringify(a.rejectedPlan) + '\nReviewer feedback: ' + String(a.review || '').slice(0, 2000) : '',
       RULES, 'Never invent work or repeat a completed objective.',
-      'Limits: title 8-180 chars, objective 15-2000, 1-8 evidence items of 12-' + MAX_EVIDENCE_CHARS + ' chars each, 1-8 acceptance items of at most ' + MAX_ACCEPTANCE_CHARS + ' chars each. Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
+      'Limits: title 8-180 chars, objective 15-2000, 1-8 evidence items of 12-' + MAX_EVIDENCE_CHARS + ' chars each, 1-8 acceptance items of at most ' + MAX_ACCEPTANCE_CHARS + ' chars each. Return ONLY JSON: {"decision":"TASK","category":"correctness|performance|quality|cleanup|testing","title":"...","objective":"...","severity":"data-loss|crash|security|wrong-price|broken-flow|measured-slowness' + (this.def.backlog ? '|lost-work|stuck-loop|wrong-state|cleanup-proven' : '') + '|other","proof":"reproduced|read-in-code|inferred","newEvidence":"ONLY to retry a blocked task: what is new since the failed attempts","evidence":["observed file/test/metric with concrete details"],"acceptance":["verifiable test or measurement"],"baseline":"performance category ONLY: reproducible benchmark command, environment and measured value"}',
       (this.def.qwen && this.def.qwen.enabled ? 'A small local model implements the small tasks FIRST. Write each task so that it touches at most ' + this.def.qwen.maxFiles + ' tracked source files and can be verified on its own; split bigger work into separate small tasks, and name the files in the evidence.' : ''),
       'Optionally add "more": an array of up to 4 other justified tasks in the same format, only if they are truly separate and worth doing now. They are kept in a queue and the next ones are NOT rediscovered until the queue is empty.', 'Or {"decision":"NO_TASK"} if there is no safe work. No markdown.'].filter(Boolean).join('\n\n');
   }
@@ -867,6 +997,7 @@ class MindAutopilot {
       'For performance, verify a reproducible baseline and objective comparison method exist before implementation.',
       'For cleanup and quality, verify tests can demonstrate unchanged external behavior.',
       'Inspect evidence, scope, duplication, tests and safety. FAIL if not verifiable.',
+      a.revalidate ? 'REVALIDATION: this task was discovered on base ' + a.revalidate.from + ' and the base is now ' + a.revalidate.to + '. Re-derive the claimed defect on the CURRENT code of that base, reading files from the fetched ref (git show ' + (this.def.baseRef || 'HEAD') + ':<path>), NOT from the working copy, which may be older; FAIL if it was fixed, moved or no longer reproduces.' : '',
       this.profile.deep ? 'Deep plan review: re-derive the claimed defect or gap yourself from the code; FAIL if the plan would need a protected path, has no regression test, or bundles more than one concern.' : '',
       // Measured 2026-11-12: a review concluded "design tenable with
       // reservations" yet answered FAIL, partly for a proof (the red test run)
@@ -1130,9 +1261,10 @@ class MindAutopilot {
   // Queue order: everything Qwen can take first, then (only when paid units remain) the tasks that need Claude. -1 = nothing allowed now.
   pickQueued(allowPaid) {
     const q = this.state.queue || [];
-    const i = q.findIndex(x => this.qwenCanTake(x.plan));
-    if (i >= 0) return i;
-    return allowPaid && q.length ? 0 : -1;
+    // Highest priority first; the model is chosen afterwards. A task that needs Claude is skipped only while no paid unit is left.
+    const order = q.map((x, i) => ({ i, s: x.score != null ? x.score : priorityScore(x.plan) })).sort((a, b) => b.s - a.s || a.i - b.i);
+    for (const { i } of order) if (this.qwenCanTake(q[i].plan) || allowPaid) return i;
+    return -1;
   }
   // The proof regime that judges a change on a real repository: the pilot's own check commands (plus the Codex review of the autopilot).
   // A lesson validated under other checks is no longer trusted, exactly like a fixture lesson validated under another checker.
@@ -1618,7 +1750,8 @@ class MindAutopilot {
       const endedAt = Math.max((last && last.completedAt) || 0, Date.now());
       this.state.pendingCosts = [...(this.state.pendingCosts || []), { before: a.usageBefore, launchedAt: a.launchedAt || null, endedAt, done: {} }].slice(-20);
     }
-    this.state.history.push({ category: a.plan?.category || null,
+    if (a.plan && ['review-rejected', 'verify-failed', 'plan-rejected'].includes(outcome) && this.def.backlog) this.rememberRejected(a.plan, [reviewerEvidence, ...(a.reviews || []).map((x) => x && x.text)].filter(Boolean).join('\n'));
+    this.state.history.push({ category: a.plan?.category || null, severity: a.plan?.severity || null, proof: a.plan?.proof || null, proofRun: a.proofRun || null, newEvidence: a.plan?.newEvidence || null,
       title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
       evidence: a.plan?.evidence || [],
       key: a.plan ? taskKey(a.plan) : null, outcome,
@@ -1648,10 +1781,16 @@ class MindAutopilot {
       if (q.length >= 10) break;
       const key = taskKey(p);
       if (q.some(x => x.key === key) || this.state.history.some(h => h.key === key && h.outcome === 'completed')) continue;
-      q.push({ key, plan: p, discoveredAt: new Date(now).toISOString() });
+      if (!this.admission(p).ok) continue;
+      q.push({ key, plan: p, score: priorityScore(p), baseSha: this.currentBaseSha(), discoveredAt: new Date(now).toISOString() });
     }
     this.save();
     return q.length;
+  }
+  // The base the loop works from (fetched when the task starts); null when unknown.
+  currentBaseSha(refresh = false) {
+    if (refresh && this.def.baseRef) { const [remote, ...rest] = this.def.baseRef.split('/'); if (rest.length) runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]); }
+    try { return git(this.state.repoPath, ['rev-parse', '--verify', (this.def.baseRef || 'HEAD') + '^{commit}']); } catch (_) { return null; }
   }
   // Starts the next queued task (its plan is reviewed by Codex as usual). Returns false when nothing is queued.
   popQueued(now = Date.now(), allowPaid = true) {
@@ -1660,7 +1799,12 @@ class MindAutopilot {
       const idx = this.pickQueued(allowPaid);
       if (idx < 0) break;
       const item = q.splice(idx, 1)[0];
+      // A queued task is only a hypothesis about a past base: too old, dropped; base moved, the plan review must re-derive the defect on the NEW base.
+      if (now - Date.parse(item.discoveredAt || 0) > QUEUE_MAX_AGE_MS) { this.log('queue', 'Tache en file depuis plus de 3 jours, abandonnee : ' + String(item.plan.title).slice(0, 90)); continue; }
+      const nowBase = this.currentBaseSha(true); // fetched first: the review and the implementation must see the same base
+      a.revalidate = item.baseSha && nowBase && item.baseSha !== nowBase ? { from: item.baseSha.slice(0, 10), to: nowBase.slice(0, 10) } : null;
       if (this.state.history.some(h => h.key === item.key && h.outcome === 'completed')) continue;
+      if (!this.admission(item.plan).ok) continue; // it may have become a duplicate or a blocked task while it waited
       a.plan = item.plan; a.stage = 'plan-review';
       this.log('queue', 'Tache deja decouverte reprise sans nouvelle decouverte (' + q.length + ' en attente) : ' + String(item.plan.title).slice(0, 100));
       this.save();
@@ -1686,7 +1830,8 @@ class MindAutopilot {
           const found = [...e.matchAll(/\[([A-Z]\d+)\]/g)].map(m => m[1]);
           return found.length > 0 && found.every(ref => refs.includes(ref)) && found.some(ref => projectRefs.includes(ref));
         });
-        const usable = plan && plan.decision === 'TASK' && !duplicate && cited;
+        // The local model's suggestion goes through the same engine admission as any discovered plan.
+        const usable = plan && plan.decision === 'TASK' && !duplicate && cited && this.admission(plan).ok;
         a.localSuggestion = { provider: 'ollama-mind', at: now, status: usable ? 'awaiting-review' : 'inconclusive', refs, duplicate: !!duplicate };
         a.handoff = null;
         if (usable) { a.plan = plan; a.stage = 'plan-review'; a.planOrigin = 'local-unverified'; }
@@ -1704,6 +1849,7 @@ class MindAutopilot {
       a.lastRaw = null;
       if (plan.decision === 'NO_TASK') return this.complete('no-task');
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
+      { const adm = this.admission(plan); if (!adm.ok) return this.complete(adm.code === 'duplicate' ? 'duplicate' : 'not-admissible', adm.reason); }
       a.plan = plan;
       this.enqueue(parsePlanList(raw).slice(1), now);
       this.log('plan', '[' + plan.category + '] ' + plan.title);
@@ -1721,6 +1867,7 @@ class MindAutopilot {
       // An ordinary failure ends the TASK, not the loop: archived (lesson kept),
       // the pilot stays enabled and moves on after its cooldown. Only safety
       // violations (tampering, writes outside the worktree, protected paths) halt.
+      this.rememberRejected(a.plan, raw);
       if (a.planRevisions > this.limits.planRevisions) return this.complete('plan-rejected', raw);
       if (this.state.queue && this.state.queue.length) return this.complete('plan-rejected', raw);
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
@@ -1739,7 +1886,8 @@ class MindAutopilot {
       if (hits.length) throw new Error('Protected path modified during ' + a.stage + ': ' + hits.slice(0, 6).join(', ') + '. Inspect ' + a.worktree.path);
       // The deep profile always passes through the gate: the diff lint runs
       // even when the repository has no check command configured.
-      if (this.def.verify.length || this.profile.deep) return this.startVerify();
+      // A selfProtect pilot always passes through the gate (the diff lint holds the permission call-site rule), even with no check command.
+      if (this.def.verify.length || this.profile.deep || this.def.selfProtect) return this.startVerify();
       return this.dispatch('code-review', now);
     }
     if (a.stage === 'code-review') {
@@ -1757,9 +1905,10 @@ class MindAutopilot {
         return this.complete('completed', raw);
       }
       a.review = raw; a.repairs++;
+      if (this.def.backlog) this.rememberRejected(a.plan, raw);
       this.learn('revue', lessons.firstFinding(raw), 'revue du code par Codex : ' + (a.plan?.title || ''));
       // Keep every rejection: the reason of each repair stays visible after restarts.
-      a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 3000) }].slice(-6);
+      a.reviews = [...(a.reviews || []), { at: new Date().toISOString(), verdict: 'FAIL', text: String(raw || '').slice(0, 12000) }].slice(-6);
       if (a.repairs > this.limits.repairs) return this.complete('review-rejected', raw);
       return this.dispatch('repair', now);
     }
@@ -1774,8 +1923,12 @@ class MindAutopilot {
     this.save();
     const cwd = a.worktree.path, base = a.baseSha;
     Promise.resolve().then(async () => {
-      const lint = guard.diffLint(cwd, base);
+      const lint = guard.diffLint(cwd, base, { selfProtect: this.def.selfProtect });
       if (lint.length) return { ok: false, results: [], lint };
+      // A defect fix must show its test failing before the fix and passing after it: enforced here, whoever wrote the change.
+      const proof = await proofLib.proofBeforeAfter({ enabled: this.def.proof && this.def.proof.beforeAfter, category: a.plan && a.plan.category, cwd, base, repoPath: this.state.repoPath, linkDirs: this.def.linkDirs,
+        verify: this.def.verify, runVerify: guard.runVerify, guard, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) });
+      if (proof) { a.proofRun = proof.proofRun; this.trace('proof', { ok: proof.ok, files: (proof.proofRun.files || []).slice(0, 6), why: proof.proofRun.why || null }); if (!proof.ok) return { ok: false, results: [proof.result], lint: [] }; }
       if (!this.def.verify.length) return { ok: true, results: [], lint: [] };
       const r = await guard.runVerify(cwd, this.def.verify, { onStart: (proc, c) => {
         this._verifyProc = proc;
@@ -1878,7 +2031,7 @@ class MindAutopilot {
       if (repoTopLevel(a.worktree.path) === this.state.repoPath || !repoTopLevel(a.worktree.path)) return stop('worktree-isolation-failed');
       if (a.mainFingerprint !== worktreeFingerprint(this.state.repoPath, { head: false })) return stop('main-checkout-changed');
       const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
-      if (hits.length || guard.diffLint(a.worktree.path, a.baseSha).length) return stop('handoff-security-or-path-violation');
+      if (hits.length || guard.diffLint(a.worktree.path, a.baseSha, { selfProtect: this.def.selfProtect }).length) return stop('handoff-security-or-path-violation');
       a.handoff.fingerprint = worktreeFingerprint(a.worktree.path);
       a.handoff.worktree = a.worktree.path; a.handoff.baseSha = a.baseSha;
     }
@@ -2112,8 +2265,11 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null, fallback: body.fallback || {},
-        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null };
+        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null,
+        qwen: body.qwen, proof: body.proof, backlog: body.backlog, selfProtect: body.selfProtect };
       const existing = pilots.get(id);
+      // Saving a definition from a form that does not know these options must not erase them.
+      if (existing) { if (body.qwen === undefined) def.qwen = existing.def.qwen; if (body.proof === undefined) def.proof = existing.def.proof; if (body.backlog === undefined) def.backlog = existing.def.backlog; if (body.selfProtect === undefined) def.selfProtect = existing.def.selfProtect; }
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
       const all = readDefs(); all[id] = pilots.get(id).def;
@@ -2125,5 +2281,5 @@ function mountMindAutopilot(addRoute, json, deps) {
   });
   return pilots.get('default');
 }
-module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
+module.exports = { worktreeFingerprint, backlogLib, priorityScore, SEVERITY_WEIGHT, MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
   localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };
