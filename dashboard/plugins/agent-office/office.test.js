@@ -205,3 +205,149 @@ test('hair, accessories and the unknown bubble never need the removed shift oper
   assert.doesNotMatch(script, /ph >> 3/);
   assert.doesNotMatch(script, /reduceMotion/);
 });
+
+// ---- Answering a waiting terminal ---------------------------------------
+test('the question is cleaned: no colour codes, no control characters, last lines only', () => {
+  const raw = '\x1b[32mline one\x1b[0m\r\n\x1b[1mDo you want to proceed?\x1b[0m\r\n 1. Yes\r\n 2. No\x07\r\n';
+  assert.equal(office.cleanAsk(raw), 'line one\nDo you want to proceed?\n 1. Yes\n 2. No');
+  const many = Array.from({ length: 30 }, (_, i) => 'row ' + i).join('\n');
+  assert.equal(office.cleanAsk(many).split('\n').length, 8);
+  assert.equal(office.cleanAsk(''), '');
+});
+
+test('choices follow the prompt: numbered menu, yes/no, and always Enter', () => {
+  const menu = office.replyChoices('Do you want to proceed?\n \u276f 1. Yes\n   2. Yes, and do not ask again\n   3. No');
+  assert.deepEqual(Array.from(menu.map(c => c.act)), ['opt:1', 'opt:2', 'opt:3', 'enter']);
+  assert.match(menu[1].label, /do not ask again/);
+  assert.deepEqual(Array.from(office.replyChoices('Continue? (y/n)').map(c => c.act)), ['yes', 'no', 'enter']);
+  assert.deepEqual(Array.from(office.replyChoices('press enter to continue').map(c => c.act)), ['enter']);
+});
+
+test('keystrokes are exact: digit alone, y/n with Enter, text sanitised', () => {
+  assert.equal(office.payloadFor('enter'), '\r');
+  assert.equal(office.payloadFor('yes'), 'y\r');
+  assert.equal(office.payloadFor('no'), 'n\r');
+  assert.equal(office.payloadFor('opt:2'), '2');
+  assert.equal(office.payloadFor('text', '  oui, vas-y  '), 'oui, vas-y\r');
+  assert.equal(office.payloadFor('text', 'a\x1b[31mb\nc'), 'a [31mb c\r');      // escape and newline never reach the terminal
+  assert.equal(office.payloadFor('text', '   '), null);
+  assert.equal(office.payloadFor('opt:10'), null);
+  assert.equal(office.payloadFor('rm -rf'), null);
+});
+
+test('only a waiting terminal can be answered', () => {
+  assert.equal(office.canReply({ kind: 'terminal', state: 'waiting', termId: 'term-2' }), true);
+  assert.equal(office.canReply({ kind: 'terminal', state: 'working', termId: 'term-2' }), false);
+  assert.equal(office.canReply({ kind: 'task', state: 'waiting', termId: 'x' }), false);
+  assert.equal(office.canReply({ kind: 'loop', state: 'waiting' }), false);
+  assert.equal(office.canReply(null), false);
+});
+
+test('a waiting terminal exposes its question and signature to the office', () => {
+  const tail = 'Do you want to proceed?\n 1. Yes\n 2. No';
+  const rows = office.buildAgents([], [], [{ id: 'term-2' }], { 'term-2': 'claude' }, { 'term-2': { lastChange: now, tail, sig: '3:40:123' } }, now, null, null);
+  assert.equal(rows[0].state, 'waiting');
+  assert.equal(rows[0].termId, 'term-2');
+  assert.match(rows[0].ask, /Do you want to proceed/);
+  assert.equal(rows[0].askSig, '3:40:123');
+  const busy = office.buildAgents([], [], [{ id: 'term-3' }], { 'term-3': 'codex' }, { 'term-3': { lastChange: now, tail: 'compiling...', sig: 'x' } }, now, null, null);
+  assert.equal(busy[0].ask, ''); assert.equal(busy[0].askSig, '');
+});
+
+// ---- One list of requests for the user ---------------------------------
+const waitingTerm = { id: 'term:t2', kind: 'terminal', cli: 'claude', state: 'waiting', title: 'Terminal t2', termId: 't2', ask: 'Do you want to proceed?\n 1. Yes\n 2. No', askSig: 'sig1' };
+const approval = { runId: 'gr_1', runName: 'Boucle PleinSens', nodeId: 'review', title: 'Valider le plan ?' };
+const decision = { id: 'dec_0a1b2c3d', from: 'codex', title: 'R2 : consigner ?', body: 'Detail', ref: 'fiche C1', options: [{ id: 'oui', label: 'Oui' }, { id: 'non', label: 'Non' }], allowText: true };
+
+test('requests from the three sources are merged into one list', () => {
+  const asks = office.buildAsks([waitingTerm, { id: 'term:t3', kind: 'terminal', state: 'working', termId: 't3' }], { approvals: [approval, { runId: 'x' }], decisions: { pending: [decision, {}] } });
+  assert.deepEqual(Array.from(asks.map(a => a.kind)), ['terminal', 'approval', 'decision']);
+  assert.deepEqual(Array.from(asks.map(a => a.key)), ['t|t2|sig1', 'a|gr_1|review', 'd|dec_0a1b2c3d']);
+  assert.deepEqual(Array.from(asks[2].choices.map(c => c.act)), ['opt:oui', 'opt:non']);
+  assert.deepEqual(Array.from(office.buildAsks([], null)), []);
+  assert.equal(office.buildAsks([], { approvals: [], decisions: { pending: [] } }).length, 0);
+});
+
+test('a request card escapes everything and offers the right controls', () => {
+  const evil = { id: 'dec_0a1b2c3d', from: '<b>x</b>', title: '<img src=x onerror=alert(1)>', body: '<script>1</script>', ref: '"><i>', options: [{ id: 'a', label: '<u>A</u>' }], allowText: true };
+  const html = office.askCardHtml(office.buildAsks([], { approvals: [], decisions: { pending: [evil] } })[0], 'brouillon "x"', null);
+  assert.doesNotMatch(html, /<img|<script|<b>x|<u>A|<i>/);
+  assert.match(html, /data-act="opt:a"/);
+  assert.match(html, /value="brouillon &quot;x&quot;"/, 'the draft is restored, escaped');
+  assert.doesNotMatch(html, /data-act="text"/, 'choices plus a note: the text is attached to a choice, no separate Send');
+  const term = office.askCardHtml(office.buildAsks([waitingTerm], null)[0], '', null);
+  assert.match(term, /data-act="opt:1"/); assert.match(term, /data-act="enter"/); assert.match(term, /data-act="text"/);
+  const gate = office.askCardHtml(office.buildAsks([], { approvals: [approval], decisions: null })[0], '', null);
+  assert.match(gate, /data-act="approve"/); assert.match(gate, /data-act="reject"/);
+  const freeOnly = office.askCardHtml(office.buildAsks([], { approvals: [], decisions: { pending: [{ id: 'dec_00000001', title: 'Libre', options: [], allowText: true }] } })[0], '', null);
+  assert.match(freeOnly, /data-act="text"/);
+});
+
+test('answering routes each request to its own source', async () => {
+  const calls = [];
+  const plain = (x) => JSON.parse(JSON.stringify(x));      // objects made inside the page are from another realm
+  const deps = { postJson: (url, body) => { calls.push(plain([url, body])); return Promise.resolve({ ok: true }); }, sendReply: (t, p, sig) => { calls.push(['term', t, p, sig]); return Promise.resolve(true); } };
+  const [t, a, d] = office.buildAsks([waitingTerm], { approvals: [approval], decisions: { pending: [decision] } });
+  await office.answerAsk(t, 'opt:1', '', deps);
+  assert.deepEqual(calls.pop(), ['term', 't2', '1', 'sig1']);
+  await office.answerAsk(a, 'approve', '  ok pour moi \n', deps);
+  assert.deepEqual(calls.pop(), ['/api/graph-runs/gr_1/approve/review', { approved: true, note: 'ok pour moi' }]);
+  await office.answerAsk(a, 'reject', '', deps);
+  assert.deepEqual(calls.pop(), ['/api/graph-runs/gr_1/approve/review', { approved: false, note: '' }]);
+  await office.answerAsk(d, 'opt:oui', 'mais surveille', deps);
+  assert.deepEqual(calls.pop(), ['/api/decisions/answer', { id: 'dec_0a1b2c3d', choice: 'oui', text: 'mais surveille' }]);
+  await office.answerAsk(d, 'opt:non', '', deps);
+  assert.deepEqual(calls.pop(), ['/api/decisions/answer', { id: 'dec_0a1b2c3d', choice: 'non' }]);
+  await assert.rejects(office.answerAsk(d, 'text', '   ', deps), /Ecris/);
+  await assert.rejects(office.answerAsk(a, 'peut-etre', '', deps), /inconnu/);
+  await assert.rejects(office.answerAsk(t, 'text', '', deps), /Ecris/);
+  assert.equal(calls.length, 0, 'nothing was sent for an empty or unknown answer');
+});
+
+test('a choice-only question never carries free text to the server', async () => {
+  const calls = [];
+  const [d] = office.buildAsks([], { approvals: [], decisions: { pending: [{ id: 'dec_0a1b2c3d', title: 'Choisir', options: [{ id: 'a', label: 'A' }], allowText: false }] } });
+  await office.answerAsk(d, 'opt:a', 'du texte', { postJson: (u, b) => { calls.push(JSON.parse(JSON.stringify(b))); return Promise.resolve({}); } });
+  assert.deepEqual(calls, [{ id: 'dec_0a1b2c3d', choice: 'a' }]);
+});
+
+test('the request section is rebuilt only when the set of requests changes', () => {
+  assert.match(script, /if \(sig === asksSig\) return;/);
+  assert.match(script, /drafts\[it\.key\]/);
+  assert.doesNotMatch(script, /sheetReply|replyHtml/);
+});
+
+test('sending re-reads the terminal and refuses when it changed', async () => {
+  const sent = [];
+  const sock = () => Promise.resolve({ send: d => sent.push(d), close() {} });
+  const same = { termId: 't', output: 'Do you want to proceed?', totalLines: 3 };
+  // the signature is built exactly like the poller does
+  const sigOf = (o) => { const t = String(o.output); let hh = 2166136261; for (let i = 0; i < t.length; i++) { hh ^= t.charCodeAt(i); hh = Math.imul(hh, 16777619); } return o.totalLines + ':' + t.length + ':' + (hh >>> 0); };
+  await office.sendReply('t', 'y\r', sigOf(same), { getJson: () => Promise.resolve(same), openSocket: sock });
+  assert.equal(sent.length, 1);
+  assert.deepEqual(JSON.parse(sent[0]), { type: 'input', termId: 't', data: 'y\r' });
+  await assert.rejects(office.sendReply('t', 'y\r', sigOf(same), { getJson: () => Promise.resolve({ termId: 't', output: 'something else now', totalLines: 4 }), openSocket: sock }), e => e.code === 'CHANGED');
+  assert.equal(sent.length, 1, 'nothing was sent after the terminal changed');
+  await assert.rejects(office.sendReply('t', 'y\r', sigOf(same), { getJson: () => Promise.reject(new Error('down')), openSocket: sock }), /down/);
+  assert.equal(sent.length, 1);
+  // the read route answers for ANOTHER terminal when the id is unknown: never answer that one
+  await assert.rejects(office.sendReply('t', 'y\r', sigOf(same), { getJson: () => Promise.resolve({ termId: 'main', output: same.output, totalLines: 3 }), openSocket: sock }), e => e.code === 'GONE');
+  assert.equal(sent.length, 1, 'nothing was sent to a different terminal');
+});
+
+test('the office stays first; requests sit under "Ce qui coince" with a badge on the office', () => {
+  const at = (s) => html.indexOf(s);
+  assert.ok(at('id="stage"') > 0 && at('id="stage"') < at('id="hAlerts"'), 'the office comes before "Ce qui coince"');
+  assert.ok(at('id="hAlerts"') < at('id="attn"') && at('id="attn"') < at('id="alerts"'), 'requests are inside "Ce qui coince", above the diagnosis');
+  assert.ok(at('id="stage"') < at('id="asksBadge"') && at('id="asksBadge"') < at('id="sheet"'), 'the badge is inside the office frame');
+  assert.match(html, /id="asksBadge"[^>]*data-jump="waiting"/);
+  assert.equal((html.match(/id="attn"/g) || []).length, 1);
+});
+
+test('the stylesheet is balanced: every rule is closed and none is swallowed', () => {
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)[1].replace(/\/\*[\s\S]*?\*\//g, '');
+  let depth = 0;
+  for (const c of css) { if (c === '{') depth++; if (c === '}') { depth--; assert.ok(depth >= 0, 'a closing brace has no opening one'); } }
+  assert.equal(depth, 0, 'an opening brace is never closed');
+  assert.match(css, /\.legend\s*\{[^}]*display:\s*flex/, 'the legend rule is intact');
+});
