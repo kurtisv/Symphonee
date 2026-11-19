@@ -12,7 +12,9 @@ delete process.env.NODE_TEST_CONTEXT; // the repository checks below run `node c
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const gitc = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const plan = (evidence) => JSON.stringify({ decision: 'TASK', category: 'testing', title: 'Add run() regression test', objective: 'Add a regression test for the run() helper return value', evidence, acceptance: ['check passes'] });
-const DEF = { profile: 'standard', label: 'Qwen demo', verify: [{ name: 'check', cmd: ['node', 'check.js'], timeoutMs: 20000 }], linkDirs: ['deps'], protectedPaths: ['^secrets/'], qwen: { enabled: true } };
+const DEF = { profile: 'standard', label: 'Qwen demo', verify: [{ name: 'check', cmd: ['node', 'check.js'], timeoutMs: 20000 }], linkDirs: ['deps'], protectedPaths: ['^secrets/'], qwen: { enabled: true },
+  // Hermetic: the adaptive capacity gate reads the REAL Claude/Codex usage of the machine running the tests (it blocked these runs once Codex's weekly quota was high).
+  capacity: false };
 
 function setup({ qwenReplies = [], evidence = ['index.js:2 carries a TODO asking for coverage of run()'], def = DEF, qwenEnabled = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-autopilot-qwen-'));

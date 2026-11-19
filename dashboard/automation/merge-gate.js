@@ -183,7 +183,7 @@ function discoverAutopilot(repo, source, io) {
     if (sha !== h.commit) { io.log && io.log('ignoree ' + h.worktree.branch + ' : la pointe n est plus le commit revu ' + String(h.commit).slice(0, 10)); continue; }
     // The repository the pilot worked on, captured now (the pilot may be reconfigured later).
     const repoName = st.repoPath && path.resolve(st.repoPath).toLowerCase() === path.resolve(repo.path).toLowerCase() ? st.repoName || null : null;
-    out.push({ repo: repo.name, source: source.type, branch: h.worktree.branch, sha, origin: { pilot: source.pilot, repoName, title: h.title, at: h.at },
+    out.push({ repo: repo.name, source: source.type, branch: h.worktree.branch, sha, origin: { pilot: source.pilot, repoName, title: h.title, at: h.at, severity: h.severity || null, proofStrength: h.proof || null, proofRun: h.proofRun || null, executor: h.executor || null },
       proof: { review: /^\s*VERDICT:\s*PASS\b/.test(String(h.reviewerEvidence || '')), verified: Array.isArray(h.verified) && h.verified.length > 0, verifiedList: h.verified || [] } });
   }
   return out;
@@ -240,8 +240,15 @@ async function pass(policy, state, io) {
     // A candidate never started whose branch now points elsewhere (re-committed,
     // rebased) is replaced by the new commit: drop the stale entry.
     const live = new Set(found.map((c) => c.repo + '|' + c.branch + '|' + c.sha));
+    const held = new Set(); // withdrawn candidates whose ancestry is unknown: wait for reconciliation, never resume normal processing
     for (const [k, c] of Object.entries(state.candidates)) {
-      if (c.repo === repo.name && c.status === 'new' && !live.has(k)) { delete state.candidates[k]; io.log('candidate remplacee ' + k); }
+      if (c.repo === repo.name && c.status === 'new' && !live.has(k)) {
+        // A withdrawn candidate is kept ONLY if its tested merge really is in the base (an accepted push to reconcile); otherwise it is dropped, never revived.
+        // isAncestor: true / false (definitely not) / null (could not tell). Only a definite 'no' (or a week of doubt) lets the intent go.
+        let r = false; try { r = c.pushIntent && c.pushIntent === c.evaluatedMerge ? io.isAncestor(repo.path, c.evaluatedMerge, baseSha) : false; } catch (_) { r = null; }
+        if (r === true) continue;
+        if (r === null && io.now() - (c.updatedAt || 0) < 7 * 86400000) { held.add(k); continue; }
+        delete state.candidates[k]; io.log('candidate remplacee ' + k); }
     }
     for (const c of found) {
       const key = c.repo + '|' + c.branch + '|' + c.sha;
@@ -251,7 +258,7 @@ async function pass(policy, state, io) {
         io.log('nouvelle candidate ' + key);
       }
     }
-    const mine = Object.values(state.candidates).filter((c) => c.repo === repo.name && !['refused', 'merged', 'confirmed'].includes(c.status))
+    const mine = Object.values(state.candidates).filter((c) => c.repo === repo.name && !['merged', 'confirmed'].includes(c.status) && !held.has(c.key) && (c.status !== 'refused' || (c.pushIntent && !state.merges.some((m) => m.key === c.key))))
       .sort((a, b) => a.createdAt - b.createdAt);
     // A repository with its own chainWindows/chainsPerPass has its own budget;
     // the others share one chain per pass inside policy.chainWindows (as before).
@@ -263,7 +270,7 @@ async function pass(policy, state, io) {
       if (c.status === 'new') budget.left--;
       // A transient error (network, GitHub, Symphonee API) leaves the candidate
       // where it was: retried at the next pass, the other candidates go on.
-      try { await step(c, repo, baseSha, state, io); }
+      try { if ((await step(c, repo, baseSha, state, io)) === 'waiting' && c.status === 'new') budget.left++; } // waiting on reconciliation costs no chain: it must not starve the others
       catch (e) {
         const msg = String(e && e.message || e).slice(0, 300);
         io.log(c.key + ' : erreur pendant ' + c.status + ', nouvel essai au prochain passage : ' + msg);
@@ -300,6 +307,23 @@ async function refuse(c, repo, reasons, io) {
 
 async function step(c, repo, baseSha, state, io) {
   const source = repo.sources.find((s) => s.type === c.source);
+  // Reconciliation after an interruption: the process can die between the push that lands the tested merge and the write of its state.
+  // If that exact merge commit is already in the base, the work is done: record it (never push, merge or open a PR a second time).
+  if (pushesMerge(repo) && c.evaluatedMerge && ['new', 'pr-open', 'ci-green', 'waiting-governance', 'waiting-pace', 'refused'].includes(c.status) // 'new': a push that failed AFTER being accepted
+      && c.pushIntent && c.pushIntent === c.evaluatedMerge // only if THIS gate recorded, before pushing, that it was about to push this very commit
+      && !state.merges.some((m) => m.key === c.key && m.sha === c.evaluatedMerge)) {
+    let landed = false, unknown = false;
+    try { const r = io.isAncestor(repo.path, c.evaluatedMerge, baseSha); landed = r === true; unknown = r === null || r === undefined; } catch (_) { unknown = true; }
+    // Could not tell whether the intended push landed: wait for the next pass, never go on with a normal verification that could push it again.
+    if (unknown) return 'waiting';
+    if (landed) {
+      c.mergeSha = c.evaluatedMerge;
+      setStatus(c, 'merged', 'reconciliation : la fusion testee est deja dans ' + repo.base + ' (interruption avant l enregistrement)', io);
+      state.merges.push({ repo: repo.name, key: c.key, at: io.now(), sha: c.evaluatedMerge, pr: c.pr, prUrl: c.prUrl, verified: c.sha,
+        base: c.evaluatedBase || null, tree: c.evaluatedTree || null, status: 'merged', reconciled: true });
+      return;
+    }
+  }
   if (c.status === 'new') {
     const reasons = proofReasons(c, repo, io, source);
     if (!c.branch.startsWith(source.branchPrefix)) reasons.push('prefixe de branche non autorise');
@@ -436,6 +460,7 @@ async function step(c, repo, baseSha, state, io) {
       if (!c.evaluatedMerge) return setStatus(c, 'new', 'fusion testee absente : nouvelle verification complete', io);
       // The lease makes it atomic on the exact tested base: master must still be
       // evaluatedBase on the remote (not moved forward, not rewound).
+      c.pushIntent = c.evaluatedMerge; if (io.persist) io.persist(state); // durable BEFORE the push, so a crash after it can be reconciled
       try { io.git(repo.path, ['push', '--force-with-lease=refs/heads/' + repo.base + ':' + c.evaluatedBase, 'origin', c.evaluatedMerge + ':refs/heads/' + repo.base]); }
       catch (e) {
         c.attempts = (c.attempts || 0) + 1;
@@ -525,6 +550,8 @@ function prBody(c, repo) {
     '- Taille : ' + c.stats.codeLines + ' lignes de code dans ' + c.stats.codeFiles + ' fichiers (' + c.stats.files + ' fichiers au total)',
     '- Preuve de la boucle : ' + (c.source === 'pleinsens-loop' ? 'revue finale Claude DECISION: GARDER (' + c.proof.reviewFile + ')' : 'revue Codex VERDICT: PASS ; verifications ' + c.proof.verifiedList.join(', ')),
     '- Chaine executee par la porte sur le resultat de la fusion : ' + c.chain.map((r) => r.name + ' ' + (r.ok ? 'OK' : 'ECHEC') + ' (' + r.s + ' s)').join(', '),
+    ...(c.origin.severity ? ['- Probleme : gravite ' + c.origin.severity + ', preuve ' + (c.origin.proofStrength || 'inconnue')] : []),
+    ...(c.origin.proofRun ? ['- Preuve avant/apres : ' + (c.origin.proofRun.ok ? 'le test echoue avant le correctif et passe apres (' + (c.origin.proofRun.files || []).join(', ') + ')' : 'NON etablie : ' + c.origin.proofRun.why)] : ['- Preuve avant/apres : aucune enregistree pour ce changement (non exigee par la definition, ou enregistrement ancien) : limite connue']),
     '', 'Fusion seulement si la CI GitHub est verte sur ce commit et si toutes les regles tiennent encore juste avant. Aucun deploiement.',
     'Annulation apres fusion : `git revert -m 1 <commit de fusion>`.',
   ];
