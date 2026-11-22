@@ -16,7 +16,9 @@ for (const [label, hangs] of [['an old process that exits', false], ['an old pro
     const old = spawn(process.execPath, ['-e', hangs ? 'setInterval(() => {}, 1000)' : 'setTimeout(() => {}, 300)'], { stdio: 'ignore' });
     const src = helperSource({ pid: old.pid, birthMs: osCreationMs(old.pid), execPath: process.execPath, args: ['-e', "require('fs').writeFileSync(" + JSON.stringify(marker) + ", 'ok')"], cwd: dir, waitMs: 1500 });
     const h = spawn(process.execPath, ['-e', src], { stdio: 'ignore' });
-    assert.equal(await waitFor(() => fs.existsSync(marker), 10000), true, 'new instance started');
+    // Budget, not speed, is under test: every helper tick spawns PowerShell (about 0.3 s idle, several seconds when the
+    // whole suite runs in parallel), then taskkill and a 1 s grace. 10 s failed about 1 run in 3 under load (2026-11-22).
+    assert.equal(await waitFor(() => fs.existsSync(marker), 30000), true, 'new instance started');
     let oldAlive = true; try { process.kill(old.pid, 0); } catch (_) { oldAlive = false; }
     assert.equal(oldAlive, false, 'old process gone');
     try { h.kill(); } catch (_) {}
