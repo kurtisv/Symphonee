@@ -78,21 +78,31 @@ function postJsonStream(urlStr, body, { onChunk, timeoutMs = 600_000 } = {}) {
         return;
       }
       let leftover = '';
+      const decoder = new (require('string_decoder').StringDecoder)('utf8');
+      let streamError = null;
+      let sawError = false;
+      const handle = (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        let parsed;
+        try { parsed = JSON.parse(trimmed); } catch (_) { return; /* skip bad line */ }
+        if (parsed && typeof parsed.error === 'string') {
+          // Ollama reports pull failures in-stream on an HTTP 200.
+          if (!sawError) { sawError = true; streamError = parsed.error; }
+          return;
+        }
+        try { onChunk && onChunk(parsed); } catch (_) {}
+      };
       res.on('data', (chunk) => {
-        leftover += chunk.toString('utf8');
+        leftover += decoder.write(chunk);
         const lines = leftover.split('\n');
         leftover = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try { onChunk && onChunk(JSON.parse(trimmed)); } catch (_) { /* skip bad line */ }
-        }
+        for (const line of lines) handle(line);
       });
       res.on('end', () => {
-        if (leftover.trim()) {
-          try { onChunk && onChunk(JSON.parse(leftover)); } catch (_) {}
-        }
-        resolve({ ok: true });
+        leftover += decoder.end();
+        handle(leftover);
+        resolve(sawError ? { ok: false, error: streamError } : { ok: true });
       });
     });
     req.on('error', reject);
@@ -167,7 +177,7 @@ async function ensureModel({ model = DEFAULT_MODEL, broadcast } = {}) {
   // version so the UI can show "Downloading X.XX GB / Y.YY GB".
   let lastReported = 0;
   try {
-    await postJsonStream(OLLAMA_BASE + '/api/pull', { model, stream: true }, {
+    const pull = await postJsonStream(OLLAMA_BASE + '/api/pull', { model, stream: true }, {
       onChunk: (chunk) => {
         if (!broadcast) return;
         const now = Date.now();
@@ -179,6 +189,7 @@ async function ensureModel({ model = DEFAULT_MODEL, broadcast } = {}) {
         });
       },
     });
+    if (!pull.ok) return { ok: false, step: 'ensureModel', reason: 'pull-failed', error: pull.error };
     return { ok: true, step: 'ensureModel' };
   } catch (e) {
     return { ok: false, step: 'ensureModel', reason: 'pull-failed', error: e.message };
