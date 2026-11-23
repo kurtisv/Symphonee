@@ -20,6 +20,12 @@ const { PROFILES } = require('./qwen-docker-adapter');
 const { runRepoWorker } = require('./qwen-repo-worker');
 
 const DEFAULT_MODEL = 'qwen/qwen3.5-4b';
+// Text-protocol profiles for the repository developer. The 9B (decision of 2026-11-22) uses the same
+// text protocol and prompt size as the 4B; it is selected with config QwenRepo.model.
+const REPO_PROFILES = Object.freeze({
+  'qwen/qwen3.5-4b': PROFILES['qwen/qwen3.5-4b'],
+  'qwen/qwen3.5-9b': Object.freeze({ mode: 'text', minContext: 8192, wallSeconds: 360, reasoningEffort: 'none', maxToolCalls: 0 }),
+});
 
 function addWorktree(repoPath, worktreePath, branch, startPoint) {
   if (startPoint && !/^[A-Za-z0-9][A-Za-z0-9._/^-]*$/.test(String(startPoint))) throw new Error('invalid startPoint');
@@ -31,10 +37,11 @@ module.exports = {
   isQwenRepoEnabled() { return this.getConfig && this.getConfig()?.QwenRepo?.enabled === true; },
 
   // existingWorktree: continue in the worktree of an earlier Qwen stage (resume or repair).
-  spawnQwenInWorktree({ repoPath, branch, startPoint, existingWorktree = null, task, verify, protectedPatterns, skipDirs, model = DEFAULT_MODEL, memoryText = '', sessionFile, deadlineAt, from, space, taskId, timeout, onEvent, onWorktree, dependencies }) { // `dependencies`: injection point for tests (fetch, freemem, sleep), never set by the autopilot
+  spawnQwenInWorktree({ repoPath, branch, startPoint, existingWorktree = null, task, verify, protectedPatterns, skipDirs, model = null, memoryText = '', sessionFile, deadlineAt, from, space, taskId, timeout, onEvent, onWorktree, dependencies }) { // `dependencies`: injection point for tests (fetch, freemem, sleep), never set by the autopilot
     if (!this.isQwenRepoEnabled()) throw new Error('Qwen repository developer is disabled (QwenRepo.enabled)');
-    const profile = PROFILES[model];
-    if (!profile || profile.mode !== 'text') throw new Error('Unsupported Qwen developer model');
+    model = model || (this.getConfig && this.getConfig()?.QwenRepo?.model) || DEFAULT_MODEL;
+    const profile = REPO_PROFILES[model];
+    if (!profile || profile.mode !== 'text') throw new Error('Unsupported Qwen developer model: ' + model);
     if (!repoPath || !task || typeof task.title !== 'string' || typeof task.objective !== 'string') throw new Error('repoPath and a task are required');
     const id = taskId || this._id();
     let wt;

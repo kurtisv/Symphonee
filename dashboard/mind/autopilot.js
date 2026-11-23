@@ -95,7 +95,58 @@ function nextWindowStart(sched, now = Date.now()) {
 function validQwen(q) {
   if (!q || q.enabled !== true) return { enabled: false };
   const n = (x, lo, hi, d) => { const v = Number(x); return Number.isInteger(v) && v >= lo && v <= hi ? v : d; };
-  return { enabled: true, maxFiles: n(q.maxFiles, 1, 6, 4), maxBytes: n(q.maxBytes, 4000, 120000, 48000), maxRepairs: n(q.maxRepairs, 0, 4, 2), maxResumes: n(q.maxResumes, 1, 30, 12) };
+  return { enabled: true, maxFiles: n(q.maxFiles, 1, 6, 4), maxBytes: n(q.maxBytes, 4000, 120000, 48000), maxRepairs: n(q.maxRepairs, 0, 4, 2), maxResumes: n(q.maxResumes, 1, 30, 12), maxCoaching: n(q.maxCoaching, 0, 3, 1) };
+}
+// Interruptions caused by the machine, not by Qwen (texts produced by qwen-repo-worker.js and spawn-qwen-repo.js).
+const QWEN_OUTAGE_RE = /LM Studio unreachable|LM Studio unavailable|context is not loaded|Model call failed|fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|Free RAM below/i;
+// A 4xx from the model server is a bad request: waiting for LM Studio cannot fix it (5xx and transport errors can).
+const isQwenOutage = (why) => QWEN_OUTAGE_RE.test(why) && !/HTTP 4\d\d/.test(why);
+const QWEN_OUTAGE_MAX_MS = 6 * 3600000;
+// A flaky test outside the change (2026-11-22: a timing test failed 1 run in 3 and used up all 5 repairs of a correct
+// task): a failed check is run ONCE more, from that check on. A real defect fails twice and stays a failure; a pass on
+// the second run is returned with `flaky` so the caller records it (never silently). A timeout is not retried.
+// Only a failure that is clearly OUTSIDE the change can be called flaky: the failing test files must be known (node:test
+// "test at <file>:<line>" lines) and none of them may be a file the change touched. A change's own test that fails once
+// stays a failure. The flaky pass is also shown to the code reviewer (see code-review prompt).
+const FLAKY_CONFIRM_RUNS = 3, FLAKY_MAX_FILES = 5; // 5 + node + flags stays within the 20 arguments a verify command may have
+function failingTestFiles(tail) {
+  return [...new Set((String(tail || '').match(/^\s*test at (.+?):\d+:\d+\s*$/gm) || []).map(s => s.trim().replace(/^test at /, '').replace(/:\d+:\d+$/, '').replace(/\\/g, '/')))];
+}
+async function verifyWithFlakeRetry(runVerify, cwd, verify, { onStart, still = () => true, changed = [] } = {}) {
+  const r = await runVerify(cwd, verify, { onStart });
+  const bad = r.ok ? -1 : r.results.findIndex(x => !x.ok);
+  if (bad < 0 || r.results[bad].timedOut || !still()) return r;
+  const first = r.results[bad];
+  // Paths are printed relative to the check's own cwd (e.g. "api"): make them repository-relative before comparing.
+  const sub = verify[bad] && verify[bad].cwd ? String(verify[bad].cwd).replace(/\\/g, '/').replace(/^\.\/|\/+$/g, '') : '';
+  const files = failingTestFiles(first.tail);
+  // The tail is the END of the output: the node:test summary ("ℹ fail N" and the "failing tests:" list) must be whole,
+  // with one "test at" entry per failure, or some failing files could be missing from the decision.
+  const failCount = Number((String(first.tail || '').match(/^\s*ℹ fail (\d+)\s*$/m) || [])[1]);
+  const entries = (String(first.tail || '').split(/✖ failing tests:/)[1] || '').match(/^\s*test at .+:\d+:\d+\s*$/gm) || [];
+  if (!Number.isInteger(failCount) || failCount < 1 || entries.length !== failCount) return r;
+  // Resolved like the test runner does (absolute paths, "..", the check's cwd) then made repository-relative;
+  // a path outside the repository cannot be judged, so it is never called flaky.
+  const root = path.resolve(cwd);
+  // Windows paths are case-insensitive: git and the test runner may spell the same file differently.
+  const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const repoRel = files.map(f => norm(path.relative(root, path.resolve(root, sub, f)).replace(/\\/g, '/')));
+  const touched = new Set((changed || []).map(f => norm(path.relative(root, path.resolve(root, String(f))).replace(/\\/g, '/'))));
+  // Many failing files at once is not flakiness; and every failing file must get its confirmation runs.
+  if (!files.length || files.length > FLAKY_MAX_FILES || repoRel.some(f => !f || f.startsWith('..') || path.isAbsolute(f) || touched.has(f))) return r;
+  const again = await runVerify(cwd, verify.slice(bad), { onStart });
+  const results = [...r.results.slice(0, bad), ...again.results];
+  if (!again.ok) return { ...again, results };
+  // One pass after one failure is weak evidence: a race the change introduced in source code can be caught by an
+  // unchanged test. The failing test files alone must now pass CONFIRM_RUNS more times in a row, or it stays a failure.
+  const src = verify[bad] || {};
+  for (let i = 1; i <= FLAKY_CONFIRM_RUNS; i++) {
+    if (!still()) return r;
+    const c = await runVerify(cwd, [{ name: String(first.name).slice(0, 28) + ' recheck ' + i, cmd: [process.execPath, '--test', '--test-force-exit', ...files], ...(src.cwd ? { cwd: src.cwd } : {}), timeoutMs: src.timeoutMs || 600000 }], { onStart });
+    if (!c.ok) return { ok: false, results: [...results, ...c.results] };
+  }
+  const tests = (String(first.tail || '').match(/^\s*✖ .+$/gm) || []).map(s => s.trim().replace(/\s*\(\d+(\.\d+)?ms\)$/, '')).filter(s => s !== '✖ failing tests:');
+  return { ok: true, results, flaky: { name: first.name, files, tests: [...new Set(tests)].slice(0, 5) } };
 }
 const windowEndAfter = (sched, now) => { if (!sched) return null; const [h, m] = sched.end.split(':').map(Number); const d = new Date(now); let t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime(); if (t <= now) t += 86400000; return t; };
 const LIMIT_RANGES = { dailyCompletions: [1, 50], dailyDiscoveries: [1, 100], dailyCalls: [1, 300],
@@ -148,7 +199,18 @@ const CONTEXT_POLICY = 'Conserve tokens: inspect only relevant files (maximum ei
 
 // Categories guide autonomous discovery without authorizing gratuitous rewrites.
 const WORK_CATEGORIES = Object.freeze(['correctness', 'performance', 'quality', 'cleanup', 'testing']);
-const STAGES = Object.freeze(['discover', 'plan-review', 'implement', 'code-review', 'repair']);
+const STAGES = Object.freeze(['discover', 'plan-review', 'implement', 'code-review', 'repair', 'coach']);
+// Decision of 2026-11-22: Qwen writes the code; when it fails, Claude first ANALYSES and GUIDES it
+// (read-only), Qwen tries again, and Claude only takes the correction over if Qwen is still stuck.
+const COACH_PROMPT = [
+  'Claude, senior technical assistant of a small local developer (Qwen, 4B parameters, 8k context, edits files with exact SEARCH/REPLACE blocks).',
+  'Qwen could not finish the approved task below. READ-ONLY: do not edit, create or delete any file, do not commit. Your job is to help Qwen succeed by itself.',
+  'Inspect the relevant files and the current diff, find the root cause of the failure, then answer with SHORT, concrete guidance (at most 30 lines):',
+  '1. ROOT CAUSE: what is actually wrong (file:line).',
+  '2. FIX: the exact change to make, file by file, small enough for Qwen (quote the exact existing lines to search for when an edit failed).',
+  '3. TEST: the exact test command and the expected result.',
+  '4. LESSON: one sentence Qwen should remember to avoid this mistake next time.',
+  'Do not write the whole solution as a patch; give Qwen what it needs to write it.'].join('\n');
 const PILOT_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // Fixture environment refusals that happen before the developer runs.
 const ENV_FAILURE = /^(Insufficient free RAM|LM Studio unavailable|.* context is not loaded|Vulkan GPU is not verified)/;
@@ -539,6 +601,7 @@ class MindAutopilot {
     if (a.stage === 'verify') return kept ? 'verify' : null;
     if (a.stage === 'implement' || a.stage === 'repair') return kept && a.baseSha ? 'repair' : (a.plan && !a.worktree ? 'implement' : null);
     if (a.stage === 'code-review') return kept ? 'code-review' : null;
+    if (a.stage === 'coach') return a.plan ? 'coach' : null;
     if (a.stage === 'plan-review') return a.plan ? 'plan-review' : null;
     if (a.stage === 'discover') return 'discover';
     return null;
@@ -877,6 +940,7 @@ class MindAutopilot {
       this.contextPolicy(), RULES, this.guardText(), this.profile.deep ? DEEP_REVIEW : '', this.verifyText(), 'Plan: ' + JSON.stringify(a.plan), 'Base commit: ' + a.baseSha,
       a.planVerdict ? 'The approved plan review below may list CONDITIONS. FAIL the change if any condition is not met, and say which.\n' + this.planVerdictText() : '',
       'Review git diff, run relevant tests, inspect regressions and unintended changes.',
+      a.verify && a.verify.flaky ? 'FLAKY CHECK: the local check "' + a.verify.flaky.name + '" failed once and passed when run again, in test file(s) the change does not touch: ' + (a.verify.flaky.files || []).join(', ') + (a.verify.flaky.tests && a.verify.flaky.tests.length ? ' (' + a.verify.flaky.tests.join('; ') + ')' : '') + '. Run those tests several times yourself and FAIL if the change can plausibly cause that failure (a race, shared state, timing).' : '',
       this.qualityPolicy(),
       'For performance, independently compare baseline vs changed code on the same representative workload; FAIL if there is no demonstrated improvement or there is a meaningful regression.',
       'For cleanup and quality, verify no public behavior, APIs, accessibility or cross-platform support were accidentally removed.',
@@ -977,7 +1041,7 @@ class MindAutopilot {
     // A task started by hand ("Lancer une tache maintenant") runs to its end.
     if (this.def.schedule && !this.inWindow(now) && !(a && a.manual)) return this.parkForWindow(stage, now);
     if (this.qwenFixture) return this.dispatchQwenFixture(stage, now);
-    const cli = resuming ? this.def.fallback.provider : ['discover', 'implement', 'repair'].includes(stage) ? 'claude' : 'codex';
+    const cli = resuming ? this.def.fallback.provider : ['discover', 'implement', 'repair', 'coach'].includes(stage) ? 'claude' : 'codex';
     // usageJson: Claude reports real token usage; noRetry/noFallback: a limit
     // can never be bypassed by an implicit second launch.
     // cloudTimeoutMs: without it a cloud CLI stage is cut at the task-store
@@ -996,6 +1060,12 @@ class MindAutopilot {
     if (stage === 'discover' && this.state.discoveryTimes.length >= this.limits.dailyDiscoveries) return wait('Daily discovery limit reached');
     if (stage === 'implement' && !this.state.consent?.worktreeWrites) throw new Error('Worktree write consent missing');
     const qwenStage = !resuming && (stage === 'implement' || stage === 'repair') ? this.qwenRepoCandidate(stage) : null;
+    // Qwen used its own repair attempts: Claude guides it once before taking the correction over.
+    if (stage === 'repair' && qwenStage && !qwenStage.ok && a.implementer === 'qwen' && /repair attempts used/.test(qwenStage.reason) && this.canCoachQwen(a)) {
+      a.coachFindings = String(a.review || '').slice(0, 6000);
+      this.log('qwen', 'Qwen used its repair attempts; Claude analyses the errors and guides Qwen before any takeover');
+      return this.dispatch('coach', now);
+    }
     if (qwenStage && !qwenStage.ok) { this.log('qwen', 'Qwen not used for ' + stage + ': ' + qwenStage.reason); if (stage === 'implement' && this.state.active.implementer !== 'claude-after-qwen') this.state.active.implementer = 'claude'; }
     // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
     const held = cli === 'codex' && a.reviewHold && this.state.budgetCalls.find(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
@@ -1020,6 +1090,14 @@ class MindAutopilot {
       task = this.orch.spawnHeadless({ ...opts, cli, cwd: a.worktree.path, autoPermit: false, confineWrites: true, expectsRepoChanges: true,
         prompt: [repoPin(a.worktree.path, this.state.repoPath), 'Resume the approved implementation in this SAME worktree. Preserve existing changes. No commit/push/merge/deploy.',
           JSON.stringify(a.handoff.checkpoint), this.planVerdictText(), RULES, this.guardText(), this.qualityPolicy(), this.contextPolicy(), this.verifyText()].join('\n\n') });
+    } else if (stage === 'coach') {
+      // Read-only analysis; the fingerprint proves afterwards that Claude changed nothing.
+      const cwd = a.worktree && a.worktree.path && fs.existsSync(a.worktree.path) ? a.worktree.path : this.state.repoPath;
+      a.coachCwd = cwd; a.coachFingerprint = worktreeFingerprint(cwd, cwd === this.state.repoPath ? { head: false } : undefined);
+      // noShell: Read/Grep/Glob only. With a shell a command could change a file outside the fingerprinted checkout.
+      task = this.orch.spawnHeadless({ ...opts, cli, cwd, autoPermit: false, readOnly: true, noShell: true, sandbox: 'read-only',
+        prompt: [repoPin(cwd, this.state.repoPath), COACH_PROMPT, 'Approved plan: ' + JSON.stringify(a.plan),
+          'WHAT BLOCKED QWEN (errors, review findings, its notes):\n' + String(a.coachFindings || '').slice(0, 6000)].join('\n\n') });
     } else if (qwenStage && qwenStage.ok) {
       task = this.spawnQwenRepoStage(stage, qwenStage, now, opts);
     } else if (stage === 'implement') {
@@ -1098,7 +1176,7 @@ class MindAutopilot {
     if (a.qwenFailed) return { ok: false, reason: 'Qwen already handed this task back' };
     if (stage === 'repair') {
       if (a.implementer !== 'qwen' || !a.worktree) return { ok: false, reason: 'the implementation was not Qwen\'s' };
-      if ((a.qwenRepairs || 0) >= q.maxRepairs) return { ok: false, reason: 'Qwen repair attempts used (' + q.maxRepairs + ')' };
+      if ((a.qwenRepairs || 0) >= q.maxRepairs && !a.qwenCoachGrant) return { ok: false, reason: 'Qwen repair attempts used (' + q.maxRepairs + ')' };
       return { ok: true, files: a.qwenFiles || [] };
     }
     if (a.qwenFiles && a.worktree) return { ok: true, files: a.qwenFiles }; // resuming Qwen's own stage
@@ -1119,6 +1197,11 @@ class MindAutopilot {
     let bytes = 0; for (const p of files) { try { bytes += fs.statSync(path.join(this.state.repoPath, p)).size; } catch (_) {} }
     if (bytes > q.maxBytes) return { ok: false, reason: 'files total ' + bytes + ' bytes (limit ' + q.maxBytes + ')' };
     return { ok: true, files };
+  }
+  // Can Claude still guide Qwen on this task (instead of taking the correction over)?
+  canCoachQwen(a) {
+    const q = this.def.qwen;
+    return !!(q && q.enabled && !this.qwenFixture && a && a.plan && !a.qwenFailed && (a.qwenCoached || 0) < (Number.isInteger(q.maxCoaching) ? q.maxCoaching : 1));
   }
   qwenCanTake(plan) {
     if (this.qwenFixture || !this.def.qwen || !this.def.qwen.enabled) return false;
@@ -1186,13 +1269,15 @@ class MindAutopilot {
     let branch = null;
     if (!repair && !a.worktree) branch = this.prepareBase(now); else a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
     a.qwenSessionId = a.qwenSessionId || crypto.randomBytes(8).toString('hex');
-    if (repair) a.qwenRepairs = (a.qwenRepairs || 0) + 1;
+    // A coach grant pays for this attempt; otherwise it counts. Remember which, so an outage can refund it.
+    if (repair) { if (a.qwenCoachGrant) { a.qwenCoachGrant = false; a.qwenRepairPaid = false; } else { a.qwenRepairs = (a.qwenRepairs || 0) + 1; a.qwenRepairPaid = true; } }
     a.qwenFiles = q.files; a.implementer = 'qwen';
     const sessionFile = path.join(this.repoRoot, '.symphonee', 'qwen-sessions', this.id + '-' + a.qwenSessionId + '.json');
     const win = windowEndAfter(this.def.schedule, now), stepEnd = now + this.stepMs - 90000;
     const deadlineAt = a.manual || !win ? stepEnd : Math.min(stepEnd, win);
     const objective = [String(a.plan.objective || ''), (a.plan.evidence || []).length ? 'Evidence: ' + JSON.stringify(a.plan.evidence).slice(0, 700) : '',
       repair ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + String(a.review || '').slice(0, 3500) : '',
+      !repair && a.coachGuidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it:\n' + String(a.coachGuidance).slice(0, 3000) : '',
       'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
     return this.orch.spawnQwenInWorktree({ from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
       existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
@@ -1204,6 +1289,12 @@ class MindAutopilot {
     if (!t || t.cli !== 'qwen3-4b-local') return;
     const e = t.execution || {}, u = e.agentUsage || {}, s = a.qwenStats = a.qwenStats || { stages: 0, turns: 0, switches: 0, calls: 0, input: 0, output: 0, notes: [], strategies: [], handoffs: [] };
     s.stages++; s.turns += e.turns || 0; s.switches += e.switches || 0; s.calls += u.calls || 0; s.input += u.input_tokens || 0; s.output += u.output_tokens || 0;
+    // The model answered in THIS run: any outage is over. agentUsage.calls is cumulative over the saved Qwen session,
+    // so compare with what was seen for that session (a new session starts again from 0).
+    const sid = a.qwenSessionId || null, seen = a.qwenCallsSeen && a.qwenCallsSeen.sid === sid ? a.qwenCallsSeen.n : 0;
+    if ((u.calls || 0) > seen) a.qwenOutageSince = null;
+    a.qwenCallsSeen = { sid, n: Math.max(seen, u.calls || 0) };
+    if (a.stage !== 'repair') a.qwenCoachGrant = false; // a grant is for the repair that follows the guidance only
     this.trace('qwen-run', { stage: a.stage, state: t.state, turns: e.turns || 0, switches: e.switches || 0, changed: (e.changedFiles || []).slice(0, 8), verified: e.verified || null, error: t.state === 'failed' ? String(t.error || '').slice(0, 200) : null });
     s.notes = [...s.notes, ...(e.notes || [])].slice(-10); s.strategies = [...s.strategies, ...(e.strategies || [])].slice(-6);
   }
@@ -1213,7 +1304,23 @@ class MindAutopilot {
     this.noteQwenTask(a, t);
     this.trace('qwen-stopped', { stage: a.stage, outcome: /^QWEN_BLOCKED/.test(String(t.error || '')) ? 'blocked' : 'interrupted', reason: String(t.error || '').replace(/^QWEN_(BLOCKED|INTERRUPTED):\s*/, '').slice(0, 300) });
     const err = String(t.error || ''), why = err.replace(/^QWEN_(BLOCKED|INTERRUPTED):\s*/, '').slice(0, 400), e = t.execution || {}, q = this.def.qwen;
-    if (/^QWEN_INTERRUPTED/.test(err)) {
+    // LM Studio down, model not loaded, a dropped connection or low RAM say nothing about Qwen's ability: such an
+    // outage never uses up Qwen's resumes and never hands the task over. Qwen waits for the machine, up to
+    // QWEN_OUTAGE_MAX_MS from the first failure of the outage; only then does the outage count as a block.
+    if (/^QWEN_INTERRUPTED/.test(err) && isQwenOutage(why)) {
+      // The clock runs from the first failure and stops only when a Qwen run gets an answer from the model again
+      // (noteQwenTask): idle hours between work windows do not reset a continuous outage.
+      if (!a.qwenOutageSince) a.qwenOutageSince = now;
+      if (now - a.qwenOutageSince < QWEN_OUTAGE_MAX_MS) {
+        // The interrupted repair attempt was not Qwen's failure: give it back (or the coach grant it used).
+        if (a.stage === 'repair') { if (a.qwenRepairPaid) a.qwenRepairs = Math.max(0, (a.qwenRepairs || 0) - 1); else a.qwenCoachGrant = true; a.qwenRepairPaid = false; }
+        a.waitingStage = a.stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'qwen-paused';
+        this.state.nextAt = now + 10 * 60000;
+        this.log('qwen', 'Qwen paused: local model outage (' + why + '); not counted against Qwen, ' + a.waitingStage + ' resumes at ' + new Date(this.state.nextAt).toLocaleString() + ' (outage for ' + Math.round((now - a.qwenOutageSince) / 60000) + ' min)');
+        this.save(); return true;
+      }
+    }
+    if (/^QWEN_INTERRUPTED/.test(err) && !isQwenOutage(why)) {
       a.qwenResumes = (a.qwenResumes || 0) + 1;
       if (a.qwenResumes <= q.maxResumes) {
         a.waitingStage = a.stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'qwen-paused';
@@ -1221,6 +1328,14 @@ class MindAutopilot {
         this.log('qwen', 'Qwen paused (' + why + '); progress kept, ' + a.waitingStage + ' resumes at ' + new Date(this.state.nextAt).toLocaleString() + ' (' + a.qwenResumes + '/' + q.maxResumes + ')');
         this.save(); return true;
       }
+    }
+    // Claude first guides Qwen (read-only), Qwen tries again; the takeover below is the last resort.
+    if (this.canCoachQwen(a)) {
+      a.coachFindings = 'Qwen stopped during ' + a.stage + ': ' + why + '\nIts notes: ' + ((e.notes || []).slice(-5).join(' | ') || 'none')
+        + '\nApproaches it tried: ' + ((e.strategies || []).join(' | ') || 'none') + (a.review ? '\nEarlier findings:\n' + String(a.review).slice(0, 3000) : '');
+      this.learn('blockage', 'Le developpeur local (Qwen) a ete bloque sur "' + (a.plan?.title || '') + '" : ' + why, 'qwen-local');
+      this.log('qwen', 'Qwen blocked (' + why.slice(0, 160) + '); Claude analyses the errors and guides Qwen before any takeover');
+      this.dispatch('coach', now); return true;
     }
     // hand back to Claude, reversibly: the worktree and Qwen's session file are kept
     a.qwenFailed = true; a.implementer = 'claude-after-qwen';
@@ -1726,6 +1841,7 @@ class MindAutopilot {
       a.review = raw; a.rejectedPlan = a.plan; a.plan = null;
       return this.dispatch('discover', now);
     }
+    if (a.stage === 'coach') return this.coachSettled(raw, now);
     if (a.stage === 'implement' || a.stage === 'repair') {
       // Claude's tools are confined to the worktree, but this is not an OS
       // sandbox: prove the user's own checkout was left untouched.
@@ -1764,6 +1880,29 @@ class MindAutopilot {
       return this.dispatch('repair', now);
     }
   }
+  // Claude's guidance is back: Qwen tries again with it (one more attempt), and keeps the lesson.
+  coachSettled(raw, now = Date.now()) {
+    const a = this.state.active;
+    if (a.coachCwd && fs.existsSync(a.coachCwd)
+      && worktreeFingerprint(a.coachCwd, a.coachCwd === this.state.repoPath ? { head: false } : undefined) !== a.coachFingerprint) {
+      throw new Error('Files changed during Claude\'s read-only guidance; stopped for inspection: ' + a.coachCwd);
+    }
+    const guidance = String(raw || '').trim().slice(0, 4000);
+    a.qwenCoached = (a.qwenCoached || 0) + 1;
+    if (!guidance) { a.qwenFailed = true; a.implementer = 'claude-after-qwen'; this.log('qwen', 'Claude returned no guidance; Claude takes the correction over'); return this.dispatch(a.worktree ? 'repair' : 'implement', now); }
+    a.coachGuidance = guidance;
+    this.trace('coach', { by: 'claude', guidance: guidance.replace(/\s+/g, ' ').slice(0, 400) });
+    const lesson = (guidance.match(/LESSON\s*:?\s*(.+)/i) || [])[1];
+    this.learn('aide-claude', 'Aide de Claude a Qwen sur "' + (a.plan?.title || '') + '" : ' + String(lesson || guidance).replace(/\s+/g, ' ').slice(0, 500), 'qwen-local');
+    a.review = 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it:\n' + guidance + '\n\nWHAT FAILED BEFORE:\n' + String(a.coachFindings || '').slice(0, 3000);
+    a.implementer = 'qwen';
+    // One more Qwen attempt after the guidance, whatever it had used before.
+    // Exactly one more attempt, as an explicit grant (the counter is left as it is: lowering it too gave two).
+    a.qwenCoachGrant = true;
+    const hasWork = !!(a.worktree && a.baseSha && changedFiles(a.worktree.path, a.baseSha));
+    this.log('qwen', 'Claude guidance ready; Qwen tries again with it (' + (hasWork ? 'repair' : 'implement') + ')');
+    return this.dispatch(hasWork ? 'repair' : 'implement', now);
+  }
   // Token-free gate between an implementation and its Codex review: the diff
   // must not weaken verification, and the repository's own checks must pass.
   startVerify() {
@@ -1773,20 +1912,35 @@ class MindAutopilot {
     this.log('verify', 'Local verification started: diff lint' + this.def.verify.map(v => ', ' + v.name).join(''));
     this.save();
     const cwd = a.worktree.path, base = a.baseSha;
+    // Every check output (proof, checks, retry, flaky names, errors) goes on into the review, the log, lessons, Qwen's
+    // repair prompt and the coach: it is masked at ONE point, below, from the secret files seen before and after.
+    let mask = null; try { mask = require('../orchestrator/qwen-repo-worker').secretMask(cwd); } catch (_) {}
+    // Every check of this gate (proof runs, checks, retries) scans for secrets as it starts (see secretMask).
+    const runV = (dir, cmds, o = {}) => guard.runVerify(dir, cmds, { ...o, beforeEach: () => { if (mask && mask.observe) { try { mask.observe(); } catch (_) {} } } });
     Promise.resolve().then(async () => {
       const lint = guard.diffLint(cwd, base);
       if (lint.length) return { ok: false, results: [], lint };
       if (!this.def.verify.length) return { ok: true, results: [], lint: [] };
-      const r = await guard.runVerify(cwd, this.def.verify, { onStart: (proc, c) => {
+      const onStart = (proc, c) => {
         this._verifyProc = proc;
         if (this.state.active === a && a.verify) { a.verify.current = c.name; try { this.save(); } catch (_) {} }
-      } });
-      return { ...r, lint: [] };
+      };
+      return { ...(await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) })), lint: [] };
     }).catch(e => ({ ok: false, results: [{ name: 'verification', ok: false, code: -1, ms: 0, timedOut: false, tail: String(e.message || e) }], lint: [] }))
       .then((r) => {
+        // The single masking point. Without a mask (scan module failed to load) nothing but the counts goes on.
+        let redact; try { redact = mask ? mask() : null; } catch (_) { redact = null; }
+        const m = redact || ((s) => String(s || '').split(/\r?\n/).filter(l => /^\s*ℹ (tests|pass|fail) \d+\s*$/.test(l)).join('\n'));
+        r = { ...r, results: (r.results || []).map(x => ({ ...x, tail: m(x.tail) })),
+          ...(r.flaky ? { flaky: { ...r.flaky, tests: (r.flaky.tests || []).map(t => m(t)), files: (r.flaky.files || []).map(f => m(f)) } } : {}) };
+        if (a.proofRun && typeof a.proofRun.why === 'string') a.proofRun = { ...a.proofRun, why: m(a.proofRun.why) };
         this._verifyProc = null;
         if (this.state.active !== a || !a.verify) return; // stopped or archived meanwhile
-        Object.assign(a.verify, { running: false, done: true, ok: r.ok, results: r.results, lint: r.lint, current: null });
+        Object.assign(a.verify, { running: false, done: true, ok: r.ok, results: r.results, lint: r.lint, current: null, flaky: r.flaky || null });
+        if (r.flaky) {
+          this.log('verify', 'Flaky check "' + r.flaky.name + '": failed once, passed when run again' + (r.flaky.tests.length ? ' (' + r.flaky.tests.join('; ') + ')' : '') + '; not counted as a repair');
+          this.learn('verification', 'Test instable (echoue puis passe sans changement) dans "' + r.flaky.name + '" : ' + (r.flaky.tests.join('; ') || 'test inconnu') + '. A stabiliser dans une tache a part.', 'verification locale : ' + (a.plan?.title || ''));
+        }
         try { this.save(); } catch (_) {}
         this.tick().catch(e => this.halt(e));
       });
@@ -2126,4 +2280,4 @@ function mountMindAutopilot(addRoute, json, deps) {
   return pilots.get('default');
 }
 module.exports = { MindAutopilot, mountMindAutopilot, commitReviewed, validBaseRef, parsePlan, parsePlanList, verdict, taskKey, changedFiles,
-  localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt };
+  localTriage, worktreeFingerprint, repoTopLevel, WORK_CATEGORIES, STAGES, CODE_QUALITY_POLICY, PROFILES, creditResetAt, verifyWithFlakeRetry, QWEN_OUTAGE_RE, isQwenOutage };

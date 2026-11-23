@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const L = require('./lessons');
 const A = require('./lesson-applicability');
-const { setup, drive, CREATE_TEST } = require('./qwen-repo-test-kit');
+const { setup, drive, CREATE_TEST, DEF } = require('./qwen-repo-test-kit');
 
 const PLAN = { category: 'testing', title: 'Add run() regression test', objective: 'Add a regression test for the run() helper return value' };
 const GOOD_REPLIES = [CREATE_TEST, 'DONE added a regression test'];
@@ -154,7 +154,8 @@ test('the selection decision survives an interruption and a restart: same memory
 });
 
 test('Qwen stuck, Claude corrects, Codex approves: the executors are told apart and NOTHING is promoted to a certified lesson', async () => {
-  const f = setup(); try {
+  // Coaching off: this test covers the takeover path; the coach (guidance first) has its own tests.
+  const f = setup({ def: { ...DEF, qwen: { enabled: true, maxCoaching: 0 } } }); try {
     f.pilot.configure({ enabled: false });
     const good = seed(f, 'meth-good', 'UNIQUE-STRATEGY-ALPHA: write the test file next to the helper and assert the exact return value.');
     const before = lessonStatuses(f);
