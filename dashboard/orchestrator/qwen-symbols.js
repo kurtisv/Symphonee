@@ -118,25 +118,40 @@ function unknownCallsNote(items, hide = identity) {
     (hits ? hits + '\nIf one of these is what you meant, fix your EDIT before you RUN; if the name comes from a package you import, ignore this.' : 'No close match found: use GREP to find the real helper before you RUN.');
 }
 
-// 2. Names and properties the compiler reports as unknown. `readLines(rel, fromLine, count)` is provided by the worker
-// (confined to the worktree, refuses protected paths and symbolic links, size-limited) and returns an array of lines or null.
-// `getHide()` returns the masker; it is only called when there is a note to show.
+// 2. Names and properties the compiler reports as unknown. The hint is LOCAL first: what the failing file itself says beats
+// a same-named thing in an unrelated package. `readLines(rel, fromLine, count)` is provided by the worker (confined to the worktree,
+// refuses protected paths and symbolic links, size-limited) and returns an array of lines or null. `getHide()` returns the masker;
+// it is only called when there is a note to show.
+const dirOf = (p) => String(p).replace(/[^/]*$/, '');
 function fromErrors(cwd, tail, secret = [], getHide = null, readLines = null) {
   const text = String(tail || ''), notes = [], seen = new Set(), b = budget();
-  const unknown = [];
+  const unknown = []; // { name, file }
   for (const line of text.split('\n')) {
     if (!/error TS(2304|2552|2305|2724|2614)\b/.test(line)) continue;
     // 2304/2552: Cannot find name 'X'.  2305/2724/2614: Module '"m"' has no exported member (named) 'X'.  Never the module name.
     const x = /Cannot find name '([^']+)'/.exec(line) || /has no exported member(?: named)? '([^']+)'/.exec(line);
-    if (x && IDENT.test(x[1])) unknown.push(x[1]);
+    const file = (/^\s*([^\s(]+)\(\d+,\d+\)/.exec(line) || [])[1] || null;
+    if (x && IDENT.test(x[1])) unknown.push({ name: x[1], file: file ? file.replace(/\\/g, '/') : null });
   }
-  for (const n of unknown) { // each note is a function of the masker
+  const own = (file) => { if (!file || !readLines) return ''; try { const l = readLines(file, 1, 3000); return l ? l.join('\n') : ''; } catch { return ''; } };
+  for (const { name: n, file } of unknown) {
     if (seen.has(n) || notes.length >= 3) continue; seen.add(n);
+    const src = own(file), esc = n.replace(/\$/g, '\\$');
+    // 1. the failing file uses it as a PROPERTY (CONFIG.batchSize): the name is not a variable.
+    const prop = new RegExp('([A-Za-z_$][\\w$]*)\\.' + esc + '\\b').exec(src);
+    const declaredHere = new RegExp(DECL_KW + '\\s+' + esc + '\\b|\\b(?:const|let|var)\\s*\\{[^}]*\\b' + esc + '\\b[^}]*\\}|function\\s*[\\w$]*\\s*\\([^)]*\\b' + esc + '\\b[^)]*\\)|\\([^)]*\\b' + esc + '\\b[^)]*\\)\\s*=>').test(src); // a declaration, a destructuring, or a PARAMETER list (function f(n) / (n) =>): `if (x >= n) {` is not one
+    if (prop && !declaredHere) { notes.push(() => n + ' is not a variable here. This file uses it as a PROPERTY of ' + prop[1] + ': write ' + prop[1] + '.' + n + '.'); continue; }
     const ex = exactDefs(cwd, n, secret, b); if (ex === null) continue;
-    if (ex.length) { notes.push((hide) => n + ' EXISTS in this repository, it is only not imported or not exported here:\n' + fmt(ex, hide)); continue; }
-    const used = usages(cwd, n, secret, b), like = similar(cwd, n, secret, 3, b);
-    notes.push((hide) => n + ' is not declared in any source file of this repository' + (used && used.length ? ', but it is used here (copy how it is imported):\n' + fmt(used, hide) : ' (it may come from a package: check the import and the package, or use GREP).') +
-      (like.length ? '\nNames that look like it:\n' + fmt(like, hide) : ''));
+    const near = ex.filter((e) => file && dirOf(e.file) === dirOf(file));
+    if (near.length) { notes.push((hide) => n + ' EXISTS next to this file, it is only not imported here:\n' + fmt(near, hide)); continue; }
+    const used = usages(cwd, n, secret, b);
+    // only used in the failing file itself and declared nowhere: a leftover of a rename or a removal, not a missing import
+    const elsewhere = (used || []).filter((u) => !file || u.file !== file);
+    if (!ex.length && used && used.length && !elsewhere.length) { notes.push(() => n + ' is used in this file but declared nowhere: you probably renamed or removed it. Use the variable you declared in this function, or declare ' + n + '.'); continue; }
+    if (ex.length) { notes.push((hide) => n + ' is declared elsewhere in the repository (not next to this file; it may be unrelated):\n' + fmt(ex, hide)); continue; }
+    const like = similar(cwd, n, secret, 6, b).filter((l) => !file || dirOf(l.file) === dirOf(file)).slice(0, 3); // a look-alike from another package is noise
+    if (elsewhere.length) { notes.push((hide) => n + ' is not declared in a source file, but other files use it (it probably comes from a package: copy how they import it):\n' + fmt(elsewhere, hide)); continue; }
+    notes.push((hide) => n + ' is not declared in any source file of this repository (it may come from a package: check the import, or use GREP).' + (like.length ? '\nNames that look like it, next to this file:\n' + fmt(like, hide) : ''));
   }
   for (const m of text.matchAll(/Property '([A-Za-z_$][\w$]*)' does not exist on type '([^']+)'/g)) {
     const prop = m[1], ty = (/([A-Za-z_$][\w$]*)(?:<[^>]*>)?(?:\[\])?$/.exec(m[2].replace(/\s*\|.*$/, '').trim()) || [])[1], key = prop + '@' + ty;
@@ -145,15 +160,20 @@ function fromErrors(cwd, tail, secret = [], getHide = null, readLines = null) {
     const d = lines.map(parseHit).find((h) => h && !secret.some((re) => re.test(h.file)));
     const pointer = 'Property ' + prop + ' is not on ' + m[2] + '; use GREP for "' + ty + '" to read its definition.';
     if (!d || !readLines) { notes.push(() => pointer); continue; }
+    // A type alias that is a union of string literals has no properties at all: the property belongs to the object that CONTAINS the value.
+    if (new RegExp('type\\s+' + ty + '\\s*=\\s*$|type\\s+' + ty + '\\s*=\\s*[\'"]').test(d.text)) {
+      notes.push(() => ty + ' is a union of string values (' + d.file + ':' + d.line + '), it has no properties: ' + prop + ' is not on it. Look for the object type that holds a ' + ty + ' in a field (' + prop + ' is probably not part of the data at all).');
+      continue;
+    }
     let body = null; try { body = readLines(d.file, d.line, 18); } catch { body = null; }
     if (!body) { notes.push(() => pointer); continue; }
     const indent = (/^\s*/.exec(body[0] || '') || [''])[0], end = body.findIndex((l, i) => i > 0 && l.startsWith(indent + '}')); // the definition stops at its own closing brace
-    const own = end >= 0 ? body.slice(0, end + 1) : body;
-    notes.push((hide) => prop + ' is not a field of ' + ty + '. The real definition (' + d.file + ':' + d.line + '):\n' + own.map((l) => '  ' + hide(String(l).replace(/\s+$/, '')).slice(0, 140)).join('\n'));
+    const own2 = end >= 0 ? body.slice(0, end + 1) : body;
+    notes.push((hide) => prop + ' is not a field of ' + ty + '. The real definition (' + d.file + ':' + d.line + '):\n' + own2.map((l) => '  ' + hide(String(l).replace(/\s+$/, '')).slice(0, 140)).join('\n'));
   }
   if (!notes.length) return '';
   let hide; try { hide = typeof getHide === 'function' ? getHide() : identity; } catch { return ''; } // no masker, no note
-  return hide('\nWHAT REALLY EXISTS (the host searched the repository; use these exact names, do not invent others):\n' + notes.map((f) => f(hide)).join('\n').slice(0, 1700));
+  return hide('\nWHAT REALLY EXISTS (the host searched the repository; use these exact names, do not invent others):\n' + notes.map((fn) => fn(hide)).join('\n').slice(0, 1700));
 }
 
 module.exports = { similar, exactDefs, usages, unknownCalls, unknownCallsNote, fromErrors, stripNonCode, words, lev };

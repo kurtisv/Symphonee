@@ -69,10 +69,10 @@ test('tsc: unknown name -> the real names that look like it; known-but-not-impor
   const dir = repo(STORE);
   const a = sym.fromErrors(dir, "src/x.ts(291,15): error TS2304: Cannot find name 'setStoredQueue'.", []);
   assert.match(a, /WHAT REALLY EXISTS/);
-  assert.match(a, /setStoredQueue is not declared/);
+  assert.match(a, /setStoredQueue is not declared in any source file/);
   assert.match(a, /clearStoredQueue\s+\(src\/storage\.ts:1\)/);
   const b = sym.fromErrors(dir, "src/x.ts(3,1): error TS2304: Cannot find name 'getStoredQueue'.", []);
-  assert.match(b, /getStoredQueue EXISTS in this repository, it is only not imported/);
+  assert.match(b, /getStoredQueue EXISTS next to this file, it is only not imported here/);
   assert.match(b, /src\/storage\.ts:2/);
 });
 
@@ -150,7 +150,7 @@ test('round 2 / 2: method declarations, `new X(` and capitalised constructors ar
 test('round 2 / 3: a name that no source file declares but that is used (a package import) is not declared to be non-existent', () => {
   const dir = repo(Object.assign({ 'src/use.ts': "import { Thing } from 'some-package'\nexport const t = Thing\n" }, STORE));
   const out = sym.fromErrors(dir, "src/x.ts(1,1): error TS2304: Cannot find name 'Thing'.", []);
-  assert.match(out, /Thing is not declared in any source file of this repository, but it is used here/);
+  assert.match(out, /Thing is not declared in a source file, but other files use it/);
   assert.match(out, /import \{ Thing \} from 'some-package'/);
   const none = sym.fromErrors(dir, "src/x.ts(1,1): error TS2304: Cannot find name 'Zzz'.", []);
   assert.match(none, /may come from a package/);
@@ -185,4 +185,19 @@ test('review 2: without a reader the definition is not read at all', () => {
   const out = sym.fromErrors(dir, "error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", []);
   assert.match(out, /use GREP for "AnalyticsEventRecord"/);
   assert.doesNotMatch(out, /name: string/);
+});
+
+test('round 6b: hints are local to the failing file (property of CONFIG, leftover of a rename, union type, unrelated package)', () => {
+  const dir = repo({
+    'src/a/tracker.ts': 'const CONFIG = { batchSize: 20 }\nexport function f(q: number[]) {\n  if (q.length >= batchSize) {\n    return toSend.length\n  }\n  return CONFIG.batchSize\n}\n',
+    'src/a/events.ts': "export type Ev =\n  | 'a'\n  | 'b'\n",
+    'api/lib/other.ts': 'const batchSize = 500;\nexport const sendThing = 1\n',
+  });
+  const read = (rel, from, n) => fs.readFileSync(path.join(dir, rel), 'utf8').split('\n').slice(from - 1, from - 1 + n);
+  const tail = "src/a/tracker.ts(3,19): error TS2304: Cannot find name 'batchSize'.\nsrc/a/tracker.ts(4,12): error TS2304: Cannot find name 'toSend'.\nsrc/a/tracker.ts(9,9): error TS2339: Property 'id' does not exist on type 'Ev'.";
+  const out = sym.fromErrors(dir, tail, [], () => (x) => x, read);
+  assert.match(out, /batchSize is not a variable here\. This file uses it as a PROPERTY of CONFIG: write CONFIG\.batchSize/);
+  assert.doesNotMatch(out, /api\/lib\/other\.ts/, 'a same-named constant in an unrelated package is not offered');
+  assert.match(out, /toSend is used in this file but declared nowhere: you probably renamed or removed it/);
+  assert.match(out, /Ev is a union of string values .*it has no properties/);
 });
