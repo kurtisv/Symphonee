@@ -213,7 +213,7 @@ const COACH_PROMPT = [
   '3. FIX: the exact change to make, in order, small enough for Qwen (quote the exact existing lines to search for when an edit failed).',
   '4. TEST: the exact command, and a FUNCTIONAL check of the behaviour (a passing type check alone does not prove the task is done).',
   '5. LESSON: one sentence Qwen should remember, and the conditions under which it applies (and when it does NOT).',
-  'Do not write the whole solution as a patch; give Qwen what it needs to write it.'].join('\n');
+  '6. KEY STATEMENTS: the exact code (at most 10 lines in total) of the one or two statements where a small model typically goes wrong, quoted so that Qwen can copy them. Replay of 2026-11-23: with reasoning alone the 9B wrote `batch.map(e => e.id)` instead of `new Set(batch)` and put a retry inside the guarded block. Do not write the whole solution as a patch.'].join('\n');
 const PILOT_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // Fixture environment refusals that happen before the developer runs.
 const ENV_FAILURE = /^(Insufficient free RAM|LM Studio unavailable|.* context is not loaded|Vulkan GPU is not verified)/;

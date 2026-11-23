@@ -125,6 +125,7 @@ test('the coach prompt asks for design reasoning (invariants checked in every pl
   const src = fs.readFileSync(path.join(__dirname, 'autopilot.js'), 'utf8');
   assert.match(src, /DESIGN REASONING: the invariants you checked and where, the alternative you rejected/);
   assert.match(src, /FUNCTIONAL check of the behaviour \(a passing type check alone does not prove the task is done\)/);
+  assert.match(src, /KEY STATEMENTS: the exact code \(at most 10 lines in total\) of the one or two statements where a small model typically goes wrong/);
   assert.match(src, /conditions under which it applies/);
 });
 
