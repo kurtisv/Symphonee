@@ -157,6 +157,15 @@ test('round 2 / 3: a name that no source file declares but that is used (a packa
   assert.doesNotMatch(none, /does not exist/);
 });
 
+test('round 3: a secret that starts early in a LONG definition line and runs past 600 characters is still masked as a whole', () => {
+  const secret = 'LONGSECRET' + 'x'.repeat(700);
+  const dir = repo({ 'src/a.ts': 'export function setStoredBig(a = "' + secret + '") {}\n' });
+  const hide = (x) => x.split(secret).join('[REDACTED]');
+  const note = sym.unknownCallsNote(sym.unknownCalls(dir, written(dir, 'setStoredBigs(1)\n'), '', []), hide);
+  assert.match(note, /setStoredBig/);
+  assert.doesNotMatch(note, /LONGSECRET|xxxx/);
+});
+
 test('review 2: without a reader the definition is not read at all', () => {
   const dir = repo(STORE);
   const out = sym.fromErrors(dir, "error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", []);

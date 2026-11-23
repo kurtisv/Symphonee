@@ -30,7 +30,7 @@ function grep(cwd, args, b) {
   return String(r.stdout || '').split('\n').filter(Boolean);
 }
 // A path git still had to quote is dropped: it cannot be checked reliably.
-const parseHit = (l) => { if (l.startsWith('"')) return null; const m = /^([^:]+):(\d+):(.*)$/.exec(l); return m ? { file: m[1], line: Number(m[2]), text: m[3].slice(0, 600) } : null; };
+const parseHit = (l) => { if (l.startsWith('"')) return null; const m = /^([^:]+):(\d+):(.*)$/.exec(l); return m ? { file: m[1], line: Number(m[2]), text: m[3].slice(0, 20000) } : null; };
 const shown = (hide, text, n) => hide(String(text).trim()).slice(0, n); // masked first, cut after: a value cut in two would not be recognised
 function words(name) { return String(name).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_$-]+/g, ' ').toLowerCase().split(/\s+/).filter((w) => w.length >= 3); }
 function lev(a, b) {
