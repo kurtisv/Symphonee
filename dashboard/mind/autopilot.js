@@ -1221,7 +1221,7 @@ class MindAutopilot {
     let mask; try { mask = require('../orchestrator/qwen-repo-worker').secretMask(a.worktree.path)(); } catch (_) { return; }
     for (const k of Object.keys(fields)) fields[k] = mask(fields[k]); fields.text = fields.text.slice(0, 400); // a mask may be longer than the value it hides: the end (the reasoning) is what gives way
     const all = Object.values(fields).join(' ');
-    const INJECTED = /ignore (all |any |the )?(previous|prior|above)|disregard|system prompt|you are now|from now on you|do not tell|ne dis (rien|pas) a l.utilisateur|https?:\/\/|\b(curl|wget|Invoke-WebRequest|rm -rf)\b|\b(send|upload|post|transmit|email|exfiltrat\w*)\b.{0,60}\b(credential|token|secret|password|api[ _-]?key)/i;
+    const INJECTED = /ignore (all |any |the )?(previous|prior|above)|disregard|system prompt|you are now|from now on you|do not tell|ne dis (rien|pas) a l.utilisateur|https?:\/\/|\b(curl|wget|Invoke-WebRequest|rm -rf)\b|\b(send|upload|post|transmit|email|exfiltrat\w*)\b.{0,60}\b(credential|token|secret|password|api[ _-]?key)|\bgit (push|reset|clean|rebase|checkout --)|--force|--no-verify|\b(sudo|chmod|chown|npm (publish|install -g)|rm|del|drop (table|database)|deploy|merge|production)\b/i; // a block-list is never complete: it narrows what a hostile repository text can slip into a lesson, it does not make the text trustworthy
     if (INJECTED.test(all)) { this.log('lesson', 'Methode non enregistree : le texte ressemble a une instruction injectee ou contient un lien'); return; }
     this.learn('methode-verifiee', fields.text, 'claude-coach', { trigger: fields.trigger || null, action: fields.action || null, evidence: 'verified' });
   }

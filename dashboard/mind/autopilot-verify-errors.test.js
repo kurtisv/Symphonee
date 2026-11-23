@@ -26,3 +26,24 @@ test('a passing check reports zero errors and an empty tail', async () => {
     assert.equal(r.ok, true); assert.equal(r.results[0].errors, 0); assert.equal(r.results[0].tail, '');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// The child scripts avoid escape sequences: NL is built with String.fromCharCode(10).
+const NL = "String.fromCharCode(10)";
+
+test('a match split between two chunks is counted once, and none is lost', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-verr-'));
+  try {
+    const script = "const nl = " + NL + "; for (let i = 0; i < 50; i++) process.stdout.write('error TS2339 x' + nl); process.stdout.write('error T'); setTimeout(() => { process.stdout.write('S1234 split' + nl); process.exit(1) }, 200)";
+    const r = await runVerify(dir, [{ name: 'types', cmd: [process.execPath, '-e', script], timeoutMs: 30000 }]);
+    assert.equal(r.results[0].errors, 51);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the count is not limited by the 200000-character memory buffer', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-verr-'));
+  try {
+    const script = "const nl = " + NL + "; const l = 'error TS2339 ' + 'x'.repeat(90) + nl; for (let i = 0; i < 4000; i++) process.stdout.write(l); process.exit(1)"; // ~400 KB, far beyond the buffer
+    const r = await runVerify(dir, [{ name: 'types', cmd: [process.execPath, '-e', script], timeoutMs: 30000 }]);
+    assert.equal(r.results[0].errors, 4000);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
