@@ -30,7 +30,7 @@ const symbols = require('./qwen-symbols');
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({
   actionsPerTurn: 4, readChars: 5000, grepHits: 20, listEntries: 60, editFileBytes: 120000, newFileBytes: 60000, noteChars: 300, planSteps: 6,
-  maxTurns: 80, maxSwitches: 3, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 11000, maxTokens: 2000, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
+  maxTurns: 80, maxSwitches: 1, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 11000, maxTokens: 2000, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
 });
 const sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
 const clip = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '\n...[cut]' : String(s));
@@ -406,6 +406,24 @@ function realNames(ctx, tail) {
   try { return symbols.fromErrors(ctx.worktree, tail, ctx.secret, () => ctx.lastRedact || ctx.maskNow(), ctx.readLines); } catch { return ''; }
 }
 
+// What a senior developer needs to teach instead of redo: the failing check, what really exists in the repository, and the code as it is now.
+// Built once, when Qwen stops for lack of progress (not on every turn). Everything is masked, secret and protected paths are left out.
+function teachEvidence(ctx, s) {
+  try {
+    const failing = s.runs.filter((r) => !r.ok), last = failing.at(-1);
+    const tail = last ? last.results.filter((x) => !x.ok).map((x) => x.name + ':\n' + String(x.tail || '')).join('\n') : '';
+    const hide = ctx.lastRedact || ctx.maskNow();
+    const files = s.changed.filter((f) => !ctx.secret.some((re) => re.test(f)) && !ctx.prot.some((re) => re.test(f))).slice(0, 4);
+    const diff = files.length ? git(ctx.worktree, ['diff', '--no-color', '-U2', ctx.base, '--', ...files]).out : '';
+    return [
+      'FAILING CHECK (' + failing.length + ' failing run(s); last signature repeated ' + (s.sameSigStreak || 0) + ' time(s) since the last change of strategy):',
+      clip(hide(tail), 1100) + realNames(ctx, tail),
+      'QWEN CODE AS IT IS NOW (' + (files.join(', ') || 'no file') + ', diff against the start of the task):',
+      clip(hide(diff), 1700) || '(no change)',
+    ].join('\n');
+  } catch { return ''; }
+}
+
 function buildPrompt(s, task, memoryText, lastObs, demand) {
   const runNudge = s.needsRun ? 'NEXT STEP: you changed files and have not run the checks since. Use RUN now (the host runs the repository checks). Do NOT READ the file again. If RUN fails, fix what it reports and RUN again; say DONE only after RUN passed.' : '';
   const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN. Use ONLY function, type and property names you saw in text you READ; if you need another one, GREP for it first (the host warns you when a name exists nowhere in the repository).' : '');
@@ -562,7 +580,7 @@ async function runRepoWorker(opts) {
     if (claimedStuck) {
       const failing = s.runs.filter((r) => !r.ok).length;
       if (s.stuckRefusals < 2 && s.turns < 8 && failing < 3 && s.changed.length) { s.stuckRefusals++; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'STUCK refused (' + s.stuckRefusals + '/2): you have tried only ' + failing + ' time(s) to make the checks pass. Read the failure above carefully, find what differs from what you expected, and fix it with EDIT or a new CREATE of your own file.'; s.observations.push(lastObs); s.observations = s.observations.slice(-3); saveSession(opts.sessionFile, s); continue; }
-      return finish('blocked', 'The model declared itself stuck: ' + clip(claimedStuck, 400));
+      return finish('blocked', 'The model declared itself stuck: ' + clip(claimedStuck, 400), { teach: teachEvidence(ctx, s) });
     }
     if (claimedDone !== null) {
       if (!s.changed.length && !changedNow(ctx, opts.skipDirs).length) { demand = 'DONE refused: you changed nothing. Make the change, or say STUCK.'; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'DONE refused: nothing was changed yet. Write the change with an EDIT or CREATE block (see the worked examples).'; saveSession(opts.sessionFile, s); continue; }
@@ -574,11 +592,11 @@ async function runRepoWorker(opts) {
       s.observations.push(lastObs); const sig = failureSig(check.results); s.sameSigStreak = sig === s.lastRunSig ? s.sameSigStreak + 1 : 1; s.lastRunSig = sig;
     }
     // No progress: the same verification failure again and again, or RUN without changes.
-    if (s.idleRuns >= LIMITS.idleRunsBeforeStuck) return finish('blocked', 'No progress: RUN repeated ' + s.idleRuns + ' times with no change to the code');
+    if (s.idleRuns >= LIMITS.idleRunsBeforeStuck) return finish('blocked', 'No progress: RUN repeated ' + s.idleRuns + ' times with no change to the code', { teach: teachEvidence(ctx, s) });
     if (s.sameSigStreak >= LIMITS.sameFailureBeforeSwitch) {
       s.strategies.push(clip(s.notes.at(-1) || ('the approach on ' + (s.changed.slice(-2).join(', ') || 'the code') + ' (same failure ' + s.sameSigStreak + ' times)'), 200));
       s.switches++; s.sameSigStreak = 0;
-      if (s.switches > LIMITS.maxSwitches) return finish('blocked', 'The same failure persists after ' + LIMITS.maxSwitches + ' changes of strategy');
+      if (s.switches > LIMITS.maxSwitches) return finish('blocked', 'The same failure persists after ' + LIMITS.maxSwitches + ' change of strategy', { teach: teachEvidence(ctx, s) });
       demand = 'STRATEGY SWITCH REQUIRED (' + s.switches + '/' + LIMITS.maxSwitches + '): the same failure repeated ' + LIMITS.sameFailureBeforeSwitch + ' times. Do NOT repeat your approach. First write a NOTE saying what you will do differently (another function, another cause, or undo your last edit by editing it back), then act.';
       ev('switch', 'strategy switch ' + s.switches);
     }

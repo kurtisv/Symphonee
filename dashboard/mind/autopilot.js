@@ -203,13 +203,16 @@ const STAGES = Object.freeze(['discover', 'plan-review', 'implement', 'code-revi
 // Decision of 2026-11-22: Qwen writes the code; when it fails, Claude first ANALYSES and GUIDES it
 // (read-only), Qwen tries again, and Claude only takes the correction over if Qwen is still stuck.
 const COACH_PROMPT = [
-  'Claude, senior technical assistant of a small local developer (Qwen, 4B parameters, 8k context, edits files with exact SEARCH/REPLACE blocks).',
+  'Claude, senior technical assistant of a small local developer (Qwen, 9B parameters, 8k context, edits files with exact SEARCH/REPLACE blocks).',
   'Qwen could not finish the approved task below. READ-ONLY: do not edit, create or delete any file, do not commit. Your job is to help Qwen succeed by itself.',
-  'Inspect the relevant files and the current diff, find the root cause of the failure, then answer with SHORT, concrete guidance (at most 30 lines):',
-  '1. ROOT CAUSE: what is actually wrong (file:line).',
-  '2. FIX: the exact change to make, file by file, small enough for Qwen (quote the exact existing lines to search for when an edit failed).',
-  '3. TEST: the exact test command and the expected result.',
-  '4. LESSON: one sentence Qwen should remember to avoid this mistake next time.',
+  'Inspect the relevant files and the current diff, find the root cause of the failure, then answer with SHORT, concrete guidance (at most 40 lines).',
+  'When the failure is a DESIGN problem (identity, ordering, concurrency, persistence, a rule that must hold in several places) do not just repair the line the compiler names: Qwen repeats the same wrong idea.',
+  'Read every place that creates, reassigns, copies or reads the data involved, state which invariant your fix relies on, and verify it holds in EACH place (file:line). Say which obvious alternative you rejected and why. Use only names that exist in the repository.',
+  '1. ROOT CAUSE: what is actually wrong (file:line), and why Qwen\'s repeated attempt cannot work.',
+  '2. DESIGN REASONING: the invariants you checked and where, the alternative you rejected.',
+  '3. FIX: the exact change to make, in order, small enough for Qwen (quote the exact existing lines to search for when an edit failed).',
+  '4. TEST: the exact command, and a FUNCTIONAL check of the behaviour (a passing type check alone does not prove the task is done).',
+  '5. LESSON: one sentence Qwen should remember, and the conditions under which it applies (and when it does NOT).',
   'Do not write the whole solution as a patch; give Qwen what it needs to write it.'].join('\n');
 const PILOT_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // Fixture environment refusals that happen before the developer runs.
@@ -966,10 +969,10 @@ class MindAutopilot {
   // Records a mistake once (repeats are counted) for this pilot AND repository,
   // then teaches Mind what is not taught yet (gate lessons included). Never throws.
   lessonScope() { return lessons.scopeOf(this.id, this.state.repoName); }
-  learn(kind, text, source) {
+  learn(kind, text, source, extra = {}) {
     if (this.qwenFixture) return; // fixture observations go to an isolated Mind space, never to repository lessons
     try {
-      const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source });
+      const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source, ...extra });
       if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon repetee (' + r.entry.count + ') ') + '[' + kind + '] ' + r.entry.text.slice(0, 160));
     } catch (_) {}
     this.teachLessons();
@@ -1097,7 +1100,7 @@ class MindAutopilot {
       // noShell: Read/Grep/Glob only. With a shell a command could change a file outside the fingerprinted checkout.
       task = this.orch.spawnHeadless({ ...opts, cli, cwd, autoPermit: false, readOnly: true, noShell: true, sandbox: 'read-only',
         prompt: [repoPin(cwd, this.state.repoPath), COACH_PROMPT, 'Approved plan: ' + JSON.stringify(a.plan),
-          'WHAT BLOCKED QWEN (errors, review findings, its notes):\n' + String(a.coachFindings || '').slice(0, 6000)].join('\n\n') });
+          'WHAT BLOCKED QWEN (errors, review findings, its notes):\n' + String(a.coachFindings || '').slice(0, 8000)].join('\n\n') });
     } else if (qwenStage && qwenStage.ok) {
       task = this.spawnQwenRepoStage(stage, qwenStage, now, opts);
     } else if (stage === 'implement') {
@@ -1197,6 +1200,21 @@ class MindAutopilot {
     let bytes = 0; for (const p of files) { try { bytes += fs.statSync(path.join(this.state.repoPath, p)).size; } catch (_) {} }
     if (bytes > q.maxBytes) return { ok: false, reason: 'files total ' + bytes + ' bytes (limit ' + q.maxBytes + ')' };
     return { ok: true, files };
+  }
+  // Claude taught, Qwen applied, the checks and the independent review passed: only now is the method worth keeping.
+  // Cause, reasoning and conditions are Claude's own words (not paraphrased); the proof is what actually passed.
+  recordTaughtLesson(a, outcome) {
+    if (outcome !== 'completed' || !a || !a.coachGuidance || a.implementer !== 'qwen' || this.qwenFixture) return;
+    const checks = a.verify && a.verify.ok ? a.verify.results.map((r) => r.name) : [];
+    const reviewed = Array.isArray(a.reviews) && a.reviews.length > 0 && a.reviews[a.reviews.length - 1].verdict === 'PASS';
+    if (!checks.length || !reviewed) return; // never certify a method that was not verified
+    const g = String(a.coachGuidance).replace(/\s+/g, ' ');
+    const pick = (label) => { const m = new RegExp(label + '[^:]*:\\s*(.{10,400}?)(?= [1-5]\\. [A-Z]|$)', 'i').exec(g); return m ? m[1].trim() : ''; };
+    const cause = pick('ROOT CAUSE') || g.slice(0, 300), reasoning = pick('DESIGN REASONING'), lesson = pick('LESSON');
+    this.learn('methode-verifiee',
+      'Methode verifiee (Claude a explique, Qwen a applique) sur "' + (a.plan?.title || '') + '". CAUSE : ' + cause + (reasoning ? ' RAISONNEMENT : ' + reasoning : '') + (lesson ? ' CONDITIONS / LECON : ' + lesson : '')
+        + ' PREUVES : controles reussis (' + checks.join(', ') + '), revue independante passee, ' + (a.repairs || 0) + ' reparation(s).',
+      'claude-coach', { trigger: String(a.coachTrigger || '').slice(0, 200) || null, action: lesson || null, evidence: 'verified' });
   }
   // Can Claude still guide Qwen on this task (instead of taking the correction over)?
   canCoachQwen(a) {
@@ -1332,7 +1350,10 @@ class MindAutopilot {
     // Claude first guides Qwen (read-only), Qwen tries again; the takeover below is the last resort.
     if (this.canCoachQwen(a)) {
       a.coachFindings = 'Qwen stopped during ' + a.stage + ': ' + why + '\nIts notes: ' + ((e.notes || []).slice(-5).join(' | ') || 'none')
-        + '\nApproaches it tried: ' + ((e.strategies || []).join(' | ') || 'none') + (a.review ? '\nEarlier findings:\n' + String(a.review).slice(0, 3000) : '');
+        + '\nApproaches it tried: ' + ((e.strategies || []).join(' | ') || 'none')
+        + (e.teach ? '\nEVIDENCE COLLECTED BY THE HOST (real check output, what really exists, Qwen\'s current diff):\n' + String(e.teach).slice(0, 4800) : '')
+        + (a.review ? '\nEarlier findings:\n' + String(a.review).slice(0, 3000) : '');
+      a.coachTrigger = String(why).slice(0, 200);
       this.learn('blockage', 'Le developpeur local (Qwen) a ete bloque sur "' + (a.plan?.title || '') + '" : ' + why, 'qwen-local');
       this.log('qwen', 'Qwen blocked (' + why.slice(0, 160) + '); Claude analyses the errors and guides Qwen before any takeover');
       this.dispatch('coach', now); return true;
@@ -1733,6 +1754,7 @@ class MindAutopilot {
       const endedAt = Math.max((last && last.completedAt) || 0, Date.now());
       this.state.pendingCosts = [...(this.state.pendingCosts || []), { before: a.usageBefore, launchedAt: a.launchedAt || null, endedAt, done: {} }].slice(-20);
     }
+    this.recordTaughtLesson(a, outcome);
     this.state.history.push({ category: a.plan?.category || null,
       title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
       evidence: a.plan?.evidence || [],
