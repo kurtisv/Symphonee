@@ -347,8 +347,10 @@ function errorContext(ctx, tail) {
 // Right after a write: calls to a name that exists nowhere else in the repository are most likely invented. Never blocks the edit.
 function inventedNames(ctx, a, located) {
   try {
+    const items = symbols.unknownCalls(ctx.worktree, located.replace, a.search, ctx.secret);
+    if (!items.length) return ''; // the common case costs one bounded search and NO secret scan
     const hide = ctx.maskNow(); // a fresh scan: before the first RUN no masker exists yet, and a secret may have been written since the last one
-    return hide(symbols.unknownCallsNote(symbols.unknownCalls(ctx.worktree, located.replace, a.search, ctx.secret, hide)));
+    return hide(symbols.unknownCallsNote(items, hide));
   } catch { return ''; } // no masker, no note
 }
 
@@ -401,7 +403,7 @@ const PROTOCOL = [
 ].join('\n');
 
 function realNames(ctx, tail) {
-  try { return symbols.fromErrors(ctx.worktree, tail, ctx.secret, ctx.lastRedact || ctx.maskNow(), ctx.readLines); } catch { return ''; }
+  try { return symbols.fromErrors(ctx.worktree, tail, ctx.secret, () => ctx.lastRedact || ctx.maskNow(), ctx.readLines); } catch { return ''; }
 }
 
 function buildPrompt(s, task, memoryText, lastObs, demand) {

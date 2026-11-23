@@ -62,7 +62,7 @@ test('a failed RUN shows what really exists for the unknown name and the unknown
   await run(r, lm, async () => ({ ok: false, results: [{ name: 'types', ok: false, tail }] }));
   const seen = lm.prompts[1];
   assert.match(seen, /WHAT REALLY EXISTS/);
-  assert.match(seen, /setStoredQueue does not exist/);
+  assert.match(seen, /setStoredQueue is not declared/);
   assert.match(seen, /clearStoredQueue\s+\(src\/storage\.ts:1\)/);
   assert.match(seen, /id is not a field of Rec/);
   assert.match(seen, /at: number/);

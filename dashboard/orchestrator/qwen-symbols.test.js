@@ -69,17 +69,17 @@ test('tsc: unknown name -> the real names that look like it; known-but-not-impor
   const dir = repo(STORE);
   const a = sym.fromErrors(dir, "src/x.ts(291,15): error TS2304: Cannot find name 'setStoredQueue'.", []);
   assert.match(a, /WHAT REALLY EXISTS/);
-  assert.match(a, /setStoredQueue does not exist/);
+  assert.match(a, /setStoredQueue is not declared/);
   assert.match(a, /clearStoredQueue\s+\(src\/storage\.ts:1\)/);
   const b = sym.fromErrors(dir, "src/x.ts(3,1): error TS2304: Cannot find name 'getStoredQueue'.", []);
-  assert.match(b, /getStoredQueue EXISTS, it is only not imported/);
+  assert.match(b, /getStoredQueue EXISTS in this repository, it is only not imported/);
   assert.match(b, /src\/storage\.ts:2/);
 });
 
 test('tsc: a property that is not on the type shows the real definition of the type', () => {
   const dir = repo(STORE);
   const read = (rel, from, n) => fs.readFileSync(path.join(dir, rel), 'utf8').split('\n').slice(from - 1, from - 1 + n);
-  const out = sym.fromErrors(dir, "src/x.ts(286,49): error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", [], (x) => x, read);
+  const out = sym.fromErrors(dir, "src/x.ts(286,49): error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", [], () => (x) => x, read);
   assert.match(out, /id is not a field of AnalyticsEventRecord/);
   assert.match(out, /name: string/);
   assert.match(out, /at: number/);
@@ -88,7 +88,7 @@ test('tsc: a property that is not on the type shows the real definition of the t
 test('tsc output with nothing to look up gives no note; the redactor is applied to the whole note', () => {
   const dir = repo(STORE);
   assert.strictEqual(sym.fromErrors(dir, 'src/x.ts(1,1): error TS2322: Type string is not assignable to number.', []), '');
-  const masked = sym.fromErrors(dir, "error TS2304: Cannot find name 'setStoredQueue'.", [], (x) => x.replace(/clearStoredQueue/g, '[REDACTED]'));
+  const masked = sym.fromErrors(dir, "error TS2304: Cannot find name 'setStoredQueue'.", [], () => (x) => x.replace(/clearStoredQueue/g, '[REDACTED]'));
   assert.doesNotMatch(masked, /clearStoredQueue/);
 });
 
@@ -107,7 +107,7 @@ test('review 5: TS2305 names the missing EXPORT, never the module', () => {
   const out = sym.fromErrors(dir, tail, []);
   assert.match(out, /getStoredQueue EXISTS/);
   assert.doesNotMatch(out, /react/);
-  assert.match(out, /getStoredQueu does not exist/);
+  assert.match(out, /getStoredQueu is not declared/);
 });
 
 test('review 4: a name inside a comment or a string is not a call', () => {
@@ -128,11 +128,33 @@ test('review 1: definition lines are masked BEFORE they are cut, so a secret str
   const secret = 'SUPERSECRETVALUE9999';
   const dir = repo({ 'src/a.ts': 'export function setStoredThing(a = "' + 'p'.repeat(112) + secret + '") {}\n' });
   const hide = (x) => x.split(secret).join('[REDACTED]');
-  const masked = sym.unknownCallsNote(sym.unknownCalls(dir, written(dir, 'setStoredThings(1)\n'), '', [], hide));
+  const masked = sym.unknownCallsNote(sym.unknownCalls(dir, written(dir, 'setStoredThings(1)\n'), '', []), hide);
   assert.match(masked, /setStoredThing/);
   assert.doesNotMatch(masked, /pSU|SUPER/);
   const plain = sym.unknownCallsNote(sym.unknownCalls(dir, written(dir, 'setStoredThings(1)\n'), '', []));
   assert.match(plain, /pSU/, 'control: without the masker the straddling prefix would have shown');
+});
+
+test('round 2 / 1: a protected path with accents is still recognised as protected (git quoting is off)', () => {
+  const dir = repo(Object.assign({ 'secrets/café.ts': 'export function setStoredCafe() {}\n' }, STORE));
+  const note = sym.unknownCallsNote(sym.unknownCalls(dir, written(dir, 'setStoredCafes(1)\n'), '', [/(^|\/)secrets\//]));
+  assert.doesNotMatch(note, /caf|setStoredCafe\b/);
+});
+
+test('round 2 / 2: method declarations, `new X(` and capitalised constructors are not invented calls', () => {
+  const dir = repo(STORE);
+  const text = 'class A {\n  render() { return 1 }\n  async loadAll(x: number): Promise<void> {\n  }\n  get sizeNow() { return 2 }\n}\nconst c = new AbortController()\nconst u = new URLSearchParams("a=b")\nconst v = Intl.NumberFormat("fr")\n';
+  assert.deepStrictEqual(sym.unknownCalls(dir, written(dir, text), '', []).map((i) => i.name), []);
+});
+
+test('round 2 / 3: a name that no source file declares but that is used (a package import) is not declared to be non-existent', () => {
+  const dir = repo(Object.assign({ 'src/use.ts': "import { Thing } from 'some-package'\nexport const t = Thing\n" }, STORE));
+  const out = sym.fromErrors(dir, "src/x.ts(1,1): error TS2304: Cannot find name 'Thing'.", []);
+  assert.match(out, /Thing is not declared in any source file of this repository, but it is used here/);
+  assert.match(out, /import \{ Thing \} from 'some-package'/);
+  const none = sym.fromErrors(dir, "src/x.ts(1,1): error TS2304: Cannot find name 'Zzz'.", []);
+  assert.match(none, /may come from a package/);
+  assert.doesNotMatch(none, /does not exist/);
 });
 
 test('review 2: without a reader the definition is not read at all', () => {
