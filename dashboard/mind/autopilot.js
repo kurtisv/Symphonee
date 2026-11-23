@@ -1209,14 +1209,21 @@ class MindAutopilot {
     // The only road to 'completed' is: checks passed (a.verify.ok) -> independent review PASS -> the reviewed change is committed (a.commit).
     if (!checks.length || !a.commit) return; // never certify a method that was not verified
     const g = String(a.coachGuidance).replace(/\s+/g, ' ');
-    const pick = (label) => { const m = new RegExp(label + '[^:]*:\\s*(.{10,400}?)(?= [1-5]\\. [A-Z]|$)', 'i').exec(g); return m ? m[1].trim() : ''; };
+    const pick = (label) => { const m = new RegExp(label + '[^:]*:\\s*(.{10,1500}?)(?= [1-6]\\. [A-Z]|$)', 'i').exec(g); return m ? m[1].trim() : ''; };
     const cause = pick('ROOT CAUSE') || g.slice(0, 300), reasoning = pick('DESIGN REASONING'), lesson = pick('LESSON');
-    let text = 'Methode verifiee (Claude a explique, Qwen a applique) sur "' + (a.plan?.title || '') + '". CAUSE : ' + cause + (reasoning ? ' RAISONNEMENT : ' + reasoning : '') + (lesson ? ' CONDITIONS / LECON : ' + lesson : '')
-      + ' PREUVES : controles reussis (' + checks.join(', ') + '), revue independante passee, commit ' + String(a.commit).slice(0, 10) + ', ' + (a.repairs || 0) + ' reparation(s).';
-    // The text comes from Claude reading repository content: mask known secret values (fail closed) and refuse anything that reads like an instruction to a future assistant.
-    try { text = require('../orchestrator/qwen-repo-worker').secretMask(a.worktree.path)()(text); } catch (_) { return; }
-    if (/ignore (all |any |the )?(previous|prior|above)|disregard|system prompt|you are now|from now on you|do not tell the user|ne dis (rien|pas) a l.utilisateur/i.test(text)) { this.log('lesson', 'Methode non enregistree : le texte ressemble a une instruction injectee'); return; }
-    this.learn('methode-verifiee', text.slice(0, 1400), 'claude-coach', { trigger: String(a.coachTrigger || '').slice(0, 200) || null, action: lesson ? lesson.slice(0, 300) : null, evidence: 'verified' });
+    // lessons.record keeps 400 characters: proof and conditions come FIRST and every field is bounded, so a long cause cannot push them out.
+    const cut = (x, n) => String(x || '').replace(/\s+/g, ' ').trim().slice(0, n);
+    const fields = {
+      text: 'Verifiee (Claude explique, Qwen applique, controles+revue ok, commit ' + String(a.commit).slice(0, 8) + ', ' + checks.slice(0, 3).join('+') + '). Conditions: ' + cut(lesson, 100) + ' Cause: ' + cut(cause, 80) + ' Raisonnement: ' + cut(reasoning, 80),
+      trigger: cut(a.coachTrigger, 150), action: cut(lesson, 200),
+    };
+    // Claude read repository content to write this: mask known secret values in EVERY stored field (fail closed), and refuse text that reads like an instruction to a future assistant.
+    let mask; try { mask = require('../orchestrator/qwen-repo-worker').secretMask(a.worktree.path)(); } catch (_) { return; }
+    for (const k of Object.keys(fields)) fields[k] = mask(fields[k]); fields.text = fields.text.slice(0, 400); // a mask may be longer than the value it hides: the end (the reasoning) is what gives way
+    const all = Object.values(fields).join(' ');
+    const INJECTED = /ignore (all |any |the )?(previous|prior|above)|disregard|system prompt|you are now|from now on you|do not tell|ne dis (rien|pas) a l.utilisateur|https?:\/\/|\b(curl|wget|Invoke-WebRequest|rm -rf)\b|\b(send|upload|post|transmit|email|exfiltrat\w*)\b.{0,60}\b(credential|token|secret|password|api[ _-]?key)/i;
+    if (INJECTED.test(all)) { this.log('lesson', 'Methode non enregistree : le texte ressemble a une instruction injectee ou contient un lien'); return; }
+    this.learn('methode-verifiee', fields.text, 'claude-coach', { trigger: fields.trigger || null, action: fields.action || null, evidence: 'verified' });
   }
   // Can Claude still guide Qwen on this task (instead of taking the correction over)?
   canCoachQwen(a) {

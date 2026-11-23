@@ -390,7 +390,7 @@ function changedNow(ctx, skip) {
   return [...new Set([...a, ...b])].filter((f) => !(skip || []).some((d) => f === d || f.startsWith(d + '/')));
 }
 // How many problems the first failing check reports: a number that falls from one RUN to the next is measured progress, even when the normalised signature (digits replaced) looks the same.
-const failureCount = (results) => { const bad = (results || []).find((r) => !r.ok); return bad ? (String(bad.tail || '').match(/error TS\d+/g) || []).length : 0; }; // compiler errors only: one per problem and stable. Test-runner output is too variable to count (a limit, kept on purpose)
+const failureCount = (results) => { const bad = (results || []).find((r) => !r.ok); return bad ? (Number.isFinite(bad.errors) ? bad.errors : (String(bad.tail || '').match(/error TS\d+/g) || []).length) : 0; }; // compiler errors only: one per problem and stable. Test-runner output is too variable to count (a limit, kept on purpose)
 function sawProgress(s, results) { const n = failureCount(results), better = s.lastFailCount != null && n < s.lastFailCount; s.lastFailCount = n; return better; }
 const failureSig = (results) => { const bad = (results || []).find((r) => !r.ok); return bad ? bad.name + ':' + sha(String(bad.tail || '').replace(/\d+(\.\d+)?/g, '#').replace(/\s+/g, ' ').slice(-400)).slice(0, 12) : null; };
 
@@ -541,7 +541,7 @@ async function runRepoWorker(opts) {
           else {
             s.idleRuns = 0; s.lastDiffHash = h;
             const v = await runVerify(ctx.worktree, opts.verify || []);
-            ranResult = { ok: v.ok, results: v.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, timedOut: x.timedOut, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() };
+            ranResult = { ok: v.ok, results: v.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, timedOut: x.timedOut, errors: x.errors, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() };
             s.runs.push(ranResult); s.runs = s.runs.slice(-6);
             obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)) + (v.ok ? '' : errorContext(ctx, (v.results.find((x) => !x.ok) || {}).tail) + realNames(ctx, (v.results.find((x) => !x.ok) || {}).tail)) + '\n[RUN RESULT: ' + (v.ok ? 'PASSED' : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name) + ']');
             const sig = failureSig(ranResult.results);
@@ -592,7 +592,7 @@ async function runRepoWorker(opts) {
       if (!s.changed.length && !changedNow(ctx, opts.skipDirs).length) { demand = 'DONE refused: you changed nothing. Make the change, or say STUCK.'; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'DONE refused: nothing was changed yet. Write the change with an EDIT or CREATE block (see the worked examples).'; saveSession(opts.sessionFile, s); continue; }
       const v = ran && ranResult && s.lastDiffHash === diffHash(ctx) ? ranResult : null;
       let check = v;
-      if (!check) { const r = await runVerify(ctx.worktree, opts.verify || []); check = { ok: r.ok, results: r.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() }; s.runs.push(check); s.lastDiffHash = diffHash(ctx); }
+      if (!check) { const r = await runVerify(ctx.worktree, opts.verify || []); check = { ok: r.ok, results: r.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, errors: x.errors, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() }; s.runs.push(check); s.lastDiffHash = diffHash(ctx); }
       if (check.ok) return finish('completed', clip(claimedDone, 500), { verified: check });
       lastObs = 'DONE refused: the host verification FAILED at ' + (check.results.find((x) => !x.ok) || {}).name + ':\n' + ((check.results.find((x) => !x.ok) || {}).tail || '').slice(-1800);
       s.observations.push(lastObs); const sig = failureSig(check.results); s.sameSigStreak = sig === s.lastRunSig && !sawProgress(s, check.results) ? s.sameSigStreak + 1 : 1; s.lastRunSig = sig;

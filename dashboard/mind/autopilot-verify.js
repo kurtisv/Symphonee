@@ -143,8 +143,11 @@ async function runVerify(cwd, commands, { onStart, beforeEach } = {}) {
       proc.on('close', (code) => finish(code));
     });
     const ok = r.code === 0 && !r.timedOut;
+    const clean = ok ? '' : r.out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
     results.push({ name: c.name, ok, code: r.code, ms: Date.now() - t0, timedOut: r.timedOut,
-      tail: ok ? '' : r.out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').slice(-6000) });
+      // counted on the whole output (up to the 100 KB kept), not on the 6000-character tail: errors cut off the tail still count
+      errors: ok ? 0 : (clean.match(/error TS\d+/g) || []).length,
+      tail: clean.slice(-6000) });
     if (!ok) break;
   }
   return { ok: results.length > 0 && results.every(x => x.ok), results };
