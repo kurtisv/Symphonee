@@ -25,6 +25,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const cp = require('node:child_process');
+const symbols = require('./qwen-symbols');
 
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({
@@ -343,6 +344,11 @@ function errorContext(ctx, tail) {
   }
   return out.length ? '\nWHERE THE CHECK FAILED (the real lines, > marks the reported line; line numbers are not part of the code):\n' + hide(clip(out.join('\n'), 1800)) : '';
 }
+// Right after a write: calls to a name that exists nowhere else in the repository are most likely invented. Never blocks the edit.
+function inventedNames(ctx, a, located) {
+  try { return (ctx.lastRedact || ((x) => x))(symbols.unknownCallsNote(symbols.unknownCalls(ctx.worktree, located.replace, a.search, ctx.secret))); } catch { return ''; }
+}
+
 function doEdit(ctx, a) {
   confine(ctx.worktree, a.file, ctx.secret); // a file the model may not READ must not be answered with its content either (hints)
   const { rel, abs } = confine(ctx.worktree, a.file, ctx.prot, true);
@@ -357,7 +363,7 @@ function doEdit(ctx, a) {
   const next = located.next;
   if (next === text) return { err: 'EDIT ' + rel + ': the replacement is identical to the original' };
   fs.writeFileSync(abs, crlf ? next.replace(/\n/g, '\r\n') : next);
-  return { ok: 'EDIT ' + rel + ': applied (' + a.search.split('\n').length + ' line(s) replaced by ' + located.replace.split('\n').length + ')' + (located.note ? ' - note: ' + located.note : ''), file: rel };
+  return { ok: 'EDIT ' + rel + ': applied (' + a.search.split('\n').length + ' line(s) replaced by ' + located.replace.split('\n').length + ')' + (located.note ? ' - note: ' + located.note : '') + inventedNames(ctx, a, located), file: rel };
 }
 function doCreate(ctx, a, mine) {
   const { rel, abs } = confine(ctx.worktree, a.file, ctx.prot, true);
@@ -391,9 +397,13 @@ const PROTOCOL = [
   'Read before you edit. Make small changes. Use RUN after each change. Say DONE only after RUN passed. If you are blocked, say STUCK and why: a stronger developer will take over. Paths are relative to the repository root. Secret files (.env, keys, credentials) are not available. Restricted files can be READ for context but never changed.',
 ].join('\n');
 
+function realNames(ctx, tail) {
+  try { return symbols.fromErrors(ctx.worktree, tail, ctx.secret, ctx.lastRedact || ((x) => x)); } catch { return ''; }
+}
+
 function buildPrompt(s, task, memoryText, lastObs, demand) {
   const runNudge = s.needsRun ? 'NEXT STEP: you changed files and have not run the checks since. Use RUN now (the host runs the repository checks). Do NOT READ the file again. If RUN fails, fix what it reports and RUN again; say DONE only after RUN passed.' : '';
-  const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN.' : '');
+  const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN. Use ONLY function, type and property names you saw in text you READ; if you need another one, GREP for it first (the host warns you when a name exists nowhere in the repository).' : '');
   const parts = [PROTOCOL,
     'TASK: ' + task.title + '\n' + clip(task.objective, 1800) + (task.files && task.files.length ? '\nFiles the plan mentions: ' + task.files.slice(0, 8).join(', ') : ''),
     memoryText ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
@@ -497,7 +507,7 @@ async function runRepoWorker(opts) {
             const v = await runVerify(ctx.worktree, opts.verify || []);
             ranResult = { ok: v.ok, results: v.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, timedOut: x.timedOut, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() };
             s.runs.push(ranResult); s.runs = s.runs.slice(-6);
-            obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)) + (v.ok ? '' : errorContext(ctx, (v.results.find((x) => !x.ok) || {}).tail)) + '\n[RUN RESULT: ' + (v.ok ? 'PASSED' : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name) + ']');
+            obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)) + (v.ok ? '' : errorContext(ctx, (v.results.find((x) => !x.ok) || {}).tail) + realNames(ctx, (v.results.find((x) => !x.ok) || {}).tail)) + '\n[RUN RESULT: ' + (v.ok ? 'PASSED' : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name) + ']');
             const sig = failureSig(ranResult.results);
             if (v.ok) s.sameSigStreak = 0; else if (sig === s.lastRunSig) s.sameSigStreak++; else s.sameSigStreak = 1;
             s.lastRunSig = v.ok ? null : sig;
