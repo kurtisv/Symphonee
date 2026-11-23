@@ -121,9 +121,11 @@ function killTree(proc) {
 }
 // Runs each command in order (no shell); stops at the first failure.
 // Resolves { ok, results:[{name, ok, code, ms, timedOut, tail}] }.
-async function runVerify(cwd, commands, { onStart } = {}) {
+// beforeEach(c): called BEFORE each check is spawned (onStart runs once it is running).
+async function runVerify(cwd, commands, { onStart, beforeEach } = {}) {
   const results = [];
   for (const c of validCommands(commands)) {
+    if (beforeEach) { try { beforeEach(c); } catch (_) {} }
     const t0 = Date.now();
     const r = await new Promise((resolve) => {
       let out = '', done = false, timedOut = false;

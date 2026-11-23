@@ -36,7 +36,7 @@ test('Qwen cannot read or write protected files through the host protocol', asyn
   try {
     f.pilot.configure({ enabled: true, goal: 'g', allowWorktreeWrites: true }); await drive(f.pilot);
     assert.equal(f.pilot.snapshot().error, null);
-    assert.doesNotMatch(f.lm.prompts[1], /TOP-SECRET/); assert.match(f.lm.prompts[1], /REFUSED: Path refused: protected/);
+    assert.doesNotMatch(f.lm.prompts[1], /TOP-SECRET/); assert.match(f.lm.prompts[1], /REFUSED: secrets\/key\.txt holds SECRETS and will NEVER be readable/); // wording of 2026-11-22 (two protection levels)
   } finally { f.cleanup(); }
 });
 
@@ -63,7 +63,7 @@ test('too many files or a protected file in the plan: not admissible', async () 
 });
 
 test('Qwen stuck after a partial change: Claude takes over in the SAME worktree, not counted as a repair, and the observation is kept', async () => {
-  const f = setup({ qwenReplies: [CREATE_TEST.replace('\nRUN', ''), 'STUCK I do not know how to proceed', 'STUCK still not', 'STUCK I do not know how to proceed'] }); // a first give-up is refused twice
+  const f = setup({ def: { ...DEF, qwen: { enabled: true, maxCoaching: 0 } }, qwenReplies: [CREATE_TEST.replace('\nRUN', ''), 'STUCK I do not know how to proceed', 'STUCK still not', 'STUCK I do not know how to proceed'] }); // a first give-up is refused twice
   try {
     f.pilot.configure({ enabled: true, goal: 'g', allowWorktreeWrites: true }); await drive(f.pilot);
     const s = f.pilot.snapshot(); assert.equal(s.error, null, String(s.error));
@@ -77,7 +77,7 @@ test('Qwen stuck after a partial change: Claude takes over in the SAME worktree,
 });
 
 test('Qwen stuck with no change: Claude implements from scratch and the empty worktree is kept', async () => {
-  const f = setup({ qwenReplies: ['STUCK nothing I can do'] });
+  const f = setup({ def: { ...DEF, qwen: { enabled: true, maxCoaching: 0 } }, qwenReplies: ['STUCK nothing I can do'] });
   try {
     f.pilot.configure({ enabled: true, goal: 'g', allowWorktreeWrites: true }); await drive(f.pilot);
     assert.equal(f.pilot.snapshot().error, null);

@@ -33,10 +33,11 @@ const { runRecipe } = (() => {
 // ladder in scripts/uia-find.ps1: class -> name -> id -> type.
 function relaxSelector(selector, dropOrder = ['class', 'id']) {
   const out = { ...(selector || {}) };
+  const dropped = [];
   for (const k of dropOrder) {
-    if (out[k]) { delete out[k]; return { selector: out, dropped: k }; }
+    if (out[k]) { delete out[k]; dropped.push(k); }
   }
-  return null;
+  return dropped.length ? { selector: out, dropped } : null;
 }
 
 // Tier 1. Try the same UIA op with progressively looser selectors.
@@ -46,7 +47,11 @@ async function tier1RelaxedUIA({ driver, hwnd, selector, op }) {
     relaxSelector(selector, ['class', 'id']),
     relaxSelector(selector, ['class', 'id', 'type']),
   ].filter(Boolean);
+  const seen = new Set();
   for (const t of tries) {
+    const key = JSON.stringify(Object.entries(t.selector).sort());
+    if (seen.has(key)) continue;
+    seen.add(key);
     try {
       const result = op === 'invoke'
         ? await driver.invokeUIAElement(hwnd, t.selector)

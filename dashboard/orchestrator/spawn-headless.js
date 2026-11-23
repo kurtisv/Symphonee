@@ -37,6 +37,10 @@ const shellRules = (cmds) => SHELL_TOOLS.flatMap(t => cmds.map(c => t + '(' + c 
 const CONFINED_ALLOWED_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'Edit', 'Write', ...shellRules([
   'node --test', 'npm test', 'npm run test', 'python -m pytest', 'pytest',
   'git status', 'git diff', 'git log', 'git show'])]);
+const COACH_SECRET_READS = Object.freeze(['**/.env', '**/.env.*', '**/.envrc', '**/secrets/**', '**/secret.*', '**/secrets.*', '**/*.pem', '**/*.key',
+  '**/*.p12', '**/*.pfx', '**/*.jks', '**/*.keystore', '**/*.mobileprovision', '**/id_rsa*', '**/id_ed25519*', '**/id_ecdsa*', '**/.npmrc',
+  '**/credentials', '**/credentials.json', '**/credential', '**/credential.json', '**/google-services.json', '**/GoogleService-Info.plist', '**/eas.json', '**/config/runtime.json']
+  .map((g) => 'Read(' + g + ')'));
 const CONFINED_DENIED_TOOLS = Object.freeze(['WebFetch', 'WebSearch', ...shellRules([
   'git push', 'git merge', 'git rebase', 'git reset', 'git branch', 'git worktree', 'git checkout',
   'git commit', 'npm publish', 'npm install', 'npx'])]);
@@ -139,7 +143,7 @@ module.exports = {
    * @param {boolean} [opts.autoPermit] - auto-approve all permissions
    * @returns {Task}
    */
-  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, fixtureNoApiKeys = false, reviewerNoTools = false, requireProcessTreeProof = false, _retryAttempt = 0 }) {
+  spawnHeadless({ cli, prompt, cwd, timeout, from, taskId, model, effort, autoPermit, space, requiresRepoContent, expectsRepoChanges, noFallback = false, noRetry = false, compactContext = false, readOnly = false, noShell = false, confineWrites = false, sandbox = null, usageJson = false, cloudTimeoutMs = 0, fixtureNoApiKeys = false, reviewerNoTools = false, requireProcessTreeProof = false, _retryAttempt = 0 }) {
     if (fixtureNoApiKeys && (!['codex', 'claude'].includes(cli) || !readOnly || !noRetry || !noFallback || !compactContext || !(cloudTimeoutMs > 0))) throw new Error('Invalid fixture review safeguards');
     // Tool-free Codex reviewer for fictional fixtures only (see codex-no-tools.js).
     if (reviewerNoTools && (cli !== 'codex' || !fixtureNoApiKeys || !model || _retryAttempt !== 0)) throw new Error('Invalid tool-free reviewer request');
@@ -317,7 +321,11 @@ module.exports = {
       // and package commands are denied. It never inherits bypass mode either.
       const shouldYolo = !readOnly && !confineWrites && (autoPermit || modeYolo);
       if (readOnly && cli === 'claude' && fixtureNoApiKeys) finalArgs.push('--safe-mode', '--strict-mcp-config', '--tools', '', '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--no-session-persistence');
-      else if (readOnly && cli === 'claude') finalArgs.push('--permission-mode', 'default', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit');
+      // noShell (the Qwen coach): reading tools only, so nothing can change a file anywhere: no shell, and no MCP
+      // server at all (--strict-mcp-config with no --mcp-config: an inherited MCP tool could write).
+      // It may not read secret files either: a cloud model could otherwise copy one into its guidance (Read rules
+      // also cover Grep and Glob). Same families as the Qwen worker's SECRET_PATTERNS.
+      else if (readOnly && cli === 'claude') finalArgs.push('--permission-mode', 'default', ...(noShell ? ['--strict-mcp-config'] : []), '--disallowedTools', 'Edit', 'Write', 'NotebookEdit', ...(noShell ? ['Bash', 'PowerShell', ...COACH_SECRET_READS] : []));
       else if (confineWrites && cli === 'claude') {
         finalArgs.push('--permission-mode', 'acceptEdits',
           '--allowedTools', ...CONFINED_ALLOWED_TOOLS,

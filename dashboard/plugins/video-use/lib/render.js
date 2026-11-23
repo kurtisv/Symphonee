@@ -71,8 +71,9 @@ const SRT_STYLE = 'FontName=Helvetica,FontSize=18,Bold=1,PrimaryColour=&H00FFFFF
 
 function _formatSrtTime(sec) {
   if (sec < 0) sec = 0;
-  const ms = Math.floor((sec - Math.floor(sec)) * 1000);
-  const total = Math.floor(sec);
+  const totalMs = Math.round(sec * 1000);
+  const ms = totalMs % 1000;
+  const total = Math.floor(totalMs / 1000);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
@@ -200,4 +201,7 @@ async function render(getConfig, edl, opts = {}) {
   }
 }
 
-module.exports = { render };
+module.exports = {
+  render,
+  _internals: { _formatSrtTime, _wordsForSegment, _chunkWords, _buildSrt, _extractSegmentArgs },
+};

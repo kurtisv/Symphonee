@@ -88,7 +88,9 @@ test('protected files can be neither read, listed nor changed, and a hostile ins
   const { lm, o } = opts(t, r, ['READ secrets/key.txt\nREAD .env\nEDIT .env\n<<<<<<< SEARCH\nTOKEN=abc\n=======\nTOKEN=x\n>>>>>>> REPLACE\nREAD ../../etc/hosts\nLIST secrets', 'STUCK nothing to do']);
   const out = await W.runRepoWorker(o);
   assert.doesNotMatch(lm.seen[1], /TOP-SECRET-VALUE|TOKEN=abc/);
-  assert.equal((lm.seen[1].match(/REFUSED: Path refused/g) || []).length >= 4, true);
+  // 2026-11-22: a secret refusal now says so in plain words ("holds SECRETS"); every refusal still starts with "REFUSED: ".
+  assert.equal((lm.seen[1].match(/REFUSED: /g) || []).length >= 4, true);
+  assert.match(lm.seen[1], /REFUSED: secrets\/key\.txt holds SECRETS/); assert.match(lm.seen[1], /REFUSED: \.env holds SECRETS/);
   assert.equal(fs.readFileSync(path.join(r.root, '.env'), 'utf8'), 'TOKEN=abc\n'); assert.equal(out.state, 'blocked');
 });
 
@@ -135,7 +137,8 @@ test('format drift: repeated answers outside the protocol stop the run', async t
   const r = repo(t);
   const { o } = opts(t, r, Array(8).fill('I will think about it and explain what to do in prose only.'));
   const out = await W.runRepoWorker(o);
-  assert.equal(out.state, 'blocked'); assert.match(out.summary, /outside the protocol|repeats the same actions/);
+  // 2026-11-22: prose is ignored instead of being a format error, so prose-only turns are counted as empty answers.
+  assert.equal(out.state, 'blocked'); assert.match(out.summary, /outside the protocol|repeats the same actions|empty answers/);
 });
 
 test('resources and health: low RAM, unloaded model, unreachable server and the work slot pause the run with the progress saved', async t => {
