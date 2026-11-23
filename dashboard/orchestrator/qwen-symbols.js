@@ -147,7 +147,9 @@ function fromErrors(cwd, tail, secret = [], getHide = null, readLines = null) {
     if (!d || !readLines) { notes.push(() => pointer); continue; }
     let body = null; try { body = readLines(d.file, d.line, 18); } catch { body = null; }
     if (!body) { notes.push(() => pointer); continue; }
-    notes.push((hide) => prop + ' is not a field of ' + ty + '. The real definition (' + d.file + ':' + d.line + '):\n' + body.map((l) => '  ' + shown(hide, l, 140)).join('\n'));
+    const indent = (/^\s*/.exec(body[0] || '') || [''])[0], end = body.findIndex((l, i) => i > 0 && l.startsWith(indent + '}')); // the definition stops at its own closing brace
+    const own = end >= 0 ? body.slice(0, end + 1) : body;
+    notes.push((hide) => prop + ' is not a field of ' + ty + '. The real definition (' + d.file + ':' + d.line + '):\n' + own.map((l) => '  ' + hide(String(l).replace(/\s+$/, '')).slice(0, 140)).join('\n'));
   }
   if (!notes.length) return '';
   let hide; try { hide = typeof getHide === 'function' ? getHide() : identity; } catch { return ''; } // no masker, no note

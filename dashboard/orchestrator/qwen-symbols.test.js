@@ -166,6 +166,14 @@ test('round 3: a secret that starts early in a LONG definition line and runs pas
   assert.doesNotMatch(note, /LONGSECRET|xxxx/);
 });
 
+test('round 5: a type definition keeps its indentation and stops at its own closing brace', () => {
+  const dir = repo({ 'src/t.ts': 'interface Rec {\n  name: string\n  meta: {\n    at: number\n  }\n}\n\ninterface Other {\n  neverShown: string\n}\n' });
+  const read = (rel, from, n) => fs.readFileSync(path.join(dir, rel), 'utf8').split('\n').slice(from - 1, from - 1 + n);
+  const out = sym.fromErrors(dir, "src/x.ts(1,1): error TS2339: Property 'id' does not exist on type 'Rec'.", [], () => (x) => x, read);
+  assert.match(out, /\n {2}interface Rec \{\n {4}name: string\n {4}meta: \{\n {6}at: number\n {4}\}\n {2}\}/);
+  assert.doesNotMatch(out, /neverShown|Other/);
+});
+
 test('round 4: an arrow parameter without parentheses is a local, not an invented function', () => {
   const dir = repo(STORE);
   const text = 'getStoredQueue(onResolvedItem => onResolvedItem(value))\ngetStoredQueue(async onOtherItem => { await onOtherItem(1) })\n';
