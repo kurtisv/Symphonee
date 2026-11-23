@@ -166,6 +166,12 @@ test('round 3: a secret that starts early in a LONG definition line and runs pas
   assert.doesNotMatch(note, /LONGSECRET|xxxx/);
 });
 
+test('round 4: an arrow parameter without parentheses is a local, not an invented function', () => {
+  const dir = repo(STORE);
+  const text = 'register(onResolvedItem => onResolvedItem(value))\nregister(async onOtherItem => { await onOtherItem(1) })\n';
+  assert.deepStrictEqual(sym.unknownCalls(dir, written(dir, text), '', []).map((i) => i.name), []);
+});
+
 test('review 2: without a reader the definition is not read at all', () => {
   const dir = repo(STORE);
   const out = sym.fromErrors(dir, "error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", []);

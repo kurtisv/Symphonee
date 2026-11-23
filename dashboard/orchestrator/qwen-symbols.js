@@ -90,6 +90,7 @@ function unknownCalls(cwd, written, before = '', secret = []) {
   const code = stripNonCode(written), b = budget();
   const declared = new Set([...code.matchAll(/(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]));
   for (const m of code.matchAll(/\(([^()]*)\)\s*(?:=>|\{)/g)) for (const p of m[1].split(',')) { const n = /^\s*(?:\.\.\.)?([A-Za-z_$][\w$]*)/.exec(p); if (n) declared.add(n[1]); }
+  for (const m of code.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*=>/g)) declared.add(m[1]); // `x => x(1)`: the parameter is a local
   for (const line of code.split('\n')) { // a method declaration is not a call: `render() {`, `async load(x): Promise<void> {`, `get size() {`
     const m = /^\s*(?:(?:public|private|protected|static|async|get|set|readonly|override|abstract)\s+)*([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::[^{=;]+)?\{/.exec(line);
     if (m && !KEYWORDS.has(m[1])) declared.add(m[1]);
