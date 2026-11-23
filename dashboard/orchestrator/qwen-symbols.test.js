@@ -168,7 +168,7 @@ test('round 3: a secret that starts early in a LONG definition line and runs pas
 
 test('round 4: an arrow parameter without parentheses is a local, not an invented function', () => {
   const dir = repo(STORE);
-  const text = 'register(onResolvedItem => onResolvedItem(value))\nregister(async onOtherItem => { await onOtherItem(1) })\n';
+  const text = 'getStoredQueue(onResolvedItem => onResolvedItem(value))\ngetStoredQueue(async onOtherItem => { await onOtherItem(1) })\n';
   assert.deepStrictEqual(sym.unknownCalls(dir, written(dir, text), '', []).map((i) => i.name), []);
 });
 
