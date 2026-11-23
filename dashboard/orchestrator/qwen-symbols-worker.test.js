@@ -69,7 +69,33 @@ test('a failed RUN shows what really exists for the unknown name and the unknown
   assert.match(seen, /\[RUN RESULT: FAILED at types\]/, 'the status line still ends the RUN result');
 });
 
-test('the lookup never breaks a turn: a repository git cannot search gives no note and the EDIT still applies', async () => {
+const commit = (dir, msg) => { const g = (...a) => cp.spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: dir, encoding: 'utf8' }); g('add', '-f', '.'); g('commit', '-qm', msg); return g('rev-parse', 'HEAD').stdout.trim(); };
+
+test('review 1: BEFORE the first RUN a secret in a definition line is masked, even though no masker exists yet', async () => {
+  const r = repo();
+  fs.writeFileSync(path.join(r.dir, '.env'), 'API_TOKEN=Zq7Xk29LmN4pRtW8\n');
+  fs.writeFileSync(path.join(r.dir, 'src/storage.ts'), 'export async function clearStoredQueue(key = "Zq7Xk29LmN4pRtW8") {}\n');
+  const base = commit(r.dir, 's');
+  const lm = fakeLm(['READ src/tracker.ts', EDIT('  return q', '  await setStoredQueue(queue)\n  return q'), 'STUCK x']);
+  await run({ dir: r.dir, base }, lm, async () => ({ ok: true, results: [{ name: 'types', ok: true }] }));
+  assert.match(lm.prompts[2], /HOST CHECK/);
+  assert.match(lm.prompts[2], /clearStoredQueue/);
+  assert.doesNotMatch(lm.prompts[2], /Zq7Xk29LmN4pRtW8/);
+});
+
+test('review 2: the type definition is never read from a path the model may not READ', async () => {
+  const r = repo();
+  fs.mkdirSync(path.join(r.dir, 'secrets'));
+  fs.writeFileSync(path.join(r.dir, 'secrets/types.ts'), 'export interface Hidden {\n  topSecretField: string\n}\n');
+  const base = commit(r.dir, 's');
+  const tail = "src/tracker.ts(4,5): error TS2339: Property 'id' does not exist on type 'Hidden'.";
+  const lm = fakeLm(['RUN', 'STUCK x']);
+  await runRepoWorker({ worktree: r.dir, base, task: { title: 't', objective: 'o', files: [] }, verify: [], protectedPatterns: [], readProtectedPatterns: ['(^|/)secrets/'], skipDirs: [], model: MODEL, profile: PROFILE, deadlineAt: Date.now() + 60000,
+    dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: false, results: [{ name: 'types', ok: false, tail }] }) } });
+  assert.doesNotMatch(lm.prompts[1], /topSecretField/);
+});
+
+test('a flagged EDIT is still applied: the model keeps the right to write what it wants', async () => {
   const r = repo();
   const lm = fakeLm(['READ src/tracker.ts', EDIT('  return q', '  await setStoredQueue(queue)\n  return q'), 'STUCK x']);
   const out = await run(r, lm, async () => ({ ok: true, results: [{ name: 'types', ok: true }] }));

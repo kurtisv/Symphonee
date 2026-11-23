@@ -78,7 +78,8 @@ test('tsc: unknown name -> the real names that look like it; known-but-not-impor
 
 test('tsc: a property that is not on the type shows the real definition of the type', () => {
   const dir = repo(STORE);
-  const out = sym.fromErrors(dir, "src/x.ts(286,49): error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", []);
+  const read = (rel, from, n) => fs.readFileSync(path.join(dir, rel), 'utf8').split('\n').slice(from - 1, from - 1 + n);
+  const out = sym.fromErrors(dir, "src/x.ts(286,49): error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", [], (x) => x, read);
   assert.match(out, /id is not a field of AnalyticsEventRecord/);
   assert.match(out, /name: string/);
   assert.match(out, /at: number/);
@@ -97,4 +98,46 @@ test('similarity ranks the shared words first and ignores names with no shared w
   assert.ok(names.includes('clearStoredQueue') && names.includes('getStoredQueue'));
   assert.ok(!names.includes('unrelatedHelper'));
   assert.deepStrictEqual(sym.words('setStoredQueue'), ['set', 'stored', 'queue']);
+});
+
+test('review 5: TS2305 names the missing EXPORT, never the module', () => {
+  const dir = repo(STORE);
+  const tail = "src/x.ts(1,10): error TS2305: Module '\"react\"' has no exported member 'getStoredQueue'.\n" +
+    "src/x.ts(2,10): error TS2724: '\"./storage\"' has no exported member named 'getStoredQueu'. Did you mean 'getStoredQueue'?";
+  const out = sym.fromErrors(dir, tail, []);
+  assert.match(out, /getStoredQueue EXISTS/);
+  assert.doesNotMatch(out, /react/);
+  assert.match(out, /getStoredQueu does not exist/);
+});
+
+test('review 4: a name inside a comment or a string is not a call', () => {
+  const dir = repo(STORE);
+  const text = '// call missingHelper() later\nconst s = "missingHelper(" + `missingTwo(${1}`\n/* missingThree(1) */\n';
+  assert.deepStrictEqual(sym.unknownCalls(dir, written(dir, text), '', []), []);
+  assert.strictEqual(sym.stripNonCode("a('x(') // y(\nb"), 'a("") \nb');
+});
+
+test('review 3: when git cannot search, the module claims nothing (no false NOWHERE)', () => {
+  const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-nogit-'));
+  assert.deepStrictEqual(sym.unknownCalls(plain, 'inventedThing(1)\n', '', []), []);
+  assert.strictEqual(sym.fromErrors(plain, "error TS2304: Cannot find name 'inventedThing'.", []), '');
+  assert.strictEqual(sym.exactDefs(plain, 'inventedThing', []), null);
+});
+
+test('review 1: definition lines are masked BEFORE they are cut, so a secret straddling the cut never leaks a prefix', () => {
+  const secret = 'SUPERSECRETVALUE9999';
+  const dir = repo({ 'src/a.ts': 'export function setStoredThing(a = "' + 'p'.repeat(112) + secret + '") {}\n' });
+  const hide = (x) => x.split(secret).join('[REDACTED]');
+  const masked = sym.unknownCallsNote(sym.unknownCalls(dir, written(dir, 'setStoredThings(1)\n'), '', [], hide));
+  assert.match(masked, /setStoredThing/);
+  assert.doesNotMatch(masked, /pSU|SUPER/);
+  const plain = sym.unknownCallsNote(sym.unknownCalls(dir, written(dir, 'setStoredThings(1)\n'), '', []));
+  assert.match(plain, /pSU/, 'control: without the masker the straddling prefix would have shown');
+});
+
+test('review 2: without a reader the definition is not read at all', () => {
+  const dir = repo(STORE);
+  const out = sym.fromErrors(dir, "error TS2339: Property 'id' does not exist on type 'AnalyticsEventRecord'.", []);
+  assert.match(out, /use GREP for "AnalyticsEventRecord"/);
+  assert.doesNotMatch(out, /name: string/);
 });

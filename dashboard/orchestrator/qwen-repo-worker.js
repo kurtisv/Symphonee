@@ -346,7 +346,10 @@ function errorContext(ctx, tail) {
 }
 // Right after a write: calls to a name that exists nowhere else in the repository are most likely invented. Never blocks the edit.
 function inventedNames(ctx, a, located) {
-  try { return (ctx.lastRedact || ((x) => x))(symbols.unknownCallsNote(symbols.unknownCalls(ctx.worktree, located.replace, a.search, ctx.secret))); } catch { return ''; }
+  try {
+    const hide = ctx.maskNow(); // a fresh scan: before the first RUN no masker exists yet, and a secret may have been written since the last one
+    return hide(symbols.unknownCallsNote(symbols.unknownCalls(ctx.worktree, located.replace, a.search, ctx.secret, hide)));
+  } catch { return ''; } // no masker, no note
 }
 
 function doEdit(ctx, a) {
@@ -398,7 +401,7 @@ const PROTOCOL = [
 ].join('\n');
 
 function realNames(ctx, tail) {
-  try { return symbols.fromErrors(ctx.worktree, tail, ctx.secret, ctx.lastRedact || ((x) => x)); } catch { return ''; }
+  try { return symbols.fromErrors(ctx.worktree, tail, ctx.secret, ctx.lastRedact || ctx.maskNow(), ctx.readLines); } catch { return ''; }
 }
 
 function buildPrompt(s, task, memoryText, lastObs, demand) {
@@ -425,6 +428,13 @@ async function runRepoWorker(opts) {
   const runVerifyRaw = dep.runVerify || require('../mind/autopilot-verify').runVerify;
   // prot: never written (pilot list + secrets). secret: never read either (secrets + optional extra list).
   const ctx = { worktree: path.resolve(opts.worktree), base: opts.base, prot: compile([...(opts.protectedPatterns || []), ...SECRET_PATTERNS]), secret: compile([...SECRET_PATTERNS, ...(opts.readProtectedPatterns || [])]) };
+  ctx.maskNow = () => secretMask(ctx.worktree, opts.readProtectedPatterns || [])();
+  // The only file read the symbol lookup does: same confinement as READ (protected paths, symbolic links), regular file, size-limited.
+  ctx.readLines = (rel, from, count) => {
+    const { abs } = confine(ctx.worktree, rel, ctx.secret);
+    const st = fs.lstatSync(abs); if (!st.isFile() || st.isSymbolicLink() || st.size > 400000) return null;
+    return fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n').split('\n').slice(from - 1, from - 1 + count);
+  };
   if (!opts.profile || opts.profile.mode !== 'text') throw new Error('Not a text-only developer profile');
   // Check output reaches the prompt: secret values are masked first (they are re-read at every RUN, a test may create one).
   const runVerify = async (cwd, cmds) => {
