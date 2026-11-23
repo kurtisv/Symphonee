@@ -1206,15 +1206,17 @@ class MindAutopilot {
   recordTaughtLesson(a, outcome) {
     if (outcome !== 'completed' || !a || !a.coachGuidance || a.implementer !== 'qwen' || this.qwenFixture) return;
     const checks = a.verify && a.verify.ok ? a.verify.results.map((r) => r.name) : [];
-    const reviewed = Array.isArray(a.reviews) && a.reviews.length > 0 && a.reviews[a.reviews.length - 1].verdict === 'PASS';
-    if (!checks.length || !reviewed) return; // never certify a method that was not verified
+    // The only road to 'completed' is: checks passed (a.verify.ok) -> independent review PASS -> the reviewed change is committed (a.commit).
+    if (!checks.length || !a.commit) return; // never certify a method that was not verified
     const g = String(a.coachGuidance).replace(/\s+/g, ' ');
     const pick = (label) => { const m = new RegExp(label + '[^:]*:\\s*(.{10,400}?)(?= [1-5]\\. [A-Z]|$)', 'i').exec(g); return m ? m[1].trim() : ''; };
     const cause = pick('ROOT CAUSE') || g.slice(0, 300), reasoning = pick('DESIGN REASONING'), lesson = pick('LESSON');
-    this.learn('methode-verifiee',
-      'Methode verifiee (Claude a explique, Qwen a applique) sur "' + (a.plan?.title || '') + '". CAUSE : ' + cause + (reasoning ? ' RAISONNEMENT : ' + reasoning : '') + (lesson ? ' CONDITIONS / LECON : ' + lesson : '')
-        + ' PREUVES : controles reussis (' + checks.join(', ') + '), revue independante passee, ' + (a.repairs || 0) + ' reparation(s).',
-      'claude-coach', { trigger: String(a.coachTrigger || '').slice(0, 200) || null, action: lesson || null, evidence: 'verified' });
+    let text = 'Methode verifiee (Claude a explique, Qwen a applique) sur "' + (a.plan?.title || '') + '". CAUSE : ' + cause + (reasoning ? ' RAISONNEMENT : ' + reasoning : '') + (lesson ? ' CONDITIONS / LECON : ' + lesson : '')
+      + ' PREUVES : controles reussis (' + checks.join(', ') + '), revue independante passee, commit ' + String(a.commit).slice(0, 10) + ', ' + (a.repairs || 0) + ' reparation(s).';
+    // The text comes from Claude reading repository content: mask known secret values (fail closed) and refuse anything that reads like an instruction to a future assistant.
+    try { text = require('../orchestrator/qwen-repo-worker').secretMask(a.worktree.path)()(text); } catch (_) { return; }
+    if (/ignore (all |any |the )?(previous|prior|above)|disregard|system prompt|you are now|from now on you|do not tell the user|ne dis (rien|pas) a l.utilisateur/i.test(text)) { this.log('lesson', 'Methode non enregistree : le texte ressemble a une instruction injectee'); return; }
+    this.learn('methode-verifiee', text.slice(0, 1400), 'claude-coach', { trigger: String(a.coachTrigger || '').slice(0, 200) || null, action: lesson ? lesson.slice(0, 300) : null, evidence: 'verified' });
   }
   // Can Claude still guide Qwen on this task (instead of taking the correction over)?
   canCoachQwen(a) {

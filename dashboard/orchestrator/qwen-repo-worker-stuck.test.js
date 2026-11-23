@@ -671,3 +671,27 @@ test('error-context lines are masked BEFORE they are cut, so a secret straddling
   assert.doesNotMatch(lm.prompts[1], /gate-secret/, 'no prefix of the secret reaches the model');
   assert.doesNotMatch(lm.prompts[1], /4242/);
 });
+
+// Codex round 1 of the teacher lot: a falling number of errors is progress even when the normalised signature is unchanged
+test('teacher: a falling number of errors is measured progress, so it is not handed over as "the same failure"', async () => {
+  const r = repo();
+  let n = 0;
+  const line = "src/t.ts(1,1): error TS2339: Property 'zz' does not exist on type 'Rec'.\n";
+  const edit = (i) => 'EDIT a.js\n<<<<<<< SEARCH\nmodule.exports = ' + (i === 0 ? '1' : String(i)) + ';\n=======\nmodule.exports = ' + (i + 1) + ';\n>>>>>>> REPLACE\nRUN';
+  const lm = fakeLm(Array.from({ length: 9 }, (_, i) => edit(i)).concat(['STUCK x']));
+  const out = await run(r, lm, { dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: false, results: [{ name: 'types', ok: false, tail: line.repeat(26 - n++) }] }) } });
+  assert.doesNotMatch(String(out.summary), /same failure persists/);
+  assert.equal(out.switches, 0, 'no strategy switch while the error count keeps falling');
+});
+
+test('teacher: a file Qwen created (not in git diff) is part of the hand-over evidence, masked', async () => {
+  const r = repo();
+  const lm = fakeLm(['CREATE new.test.js\n<<<<<<< CONTENT\nconst v = "visible-line";\nconst k = "Zq7Xk29LmN4pRtW8";\n>>>>>>> END\nRUN', 'RUN', 'RUN', 'RUN', 'RUN']);
+  fs.writeFileSync(path.join(r.dir, '.gitignore'), '.env\n'); // like a real repository: the secret file is ignored
+  fs.writeFileSync(path.join(r.dir, '.env'), 'API_TOKEN=Zq7Xk29LmN4pRtW8\n');
+  const out = await run(r, lm);
+  assert.equal(out.state, 'blocked');
+  assert.match(String(out.teach), /\+\+\+ NEW FILE new\.test\.js/);
+  assert.match(String(out.teach), /visible-line/);
+  assert.doesNotMatch(String(out.teach), /Zq7Xk29LmN4pRtW8/);
+});

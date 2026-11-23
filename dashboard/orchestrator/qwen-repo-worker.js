@@ -389,6 +389,9 @@ function changedNow(ctx, skip) {
   const a = git(ctx.worktree, ['diff', '--name-only', ctx.base]).out.split('\n').filter(Boolean), b = git(ctx.worktree, ['ls-files', '--others', '--exclude-standard']).out.split('\n').filter(Boolean);
   return [...new Set([...a, ...b])].filter((f) => !(skip || []).some((d) => f === d || f.startsWith(d + '/')));
 }
+// How many problems the first failing check reports: a number that falls from one RUN to the next is measured progress, even when the normalised signature (digits replaced) looks the same.
+const failureCount = (results) => { const bad = (results || []).find((r) => !r.ok); return bad ? (String(bad.tail || '').match(/error TS\d+/g) || []).length : 0; }; // compiler errors only: one per problem and stable. Test-runner output is too variable to count (a limit, kept on purpose)
+function sawProgress(s, results) { const n = failureCount(results), better = s.lastFailCount != null && n < s.lastFailCount; s.lastFailCount = n; return better; }
 const failureSig = (results) => { const bad = (results || []).find((r) => !r.ok); return bad ? bad.name + ':' + sha(String(bad.tail || '').replace(/\d+(\.\d+)?/g, '#').replace(/\s+/g, ' ').slice(-400)).slice(0, 12) : null; };
 
 const PROTOCOL = [
@@ -413,13 +416,16 @@ function teachEvidence(ctx, s) {
     const failing = s.runs.filter((r) => !r.ok), last = failing.at(-1);
     const tail = last ? last.results.filter((x) => !x.ok).map((x) => x.name + ':\n' + String(x.tail || '')).join('\n') : '';
     const hide = ctx.lastRedact || ctx.maskNow();
-    const files = s.changed.filter((f) => !ctx.secret.some((re) => re.test(f)) && !ctx.prot.some((re) => re.test(f))).slice(0, 4);
-    const diff = files.length ? git(ctx.worktree, ['diff', '--no-color', '-U2', ctx.base, '--', ...files]).out : '';
+    const files = s.changed.filter((f) => !ctx.secret.some((re) => re.test(f)) && !ctx.prot.some((re) => re.test(f))).slice(0, 4); // a protected file cannot be changed by Qwen: it is never part of Qwen's diff
+    const tracked = files.filter((f) => !(s.created || []).includes(f));
+    const diff = tracked.length ? git(ctx.worktree, ['diff', '--no-color', '-U2', ctx.base, '--', ...tracked]).out : '';
+    const fresh = (s.created || []).filter((f) => !ctx.secret.some((re) => re.test(f)) && !ctx.prot.some((re) => re.test(f))).slice(0, 2)
+      .map((f) => { let body = null; try { body = ctx.readLines(f, 1, 40); } catch { body = null; } return body ? '+++ NEW FILE ' + f + '\n' + body.map((l) => '+' + l).join('\n') : ''; }).filter(Boolean).join('\n');
     return [
       'FAILING CHECK (' + failing.length + ' failing run(s); last signature repeated ' + (s.sameSigStreak || 0) + ' time(s) since the last change of strategy):',
       clip(hide(tail), 1100) + realNames(ctx, tail),
       'QWEN CODE AS IT IS NOW (' + (files.join(', ') || 'no file') + ', diff against the start of the task):',
-      clip(hide(diff), 1700) || '(no change)',
+      clip(hide([diff, fresh].filter(Boolean).join('\n')), 1700) || '(no change)',
     ].join('\n');
   } catch { return ''; }
 }
@@ -539,7 +545,7 @@ async function runRepoWorker(opts) {
             s.runs.push(ranResult); s.runs = s.runs.slice(-6);
             obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)) + (v.ok ? '' : errorContext(ctx, (v.results.find((x) => !x.ok) || {}).tail) + realNames(ctx, (v.results.find((x) => !x.ok) || {}).tail)) + '\n[RUN RESULT: ' + (v.ok ? 'PASSED' : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name) + ']');
             const sig = failureSig(ranResult.results);
-            if (v.ok) s.sameSigStreak = 0; else if (sig === s.lastRunSig) s.sameSigStreak++; else s.sameSigStreak = 1;
+            const progressed = v.ok ? false : sawProgress(s, v.results); if (v.ok) { s.sameSigStreak = 0; s.lastFailCount = null; } else if (sig === s.lastRunSig && !progressed) s.sameSigStreak++; else s.sameSigStreak = 1;
             s.lastRunSig = v.ok ? null : sig;
           }
         } else if (a.type === 'done') claimedDone = a.text || 'done';
@@ -589,7 +595,7 @@ async function runRepoWorker(opts) {
       if (!check) { const r = await runVerify(ctx.worktree, opts.verify || []); check = { ok: r.ok, results: r.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() }; s.runs.push(check); s.lastDiffHash = diffHash(ctx); }
       if (check.ok) return finish('completed', clip(claimedDone, 500), { verified: check });
       lastObs = 'DONE refused: the host verification FAILED at ' + (check.results.find((x) => !x.ok) || {}).name + ':\n' + ((check.results.find((x) => !x.ok) || {}).tail || '').slice(-1800);
-      s.observations.push(lastObs); const sig = failureSig(check.results); s.sameSigStreak = sig === s.lastRunSig ? s.sameSigStreak + 1 : 1; s.lastRunSig = sig;
+      s.observations.push(lastObs); const sig = failureSig(check.results); s.sameSigStreak = sig === s.lastRunSig && !sawProgress(s, check.results) ? s.sameSigStreak + 1 : 1; s.lastRunSig = sig;
     }
     // No progress: the same verification failure again and again, or RUN without changes.
     if (s.idleRuns >= LIMITS.idleRunsBeforeStuck) return finish('blocked', 'No progress: RUN repeated ' + s.idleRuns + ' times with no change to the code', { teach: teachEvidence(ctx, s) });
