@@ -1962,7 +1962,8 @@ class MindAutopilot {
       // The checks are green: the tests of the change must also FAIL on the old code (red) and pass on the new (green).
       if (vr.ok && this.def.behavior.required && this.def.behavior.testCmd.length) {
         const rg = await behaviorGate.redGreen({ cwd, base, config: this.def.behavior, linkFrom: this.state.repoPath });
-        this.log('verify', rg.skipped ? 'Behaviour gate skipped: ' + rg.message : 'Behaviour gate ' + (rg.ok ? 'PASSED' : 'FAILED') + ': ' + String(rg.message).replace(/\s+/g, ' ').slice(0, 200));
+        // The message may carry test output: it is NOT logged here. It travels in the verification result, which is masked at one point below.
+        this.log('verify', 'Behaviour gate ' + (rg.skipped ? 'skipped' : rg.ok ? 'PASSED' : 'FAILED') + (rg.skipped ? '' : ' (' + ((rg.tests || []).length || 0) + ' test file(s); red ' + (rg.red ? 'yes' : 'no') + ', green ' + (rg.green ? 'yes' : 'no') + ')'));
         if (!rg.ok) vr = { ...vr, ok: false, results: [...(vr.results || []), { name: 'behavior-red-green', ok: false, code: 1, ms: rg.ms || 0, timedOut: false, errors: 0, tail: String(rg.message).slice(-6000) }] };
       }
       return { ...vr, lint: [] };

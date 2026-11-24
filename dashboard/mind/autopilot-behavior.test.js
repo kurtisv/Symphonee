@@ -98,3 +98,15 @@ test('a required gate without sourceDirs refuses every change with the reason in
     assert.equal(a.verify.ok, false); assert.match(a.review, /BEHAVIOUR GATE MISCONFIGURED/); assert.deepEqual(p.dispatched, ['repair']);
   } finally { r.clean(); }
 });
+
+test('the gate output (which may print a secret) is NOT written to the log; the verification result carries it, masked at the single masking point', async () => {
+  const r = repo();
+  try {
+    fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a + b }' + NL + 'module.exports = { add }' + NL);
+    fs.writeFileSync(path.join(r.dir, 'src/leak.test.js'), T("test('prints a credential', () => { console.log('token=ZZtopSecret123456'); assert.equal(add(1, 1), 3) })"));
+    const { p, a } = pilot(r, BEHAVIOR); p.startVerify(); await settle(a);
+    assert.equal(a.verify.ok, false);
+    assert.ok(p.logs.some((l) => /Behaviour gate FAILED/.test(l)));
+    assert.ok(!p.logs.some((l) => /ZZtopSecret123456/.test(l)), 'no test output in the log');
+  } finally { r.clean(); }
+});
