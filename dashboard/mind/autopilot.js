@@ -357,6 +357,19 @@ function git(cwd, args) {
 }
 // Top-level of a real work tree, or null. A folder whose Git directory lives
 // elsewhere (GIT_DIR) is not usable: worktrees could not be created from it.
+// A commit object of the worktree AS IT IS (committed + uncommitted + untracked, ignored files excluded), built in a TEMPORARY index:
+// the worktree, its index and its branch are not touched. Used to ask git whether the work still merges onto a moved base.
+function worktreeSnapshotCommit(cwd) {
+  const idx = path.join(require('os').tmpdir(), 'sym-idx-' + crypto.randomBytes(6).toString('hex'));
+  const env = { ...process.env, GIT_INDEX_FILE: idx, GIT_TERMINAL_PROMPT: '0' };
+  const run = (args) => spawnSync('git', args, { cwd, env, encoding: 'utf8', timeout: 30000, windowsHide: true });
+  try {
+    if (run(['read-tree', 'HEAD']).status !== 0 || run(['add', '-A']).status !== 0) return null;
+    const tree = run(['write-tree']); if (tree.status !== 0) return null;
+    const c = spawnSync('git', ['commit-tree', tree.stdout.trim(), '-p', 'HEAD', '-m', 'snapshot'], { cwd, env: { ...env, GIT_AUTHOR_NAME: 'autopilot', GIT_AUTHOR_EMAIL: 'autopilot@localhost', GIT_COMMITTER_NAME: 'autopilot', GIT_COMMITTER_EMAIL: 'autopilot@localhost' }, encoding: 'utf8', timeout: 30000, windowsHide: true });
+    return c.status === 0 ? c.stdout.trim() : null;
+  } finally { try { fs.rmSync(idx, { force: true }); } catch (_) {} }
+}
 function repoTopLevel(cwd) {
   if (!cwd || !fs.existsSync(cwd)) return null;
   const r = runGit(cwd, ['rev-parse', '--show-toplevel']);
@@ -1458,8 +1471,10 @@ class MindAutopilot {
     for (const e of list) { const x = store.get(e.decisionId); if (x && x.status !== 'pending' && !e.answer) { e.answer = JSON.parse(JSON.stringify(x)); this.save(); } }
     for (const e of list) if (e.status === 'waiting' && !e.answer && !store.get(e.decisionId)) {
       // The decisions file was lost: ask again rather than resume without an answer.
-      const again = store.create({ title: (this.def.label || this.id) + ' : ' + e.request.question.slice(0, 180), body: 'Question posee a nouveau (la premiere demande a ete perdue).\n' + e.request.question, options: [{ id: 'allow', label: 'Autoriser' }, { id: 'refuse', label: 'Refuser' }], allowText: true, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
-        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, consequences: e.request.consequences, suspendedId: e.id, kind: 'autopilot' } });
+      const conflict = e.kind === 'conflict';
+      const again = store.create({ title: (this.def.label || this.id) + ' : ' + (conflict ? 'le worktree a change pendant l attente' : e.request.question.slice(0, 180)), body: 'Question posee a nouveau (la premiere demande a ete perdue).\n' + (conflict ? 'Probleme : ' + (e.problems || []).join('; ') + '\n' : '') + e.request.question,
+        options: conflict ? [{ id: 'resume', label: 'Reprendre (reposer la question)' }, { id: 'abandon', label: 'Archiver la tache' }] : [{ id: 'allow', label: 'Autoriser' }, { id: 'refuse', label: 'Refuser' }], allowText: !conflict, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
+        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, consequences: e.request.consequences, suspendedId: e.id, kind: conflict ? 'conflict' : 'autopilot' } });
       if (!again.error) { e.decisionId = again.decision.id; this.save(); }
     }
     const e = list.find((x) => x.status === 'waiting' && x.answer);
@@ -1515,7 +1530,7 @@ class MindAutopilot {
     const base = this.ownerBase();
     if (base && e.mainBase && base !== e.mainBase) {
       e.baseMoved = e.mainBase.slice(0, 10) + ' -> ' + base.slice(0, 10);
-      if (e.worktree) { const m = runGit(e.worktree.path, ['merge-tree', '--write-tree', '--quiet', base, 'HEAD']); if (m.status === 1) e.baseMoved += ' ; ATTENTION : le changement est en CONFLIT avec la nouvelle base'; }
+      if (e.worktree) { const work = worktreeSnapshotCommit(e.worktree.path); const m = work ? runGit(e.worktree.path, ['merge-tree', '--write-tree', '--quiet', base, work]) : { status: 2 }; if (m.status === 1) e.baseMoved += ' ; ATTENTION : le changement est en CONFLIT avec la nouvelle base'; else if (m.status !== 0) e.baseMoved += ' ; compatibilite avec la nouvelle base non verifiee'; }
     }
     // Claimed exactly once: the entry leaves the waiting list in the same save that makes the task active again.
     this.state.suspended = list.filter((x) => x !== e);

@@ -303,6 +303,34 @@ test('a window park after the claim keeps the worktree check, and the conflict r
   } finally { f.cleanup(); }
 });
 
+test('moved base: a conflict with the task\'s UNCOMMITTED work is detected and reported to the agent; the worktree index is untouched', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    fs.writeFileSync(path.join(f.repo, 'index.test.js'), 'master version\n'); gitc(f.repo, 'add', '.'); gitc(f.repo, 'commit', '-qm', 'base moved');
+    const before = gitc(e.worktree.path, 'status', '--porcelain');
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    f.pilot.resumeAnswered(Date.now());
+    assert.match(f.pilot.state.active.review, /CONFLIT avec la nouvelle base/);
+    assert.equal(gitc(e.worktree.path, 'status', '--porcelain'), before, 'nothing staged in the worktree');
+  } finally { f.cleanup(); }
+});
+
+test('a lost CONFLICT question comes back with its own choices (Reprendre / Archiver)', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    e.kind = 'conflict'; e.problems = ['x'];
+    f.pilot._decisions = decisions.createStore({ file: null });
+    f.pilot.resumeAnswered(Date.now());
+    assert.deepEqual(f.pilot._decisions.get(e.decisionId).options.map((o) => o.id), ['resume', 'abandon']);
+  } finally { f.cleanup(); }
+});
+
 test('a refusal is never dropped from the task, even after many later decisions', async () => {
   const f = setup();
   try {
