@@ -560,3 +560,27 @@ test('a protection added while the task waited: the direct commit asks again for
     assert.ok(again && /z\.test\.js/.test(again.request.question));
   } finally { f.cleanup(); }
 });
+
+test('a pending commit whose worktree changed: after "Reprendre" and a new authorization, it is verified again, never committed as is', async () => {
+  const f = setup({ def: { protectedPaths: ['^secrets/'] } });
+  try {
+    const base = gitc(f.repo, 'rev-parse', 'HEAD'), wt = path.join(f.root, 'wt-x');
+    gitc(f.repo, 'worktree', 'add', '-q', '-b', 'mind-autopilot/test-x', wt, base);
+    fs.mkdirSync(path.join(wt, 'secrets')); fs.writeFileSync(path.join(wt, 'secrets', 'k.txt'), 'x'); fs.writeFileSync(path.join(wt, 'z.test.js'), '1');
+    const { worktreeFingerprint } = require('./autopilot');
+    const a = { stage: 'code-review', plan: { title: 'Task X', objective: 'x', evidence: [] }, worktree: { path: wt, branch: 'mind-autopilot/test-x' }, baseSha: base, repairs: 0, verify: { ok: true, results: [{ name: 'c' }] } };
+    a.reviewFingerprint = worktreeFingerprint(wt);
+    f.pilot.state.enabled = true; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
+    f.pilot.advance('VERDICT: PASS\nok');
+    const e = f.pilot.state.suspended[0];
+    fs.writeFileSync(path.join(wt, 'z.test.js'), 'unreviewed change');
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    f.pilot.resumeAnswered(Date.now()); // conflict
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'resume' });
+    f.pilot.resumeAnswered(Date.now()); // the request is asked again on the new state
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    f.pilot.resumeAnswered(Date.now());
+    assert.equal(f.pilot.state.active.waitingStage, 'verify', 'checks again, not commit');
+    assert.ok(!f.pilot.state.history.some((x) => x.title === 'Task X' && x.outcome === 'completed'));
+  } finally { f.cleanup(); }
+});

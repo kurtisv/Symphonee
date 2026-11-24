@@ -1413,6 +1413,8 @@ class MindAutopilot {
     let stage = owner.resumeStage(entry.stage, hasWork || !!(a.worktree && a.baseSha && fs.existsSync(a.worktree.path)));
     if (entry.resumeAt === 'verify') stage = refused ? 'repair' : 'verify';
     else if (entry.resumeAt === 'commit') stage = refused ? 'repair' : 'commit';
+    // The worktree changed after what the review saw: never commit or review it as is; checks first, then a new review.
+    if (entry.contentChanged && (stage === 'commit' || stage === 'code-review')) stage = 'verify';
     else if (entry.request.category === 'protected-zone' && refused && a.worktree) stage = 'repair'; // the protected change must be removed
     // Parked at the target stage in the same save: a restart now resumes exactly this stage (recoverAfterRestart keeps a waiting stage), and the
     // launch goes through the tick's usual gates (window, budget, peers).
@@ -1479,7 +1481,7 @@ class MindAutopilot {
     const last = a.ownerResuming || {};
     this.unlinkActive(a); a.links = [];
     const stage = a.waitingStage; a.waitingStage = null; a.parkReason = null; a.ownerPark = null; a.ownerResuming = null;
-    this.state.suspended = [...(this.state.suspended || []), { id, decisionId: c.decision.id, key: last.key || null, kind: 'conflict', problems, priorAnswer: last.answer || null,
+    this.state.suspended = [...(this.state.suspended || []), { id, decisionId: c.decision.id, key: last.key || null, kind: 'conflict', problems, priorAnswer: last.answer || null, contentChanged: true,
       request: last.request || { category: 'other', question: 'Reprise de la tache', consequences: '' }, stage, at: new Date(now).toISOString(), status: 'waiting', files: [],
       worktree: cur ? { path: a.worktree.path, branch: cur.branch, head: cur.head, fingerprint: cur.fingerprint } : { path: a.worktree.path, missing: true }, mainBase: this.ownerBase(), active: JSON.parse(JSON.stringify(a)) }];
     this.state.active = null;
@@ -1556,7 +1558,7 @@ class MindAutopilot {
       if (c.error) return false;
       if (e.kind !== 'conflict') e.priorAnswer = e.priorAnswer || d; // the owner's answer to the request (a conflict answer is not one)
       e.worktree = e.worktree ? (fs.existsSync(e.worktree.path) ? { path: e.worktree.path, ...this.worktreeState(e.worktree.path) } : { path: e.worktree.path, missing: true }) : e.worktree;
-      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null;
+      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null; e.contentChanged = true;
       this.log('owner', 'La tache en attente ne reprend pas : ' + problems.join('; ') + '. Nouvelle question ' + c.decision.id);
       this.save();
       return false;
