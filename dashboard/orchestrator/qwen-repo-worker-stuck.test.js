@@ -748,3 +748,18 @@ test('Claude guidance and findings are separate prompt sections and are NOT cut 
   assert.match(lm.prompts[0], /TAILMARK-GUIDANCE/, 'the end of the guidance (the key statements) reaches the model');
   assert.ok(lm.prompts[0].length <= LIMITS.promptChars + 400, 'the prompt stays inside the context budget');
 });
+
+test('when the prompt is too long, memory and old notes give way first: Claude guidance (with its test file) stays whole', async () => {
+  const r = repo();
+  const guidance = 'KEY ' + 'g'.repeat(5000) + ' TAILMARK-GUIDANCE-WHOLE';
+  const findings = 'FINDINGS ' + 'f'.repeat(6800) + ' TAILMARK-FINDINGS';
+  const notes = Array.from({ length: 8 }, (_, i) => 'NOTE ' + 'NOTE-' + i + ' ' + 'n'.repeat(250)).join('\n');
+  const lm = fakeLm([notes + '\nREAD a.js', 'STUCK x']);
+  await run(r, lm, { memoryText: 'MEMORY-BLOCK ' + 'm'.repeat(1700), task: { title: 't', objective: 'o'.repeat(1700), findings, guidance, files: [] } });
+  const p = lm.prompts[1];
+  assert.ok(p, 'a second turn happened');
+  assert.match(p, /TAILMARK-GUIDANCE-WHOLE/, 'the end of the guidance is still there');
+  assert.ok(p.length <= LIMITS.promptChars + 3500, 'inside the budget');
+  assert.doesNotMatch(p, /MEMORY-BLOCK/, 'memory was sacrificed first');
+  assert.doesNotMatch(p, /NOTE-0 /, 'the oldest notes were sacrificed too');
+});

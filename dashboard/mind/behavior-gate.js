@@ -118,7 +118,7 @@ function underSymlink(root, rel) {
   return false;
 }
 // Red then green. `ok` is true only when the tests fail on the base (for a behavioural reason) and pass on the change.
-async function redGreen({ cwd, base, config, linkFrom = null }) {
+async function redGreen({ cwd, base, config, linkFrom = null, redact = null }) {
   const cfg = normalize(config);
   if (!cfg.required) return { ok: true, skipped: true, message: 'behaviour gate: off' };
   if (cfg.invalid.length) return { ok: false, message: MISCONFIGURED(cfg) };
@@ -149,7 +149,7 @@ async function redGreen({ cwd, base, config, linkFrom = null }) {
       : red.code === 0 ? 'BEHAVIOUR TEST TOO WEAK: ' + tests.join(', ') + ' PASS on the old code too, so they do not detect the problem. Write a test that reproduces the failure (it must fail before your change).'
         : red.timedOut ? 'BEHAVIOUR TEST TIMED OUT on the old code: ' + tests.join(', ')
           : wrongReason ? 'BEHAVIOUR TEST IS RED FOR THE WRONG REASON: ' + tests.join(', ') + ' fail on the old code because they cannot load (missing module or syntax error), not because the behaviour is wrong. Test the behaviour of code that already exists.'
-            : 'BEHAVIOUR TEST FAILS on your change: ' + tests.join(', ') + '\n' + green.out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').slice(-1500);
+            : 'BEHAVIOUR TEST FAILS on your change: ' + tests.join(', ') + (typeof redact === 'function' ? '\n' + redact(green.out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')).slice(-1500) : ' (the test output is not included: no masker was provided)'); // masked BEFORE it is cut, never the other way round
     return { ok, red: red.code !== 0 && !wrongReason, green: green.code === 0, message, ms: Date.now() - t0, tests, scratch: tmp };
   } catch (e) {
     return { ok: false, message: 'behaviour gate error: ' + String(e.message || e).slice(0, 300) };

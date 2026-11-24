@@ -433,22 +433,30 @@ function teachEvidence(ctx, s) {
 }
 
 function buildPrompt(s, task, memoryText, lastObs, demand) {
+  const s0 = s;
   const runNudge = s.needsRun ? 'NEXT STEP: you changed files and have not run the checks since. Use RUN now (the host runs the repository checks). Do NOT READ the file again. If RUN fails, fix what it reports and RUN again; say DONE only after RUN passed.' : '';
   const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN. Use ONLY function, type and property names you saw in text you READ; if you need another one, GREP for it first (the host warns you when a name exists nowhere in the repository).' : '');
-  const parts = [PROTOCOL,
+  const guidanceBlock = task.guidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it exactly. If it contains a test file (FILE: <path>), create that file with CREATE:\n' + clip(task.guidance, 6000) : '';
+  // lv 0 = everything; 1 = no memory; 2 = fewer notes and tried approaches; 3 = shorter findings. Guidance is never part of the cuts below.
+  const compose = (lv, withGuidance = true) => [PROTOCOL,
     'TASK: ' + task.title + '\n' + clip(task.objective, 1800) + (task.files && task.files.length ? '\nFiles the plan mentions: ' + task.files.slice(0, 8).join(', ') : ''),
     // Their own sections and their own budget (a long objective used to push them out of what the model saw).
-    task.findings ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + clip(task.findings, 7000) : '',
-    task.guidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it exactly. If it contains a test file (FILE: <path>), create that file with CREATE:\n' + clip(task.guidance, 6000) : '',
-    memoryText ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
-    s.plan.length ? 'PLAN:\n' + s.plan.map((p, i) => (i + 1) + '. [' + (p.done ? 'x' : ' ') + '] ' + p.text).join('\n') : 'No plan yet: start with PLAN lines.',
-    s.notes.length ? 'YOUR NOTES:\n' + s.notes.slice(-8).map((n) => '- ' + n).join('\n') : '',
-    s.strategies.length ? 'APPROACHES ALREADY TRIED THAT FAILED:\n' + s.strategies.slice(-4).map((x, i) => (i + 1) + '. ' + x).join('\n') : '',
-    s.changed.length ? 'FILES YOU CHANGED: ' + s.changed.slice(0, 10).join(', ') : '',
-    demand || '', nudge,
-    'LAST RESULTS:\n' + (lastObs || '(none yet)')];
-  let p = parts.filter(Boolean).join('\n\n');
-  if (p.length > LIMITS.promptChars) { const head = p.slice(0, p.indexOf('LAST RESULTS:')); p = clip(head, LIMITS.promptChars - 3500) + '\n\nLAST RESULTS:\n' + tailClip(lastObs, 3300); }
+    task.findings ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + clip(task.findings, lv >= 3 ? 2500 : 7000) : '',
+    withGuidance ? guidanceBlock : '',
+    memoryText && lv < 1 ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
+    s0.plan.length ? 'PLAN:\n' + s0.plan.map((p, i) => (i + 1) + '. [' + (p.done ? 'x' : ' ') + '] ' + p.text).join('\n') : 'No plan yet: start with PLAN lines.',
+    s0.notes.length ? 'YOUR NOTES:\n' + s0.notes.slice(lv >= 2 ? -3 : -8).map((n) => '- ' + n).join('\n') : '',
+    s0.strategies.length ? 'APPROACHES ALREADY TRIED THAT FAILED:\n' + s0.strategies.slice(lv >= 2 ? -2 : -4).map((x, i) => (i + 1) + '. ' + x).join('\n') : '',
+    s0.changed.length ? 'FILES YOU CHANGED: ' + s0.changed.slice(0, 10).join(', ') : '',
+    demand || '', nudge].filter(Boolean).join('\n\n');
+  let p = compose(0) + '\n\nLAST RESULTS:\n' + (lastObs || '(none yet)');
+  if (p.length > LIMITS.promptChars) {
+    const budget = LIMITS.promptChars - 3500;
+    let head = compose(0);
+    for (let lv = 1; lv <= 3 && head.length > budget; lv++) head = compose(lv);
+    if (head.length > budget) head = clip(compose(3, false), budget - guidanceBlock.length - 2) + (guidanceBlock ? '\n\n' + guidanceBlock : ''); // last resort: the guidance stays whole, the rest is cut
+    p = head + '\n\nLAST RESULTS:\n' + tailClip(lastObs, 3300);
+  }
   return p;
 }
 

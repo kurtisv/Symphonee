@@ -110,3 +110,18 @@ test('the gate output (which may print a secret) is NOT written to the log; the 
     assert.ok(!p.logs.some((l) => /ZZtopSecret123456/.test(l)), 'no test output in the log');
   } finally { r.clean(); }
 });
+
+test('the failing-test output that reaches the verification result is masked BEFORE it is cut (no masker, no output)', async () => {
+  const r = repo();
+  try {
+    fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a + b }' + NL + 'module.exports = { add }' + NL);
+    // the secret value sits exactly across the 1500-character cut of the test output
+    const secret = 'ZZtopSecret1234567890';
+    fs.writeFileSync(path.join(r.dir, '.gitignore'), '.env' + NL); fs.writeFileSync(path.join(r.dir, '.env'), 'API_TOKEN=' + secret + NL);
+    fs.writeFileSync(path.join(r.dir, 'src/leak.test.js'), T("test('x', () => { console.log('p'.repeat(1480) + '" + secret + "'); assert.equal(add(1, 1), 3) })"));
+    const { p, a } = pilot(r, BEHAVIOR); p.startVerify(); await settle(a);
+    const tail = a.verify.results.at(-1).tail;
+    assert.equal(a.verify.ok, false);
+    assert.doesNotMatch(tail, /ZZtop|Secret1234|1234567890/, 'neither the secret nor a piece of it');
+  } finally { r.clean(); }
+});
