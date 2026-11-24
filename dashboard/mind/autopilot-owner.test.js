@@ -527,7 +527,7 @@ test('a protected change found after a PASSED review: on authorization it is com
     const { worktreeFingerprint } = require('./autopilot');
     const a = { stage: 'code-review', plan: { title: 'Task Z', objective: 'x', evidence: [] }, worktree: { path: wt, branch: 'mind-autopilot/test-z' }, baseSha: base, repairs: 0, verify: { ok: true, results: [{ name: 'c' }] } };
     a.reviewFingerprint = worktreeFingerprint(wt);
-    f.pilot.state.enabled = true; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
+    f.pilot.state.enabled = true; f.pilot.state.repoPath = f.repo; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
     f.pilot.advance('VERDICT: PASS\nok');
     const e = f.pilot.state.suspended[0];
     assert.equal(e.request.category, 'protected-zone'); assert.equal(e.resumeAt, 'commit');
@@ -549,7 +549,7 @@ test('a protection added while the task waited: the direct commit asks again for
     const { worktreeFingerprint } = require('./autopilot');
     const a = { stage: 'code-review', plan: { title: 'Task Y', objective: 'x', evidence: [] }, worktree: { path: wt, branch: 'mind-autopilot/test-y' }, baseSha: base, repairs: 0, verify: { ok: true, results: [{ name: 'c' }] } };
     a.reviewFingerprint = worktreeFingerprint(wt);
-    f.pilot.state.enabled = true; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
+    f.pilot.state.enabled = true; f.pilot.state.repoPath = f.repo; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
     f.pilot.advance('VERDICT: PASS\nok');
     const e = f.pilot.state.suspended[0];
     f.pilot.def.protectedPaths = ['^secrets/', 'z\.test\.js$']; // a new protection while it waited
@@ -570,7 +570,7 @@ test('a pending commit whose worktree changed: after "Reprendre" and a new autho
     const { worktreeFingerprint } = require('./autopilot');
     const a = { stage: 'code-review', plan: { title: 'Task X', objective: 'x', evidence: [] }, worktree: { path: wt, branch: 'mind-autopilot/test-x' }, baseSha: base, repairs: 0, verify: { ok: true, results: [{ name: 'c' }] } };
     a.reviewFingerprint = worktreeFingerprint(wt);
-    f.pilot.state.enabled = true; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
+    f.pilot.state.enabled = true; f.pilot.state.repoPath = f.repo; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
     f.pilot.advance('VERDICT: PASS\nok');
     const e = f.pilot.state.suspended[0];
     fs.writeFileSync(path.join(wt, 'z.test.js'), 'unreviewed change');
