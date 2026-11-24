@@ -139,7 +139,8 @@ async function runVerify(cwd, commands, { onStart, beforeEach } = {}) {
       // chunk boundary): the 200000-character buffer below only bounds memory, it does not decide the count.
       const keep = (d) => {
         const chunk = d.toString(), text = carry + chunk;
-        for (const m of text.matchAll(/error TS\d+/g)) if (m.index + m[0].length > carry.length) errs++;
+        // counted at its FIRST digit: that digit lies in one chunk only, whatever the split
+        for (const m of text.matchAll(/error TS\d/g)) if (m.index + m[0].length > carry.length) errs++;
         carry = text.slice(-12);
         out += chunk; if (out.length > 200000) out = out.slice(-100000);
       };

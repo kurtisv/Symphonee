@@ -47,3 +47,12 @@ test('the count is not limited by the 200000-character memory buffer', async () 
     assert.equal(r.results[0].errors, 4000);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a code split inside its digits, or right before them, is counted once (Codex round 4)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-verr-'));
+  try {
+    const script = "const nl = " + NL + "; const w = (s) => new Promise((r) => process.stdout.write(s, r)); (async () => { await w('error TS2'); await new Promise((r) => setTimeout(r, 120)); await w('304: x' + nl + 'error TS'); await new Promise((r) => setTimeout(r, 120)); await w('2339: y' + nl); process.exit(1) })()";
+    const r = await runVerify(dir, [{ name: 'types', cmd: [process.execPath, '-e', script], timeoutMs: 30000 }]);
+    assert.equal(r.results[0].errors, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
