@@ -1248,12 +1248,12 @@ class MindAutopilot {
       // (an environment or budget stop says nothing about the solution).
       if (a.relayedSolution) {
         if (outcome === 'completed' && a.implementer === 'qwen' && !a.claudeRepaired) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'completed');
-        else if (a.implementer === 'claude-after-qwen' || a.claudeRepaired || ['review-rejected', 'verify-failed'].includes(outcome)) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'failed');
+        else if ((outcome === 'completed' && (a.implementer === 'claude-after-qwen' || a.claudeRepaired)) || ['review-rejected', 'verify-failed'].includes(outcome)) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'failed');
       }
       // Kept only when the behaviour gate (test red on the base, green on the change) is required for this pilot and the checks passed: otherwise "verified" would be a claim.
       if (outcome !== 'completed' || !a.commit || !(a.implementer === 'claude-after-qwen' || a.claudeRepaired) || !a.verify || !a.verify.ok || !a.worktree || !(this.def.behavior && this.def.behavior.required && !this.def.behavior.lintOnly)) return;
       const proof = [...a.verify.results.map((r) => 'check ' + r.name), ...(this.def.behavior && this.def.behavior.required ? ['behaviour test red then green'] : []), 'independent review PASS', 'commit ' + String(a.commit).slice(0, 10)];
-      const made = verifiedSolutions.fromCommit({ repoPath: a.worktree.path, baseSha: a.baseSha, commit: a.commit, plan: a.plan, scope: this.lessonScope(), proof, createdBy: 'autopilot' });
+      const made = verifiedSolutions.fromCommit({ repoPath: a.worktree.path, baseSha: a.baseSha, commit: a.commit, plan: a.plan, scope: this.lessonScope(), proof, createdBy: 'autopilot', sourceDirs: this.def.behavior.sourceDirs || [] });
       if (!made.ok) { this.log('lesson', 'Correction not kept as a verified solution: ' + made.reason); return; }
       verifiedSolutions.add(this.repoRoot, made.solution);
       this.log('lesson', 'Verified solution kept for the next time: ' + made.solution.id + ' (' + made.solution.files.join(', ') + ')');

@@ -26,7 +26,7 @@ const solution = (r, extra = {}) => ({ id: 'flush-race', scope: 'gas-saver', tit
 
 function pilot(r, active, qwen = { enabled: true, maxFiles: 6, maxBytes: 48000, maxRepairs: 2, maxResumes: 12, maxCoaching: 1 }) {
   const p = Object.create(MindAutopilot.prototype);
-  p.def = { qwen, protectedPaths: [], verify: [], linkDirs: [], behavior: { required: true } };
+  p.def = { qwen, protectedPaths: [], verify: [], linkDirs: [], behavior: { required: true, sourceDirs: ['.'] } };
   p.state = { active, repoPath: r.dir };
   p.repoRoot = r.root; p.lessonScope = () => 'gas-saver';
   p.calls = []; p.logs = []; p.lessons = []; p.traces = [];
@@ -220,5 +220,20 @@ test('round 2 of the review: lint-only gate, Claude repair after Qwen ran out, 1
     const b = active(r, { implementer: 'claude-after-qwen', commit: r.g('rev-parse', 'HEAD'), verify: { ok: true, results: [{ name: 'jest' }] } });
     const p2 = pilot(r, b); p2.def.behavior = { required: true, lintOnly: true }; p2.settleSolutions(b, 'completed');
     assert.equal(vs.read(r.root).solutions.length, 1);
+  } finally { r.cleanup(); }
+});
+
+test('round 3 of the review: a budget stop never counts against a solution; a change outside the gate source directories is not stored as red/green', () => {
+  const r = repo();
+  try {
+    vs.add(r.root, solution(r));
+    for (let i = 0; i < 3; i++) { const a = active(r, { relayedSolution: 'flush-race', claudeRepaired: true }); pilot(r, a).settleSolutions(a, 'budget-stopped'); }
+    assert.equal(vs.read(r.root).solutions[0].failed, 0); assert.equal(vs.read(r.root).solutions[0].retired, false);
+    fs.mkdirSync(path.join(r.dir, 'lib', '__tests__'), { recursive: true });
+    fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 2;\n'); fs.writeFileSync(path.join(r.dir, 'lib', '__tests__', 'a.test.js'), 'x\n');
+    r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'fix');
+    const made = vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], sourceDirs: ['src/'] });
+    assert.equal(made.ok, false); assert.match(made.reason, /outside the behaviour gate/);
+    assert.equal(vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], sourceDirs: ['.'] }).ok, true);
   } finally { r.cleanup(); }
 });
