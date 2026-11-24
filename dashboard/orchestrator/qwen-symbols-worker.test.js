@@ -1,5 +1,5 @@
 'use strict';
-// 2026-11-23 replay of the Gas Saver task: the 9B invented setStoredQueue / e.id next to a real clearStoredQueue.
+// 2026-11-23 replay of a task on a private application: the 9B invented setStoredQueue / e.id next to a real clearStoredQueue.
 // The host must answer "what really exists" by itself, right after the EDIT and right after the failed RUN.
 const test = require('node:test');
 const assert = require('node:assert/strict');
