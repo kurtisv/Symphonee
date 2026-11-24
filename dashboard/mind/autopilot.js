@@ -1364,7 +1364,8 @@ class MindAutopilot {
     a.ownerAsks[key] = { decisionId: d.id, at: now, answered: null };
     const files = a.worktree && a.baseSha && fs.existsSync(a.worktree.path) ? guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }) : [];
     const entry = { id, decisionId: d.id, key, request: req, stage, resumeAt: opts.resumeAt || null, at: new Date(now).toISOString(), status: 'waiting', files,
-      worktree: a.worktree && fs.existsSync(a.worktree.path) ? { path: a.worktree.path, branch: a.worktree.branch || null, head: git(a.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(a.worktree.path) } : null,
+      // A task that HAD a worktree keeps that fact even when the folder is already gone (it can then only be archived, never replayed).
+      worktree: a.worktree ? (fs.existsSync(a.worktree.path) ? { path: a.worktree.path, branch: a.worktree.branch || null, head: git(a.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(a.worktree.path) } : { path: a.worktree.path, missing: true }) : null,
       mainBase: this.ownerBase(), active: null };
     if (owner.decide(this.def.decisionPolicy, req) === 'auto') {
       const auto = store.answer(d.id, { choice: 'allow', text: 'Politique automatique du proprietaire pour la categorie ' + req.category, by: 'policy' });
@@ -1486,7 +1487,8 @@ class MindAutopilot {
   worktreeProblems(e) {
     const problems = [];
     if (!e.worktree) return problems;
-    if (!fs.existsSync(e.worktree.path)) return e.worktree.missing ? [] : ['le worktree n existe plus'];
+    // A missing worktree is accepted ONLY as the state a conflict question showed (that question offers archiving only).
+    if (!fs.existsSync(e.worktree.path)) return e.kind === 'conflict' && e.worktree.missing ? [] : ['le worktree n existe plus'];
     if (e.worktree.missing) return ['le worktree est revenu'];
     const cur = this.worktreeState(e.worktree.path);
     if (e.worktree.branch && cur.branch !== e.worktree.branch) problems.push('la branche est ' + cur.branch + ' au lieu de ' + e.worktree.branch);

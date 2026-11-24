@@ -488,3 +488,19 @@ test('a worktree deleted AFTER the answer was claimed: archive only, never a res
     assert.equal(f.pilot.state.history.find((h) => /Task A/.test(h.title)).outcome, 'abandoned-by-owner');
   } finally { f.cleanup(); }
 });
+
+test('a worktree already gone when the task is suspended: recorded as missing, the owner can only archive it after answering', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    gitc(f.repo, 'worktree', 'remove', '--force', e.worktree.path);
+    e.worktree = { path: e.worktree.path, missing: true }; // as recorded by ownerRequest when the folder is already gone
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(e.kind, 'conflict');
+    assert.deepEqual(f.pilot.decisionStore().get(e.decisionId).options.map((o) => o.id), ['abandon']);
+    assert.equal(f.spawns.filter((x) => x.task === 'A' && x.stage === 'implement').length, 1, 'never replayed');
+  } finally { f.cleanup(); }
+});
