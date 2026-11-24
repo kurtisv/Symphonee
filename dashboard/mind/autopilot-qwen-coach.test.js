@@ -261,3 +261,11 @@ test('after a coach, the repair stage splits the wrapper: guidance in its own fi
     assert.equal(seen.task.guidance, guidance); assert.match(seen.task.findings, /later failure/);
   } finally { r.cleanup(); }
 });
+
+test('the coach prompt asks for mechanical, decided steps and insists on the behaviour test file (replay of 2026-11-24 with the real coach)', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'autopilot.js'), 'utf8');
+  assert.match(src, /3\. FIX: a numbered list of at most 8 MECHANICAL steps that Qwen executes literally/);
+  assert.match(src, /DECIDE: give ONE way, verified against the code\. No alternatives/);
+  assert.match(src, /You MUST provide this file: first read one existing test of the same module and the jest\/test setup file/);
+  assert.match(src, /Never answer that you do not provide a test/);
+});
