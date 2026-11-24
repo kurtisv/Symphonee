@@ -285,6 +285,24 @@ test('every refusal always reaches the prompts, however many decisions the task 
   assert.equal(owner.decide({ config: 'auto' }, { category: 'config', question: 'empty the customer profiles', consequences: '' }), 'ask');
 });
 
+test('a window park after the claim keeps the worktree check, and the conflict re-asks the request that was being resumed', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    e.active.ownerDecisions = [{ category: 'config', question: 'older authorized question', allowed: true, decisionId: 'dec_20000000', key: 'old' }];
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'refuse' });
+    f.pilot.resumeAnswered(Date.now());
+    f.pilot.state.active.parkReason = 'window'; // the work window closed after the claim
+    fs.writeFileSync(path.join(e.worktree.path, 'index.test.js'), 'changed while parked\n');
+    f.pilot.state.nextAt = 0; await f.pilot.tick();
+    const again = f.pilot.state.suspended.find((x) => x.kind === 'conflict');
+    assert.ok(again, 'the window park did not skip the check');
+    assert.match(again.request.question, /left-pad/, 'the conflict is about the request being resumed, not an older one');
+  } finally { f.cleanup(); }
+});
+
 test('a refusal is never dropped from the task, even after many later decisions', async () => {
   const f = setup();
   try {

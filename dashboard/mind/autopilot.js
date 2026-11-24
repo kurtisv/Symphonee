@@ -1399,6 +1399,7 @@ class MindAutopilot {
     // launch goes through the tick's usual gates (window, budget, peers).
     a.waitingStage = stage; a.stage = 'budget-wait'; a.parkReason = 'owner';
     a.ownerPark = a.worktree && fs.existsSync(a.worktree.path) ? this.worktreeState(a.worktree.path) : null;
+    a.ownerResuming = { key: entry.key, request: entry.request };
     this.state.nextAt = Math.min(this.state.nextAt || now, now);
     this.save();
     return this.snapshot();
@@ -1416,7 +1417,7 @@ class MindAutopilot {
   // Just before a task parked after an owner answer starts: same branch, commit and content as when it was claimed; otherwise it is set aside
   // again with a conflict question (nothing runs on a worktree that changed without the owner seeing it).
   ownerParkIntact(a, now = Date.now()) {
-    if (a.parkReason !== 'owner' || !a.ownerPark || !a.worktree) return true;
+    if (!a.ownerPark || !a.worktree) return true;
     const cur = fs.existsSync(a.worktree.path) ? this.worktreeState(a.worktree.path) : null;
     const problems = !cur ? ['le worktree n existe plus'] : [cur.branch !== a.ownerPark.branch ? 'la branche est ' + cur.branch + ' au lieu de ' + a.ownerPark.branch : '', cur.head !== a.ownerPark.head ? 'le commit a change' : '', cur.head === a.ownerPark.head && cur.fingerprint !== a.ownerPark.fingerprint ? 'des fichiers ont change' : ''].filter(Boolean);
     if (!problems.length) return true;
@@ -1425,11 +1426,11 @@ class MindAutopilot {
       options: [{ id: 'resume', label: 'Reprendre (reposer la question)' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + id,
       meta: { pilot: this.id, pilotLabel: this.def.label, task: (a.plan && a.plan.title) || '', stage: a.waitingStage, category: 'other', suspendedId: id, kind: 'conflict' } });
     if (c.error) throw new Error('The owner question could not be recorded (' + c.error + ')');
-    const last = (a.ownerDecisions || []).slice(-1)[0] || {};
+    const last = a.ownerResuming || {};
     this.unlinkActive(a); a.links = [];
-    const stage = a.waitingStage; a.waitingStage = null; a.parkReason = null; a.ownerPark = null;
+    const stage = a.waitingStage; a.waitingStage = null; a.parkReason = null; a.ownerPark = null; a.ownerResuming = null;
     this.state.suspended = [...(this.state.suspended || []), { id, decisionId: c.decision.id, key: last.key || null, kind: 'conflict', problems,
-      request: { category: last.category || 'other', question: last.question || 'Reprise de la tache', consequences: '' }, stage, at: new Date(now).toISOString(), status: 'waiting', files: [],
+      request: last.request || { category: 'other', question: 'Reprise de la tache', consequences: '' }, stage, at: new Date(now).toISOString(), status: 'waiting', files: [],
       worktree: cur ? { path: a.worktree.path, branch: cur.branch, head: cur.head, fingerprint: cur.fingerprint } : null, mainBase: this.ownerBase(), active: JSON.parse(JSON.stringify(a)) }];
     this.state.active = null;
     this.log('owner', 'Le worktree a change avant la reprise (' + problems.join('; ') + ') : tache remise de cote, question ' + c.decision.id);
@@ -2501,6 +2502,8 @@ class MindAutopilot {
       } else {
         const a = this.state.active;
         if (a.waitingStage) {
+          // After an owner answer: the worktree must still be the one the owner saw, checked before ANY other gate (a window park keeps the snapshot).
+          if (!this.ownerParkIntact(a, now)) return this.snapshot();
           // A parked stage is another launch, including local verification.
           // Wait while any peer retains a potentially active handoff.
           if (this.blockedByPeer()) return this.snapshot();
@@ -2518,8 +2521,7 @@ class MindAutopilot {
             }
             a.localSuggestion = null;
           }
-          if (!this.ownerParkIntact(a, now)) return this.snapshot();
-          a.parkReason = null; a.ownerPark = null;
+          a.parkReason = null; a.ownerPark = null; a.ownerResuming = null;
           if (a.waitingStage === 'verify') { a.waitingStage = null; this.startVerify(); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
           return this.snapshot();
