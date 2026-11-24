@@ -71,9 +71,10 @@ test('coach used up: the verified solution is handed to Qwen (not a takeover), o
   const r = repo();
   try {
     vs.add(r.root, solution(r));
-    const a = active(r, { qwenCoached: 1 });
+    const a = active(r, { qwenCoached: 1, qwenSessionId: 'worn-out-session' });
     const p = pilot(r, a);
     assert.equal(p.qwenStopped(a, blocked, Date.now()), true);
+    assert.equal(a.qwenSessionId, null, 'the relayed attempt starts a fresh Qwen session');
     assert.deepEqual(p.calls.map((c) => c.stage), ['implement'], 'no work yet: Qwen implements again');
     assert.equal(a.qwenFailed, undefined); assert.equal(a.implementer, 'qwen');
     assert.equal(a.relayedSolution, 'flush-race'); assert.equal(a.qwenCoachGrant, true);
