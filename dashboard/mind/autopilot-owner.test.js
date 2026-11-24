@@ -335,6 +335,36 @@ test('a lost CONFLICT question comes back with its own choices (Reprendre / Arch
   } finally { f.cleanup(); }
 });
 
+test('a refusal followed by a worktree change is never lost: resuming applies the refusal as it was', async () => {
+  const f = setup({ refuseThenNoChange: true });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0], first = e.decisionId;
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'refuse' });
+    fs.writeFileSync(path.join(e.worktree.path, 'index.test.js'), 'changed while waiting\n');
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(e.kind, 'conflict');
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'resume' });
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    const a = f.pilot.state.active;
+    assert.ok(a && a.ownerRefused.length === 1, 'the refusal reached the task');
+    assert.ok(a.ownerDecisions.some((x) => x.decisionId === first && !x.allowed));
+  } finally { f.cleanup(); }
+});
+
+test('an automatic answer that cannot be written goes to the owner (the task is suspended, not resumed as refused)', async () => {
+  const f = setup({ def: { decisionPolicy: { dependency: 'auto' } } });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    const store = f.pilot.decisionStore(), orig = store.answer.bind(store);
+    store.answer = (id, b) => (b && b.by === 'policy' ? { error: 'disk full', code: 500 } : orig(id, b));
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    assert.equal(f.pilot.state.suspended.length, 1);
+    assert.equal(store.get(f.pilot.state.suspended[0].decisionId).status, 'pending');
+  } finally { f.cleanup(); }
+});
+
 test('a refusal is never dropped from the task, even after many later decisions', async () => {
   const f = setup();
   try {

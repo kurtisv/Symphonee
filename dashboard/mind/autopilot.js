@@ -1367,10 +1367,13 @@ class MindAutopilot {
       worktree: a.worktree && fs.existsSync(a.worktree.path) ? { path: a.worktree.path, branch: a.worktree.branch || null, head: git(a.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(a.worktree.path) } : null,
       mainBase: this.ownerBase(), active: null };
     if (owner.decide(this.def.decisionPolicy, req) === 'auto') {
-      store.answer(d.id, { choice: 'allow', text: 'Politique automatique du proprietaire pour la categorie ' + req.category, by: 'policy' });
-      this.log('owner', 'Autorisation donnee par ta politique (' + req.category + ') : ' + req.question.slice(0, 120));
-      entry.active = a;
-      return this.applyOwnerAnswer(entry, store.get(d.id), now);
+      const auto = store.answer(d.id, { choice: 'allow', text: 'Politique automatique du proprietaire pour la categorie ' + req.category, by: 'policy' });
+      if (!auto.error) {
+        this.log('owner', 'Autorisation donnee par ta politique (' + req.category + ') : ' + req.question.slice(0, 120));
+        entry.active = a;
+        return this.applyOwnerAnswer(entry, store.get(d.id), now);
+      }
+      this.log('owner', 'La reponse automatique n a pas pu etre enregistree (' + auto.error + ') : la question t est posee');
     }
     this.unlinkActive(a); a.links = [];
     a.taskId = null; a.budgetRef = null; a.waitingStage = null;
@@ -1390,6 +1393,7 @@ class MindAutopilot {
     const refused = !owner.isAllowed(d);
     a.ownerAsks = a.ownerAsks || {}; a.ownerAsks[entry.key] = { ...(a.ownerAsks[entry.key] || {}), answered: refused ? 'refused' : 'allowed' };
     if (refused) a.ownerRefused = [...new Set([...(a.ownerRefused || []), entry.key])];
+    else a.ownerRefused = (a.ownerRefused || []).filter((k) => k !== entry.key);
     a.ownerDecisions = [...(a.ownerDecisions || []), { decisionId: d.id, key: entry.key, category: entry.request.category, question: entry.request.question, status: d.status, answer: d.answer || null, allowed: !refused, at: new Date(now).toISOString() }];
     // Every refusal is kept for the life of the task (it must reach every later prompt); only the authorizations are bounded.
     a.ownerDecisions = [...a.ownerDecisions.filter((x) => !x.allowed), ...a.ownerDecisions.filter((x) => x.allowed).slice(-20)];
@@ -1512,12 +1516,20 @@ class MindAutopilot {
         this.complete('abandoned-by-owner', 'The worktree changed while the task waited; the owner archived it');
         return true;
       }
+      if (e.priorAnswer && !owner.isAllowed(e.priorAnswer)) {
+        // The owner had REFUSED and now resumes: the refusal is applied as it was (it authorizes nothing), on the worktree as it is now.
+        const refusal = e.priorAnswer;
+        this.state.suspended = list.filter((x) => x !== e);
+        this.state.suspendedLog = [...(this.state.suspendedLog || []), { id: e.id, decisionId: refusal.id, task: e.active && e.active.plan && e.active.plan.title, question: e.request.question, status: 'refused', by: refusal.answer ? refusal.answer.by : null, at: new Date(now).toISOString() }].slice(-40);
+        this.applyOwnerAnswer(e, refusal, now);
+        return true;
+      }
       e.worktree = e.worktree && fs.existsSync(e.worktree.path) ? { ...e.worktree, branch: (() => { try { return git(e.worktree.path, ['rev-parse', '--abbrev-ref', 'HEAD']); } catch (_) { return e.worktree.branch; } })(), head: git(e.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(e.worktree.path) } : e.worktree;
       const again = this.decisionStore().create({ title: (this.def.label || this.id) + ' : ' + e.request.question.slice(0, 180), body: 'Question posee a nouveau : le worktree a change pendant l attente, ta premiere reponse ne couvre pas ce nouvel etat.\n\n' + e.request.question + (e.request.consequences ? '\n\nConsequences : ' + e.request.consequences : ''),
         options: [{ id: 'allow', label: 'Autoriser' }, { id: 'refuse', label: 'Refuser' }], allowText: true, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
         meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, consequences: e.request.consequences, suspendedId: e.id, kind: 'autopilot' } });
       if (again.error) return false;
-      e.decisionId = again.decision.id; e.kind = 'request'; e.problems = null; e.firstDecisionId = null; e.answer = null;
+      e.decisionId = again.decision.id; e.kind = 'request'; e.problems = null; e.firstDecisionId = null; e.answer = null; e.priorAnswer = null;
       this.log('owner', 'Worktree accepte dans son nouvel etat : la question est reposee (' + again.decision.id + ')');
       this.save();
       return false;
@@ -1538,7 +1550,7 @@ class MindAutopilot {
         options: [{ id: 'resume', label: 'Reprendre quand meme' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
         meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, suspendedId: e.id, kind: 'conflict' } });
       if (c.error) return false;
-      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null;
+      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.priorAnswer = e.priorAnswer || d; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null;
       this.log('owner', 'La tache en attente ne reprend pas : ' + problems.join('; ') + '. Nouvelle question ' + c.decision.id);
       this.save();
       return false;
@@ -2541,6 +2553,7 @@ class MindAutopilot {
           const localVerify = a.waitingStage === 'verify';
           if (now < this.state.nextAt || (!localVerify && !heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
           if (localVerify && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow('verify', now);
+          if (a.ownerMainBase && a.waitingStage === 'code-review' && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow('code-review', now);
           if (a.localSuggestion) {
             const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
             if (!fallback.localResumeReady(readings, now, a.localSuggestion.at) || !this.orch.providerHealth?.isAvailable('codex')) {
