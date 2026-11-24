@@ -262,10 +262,18 @@ test('after a coach, the repair stage splits the wrapper: guidance in its own fi
   } finally { r.cleanup(); }
 });
 
-test('the coach prompt asks for mechanical, decided steps and insists on the behaviour test file (replay of 2026-11-24 with the real coach)', () => {
+test('the coach prompt (the one the dispatch sends) asks for mechanical, decided steps and insists on the behaviour test IN THE ANSWER', () => {
+  const { COACH_PROMPT } = require('./autopilot');
+  assert.equal(typeof COACH_PROMPT, 'string');
+  assert.match(COACH_PROMPT, /3\. FIX: a numbered list of at most 8 MECHANICAL steps that Qwen executes literally/);
+  assert.match(COACH_PROMPT, /DECIDE: give ONE way, verified against the code\. No alternatives/);
+  assert.match(COACH_PROMPT, /You MUST provide this file IN YOUR ANSWER \(you are read-only: never create it on disk\)/);
+  assert.match(COACH_PROMPT, /when there are none, write it with the runner the repository already uses/);
+  assert.match(COACH_PROMPT, /Never answer that you do not provide a test/);
+  assert.match(COACH_PROMPT, /at most 40 lines for items 1 to 6; the test file of item 7 comes in addition/);
+  // the dispatch sends THIS constant (not a copy)
   const src = fs.readFileSync(path.join(__dirname, 'autopilot.js'), 'utf8');
-  assert.match(src, /3\. FIX: a numbered list of at most 8 MECHANICAL steps that Qwen executes literally/);
-  assert.match(src, /DECIDE: give ONE way, verified against the code\. No alternatives/);
-  assert.match(src, /You MUST provide this file: first read one existing test of the same module and the jest\/test setup file/);
-  assert.match(src, /Never answer that you do not provide a test/);
+  assert.match(src, /prompt: \[repoPin\(cwd, this\.state\.repoPath\), COACH_PROMPT, /);
+  // no new cap on Claude: nothing here limits tokens, calls or repairs
+  assert.doesNotMatch(COACH_PROMPT, /token|budget|at most \d+ (calls|repairs|attempts)/i);
 });
