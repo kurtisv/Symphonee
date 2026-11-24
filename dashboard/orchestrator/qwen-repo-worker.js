@@ -26,6 +26,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const cp = require('node:child_process');
 const symbols = require('./qwen-symbols');
+const behaviorLint = (cwd, base, cfg) => { try { return require('../mind/behavior-gate').lint(cwd, base, cfg); } catch { return []; } }; // a failure of the gate never blocks a finished task
 
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({
@@ -593,7 +594,10 @@ async function runRepoWorker(opts) {
       const v = ran && ranResult && s.lastDiffHash === diffHash(ctx) ? ranResult : null;
       let check = v;
       if (!check) { const r = await runVerify(ctx.worktree, opts.verify || []); check = { ok: r.ok, results: r.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, errors: x.errors, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() }; s.runs.push(check); s.lastDiffHash = diffHash(ctx); }
-      if (check.ok) return finish('completed', clip(claimedDone, 500), { verified: check });
+      // The checks are green. Without a test that reproduces the problem the task is not finished (replay 9: tsc green, behaviour wrong).
+      const bf = check.ok && opts.behavior && opts.behavior.required ? behaviorLint(ctx.worktree, ctx.base, opts.behavior) : [];
+      if (check.ok && !bf.length) return finish('completed', clip(claimedDone, 500), { verified: check });
+      if (check.ok) { lastObs = 'DONE refused: ' + bf[0]; s.observations.push(lastObs); saveSession(opts.sessionFile, s); continue; }
       lastObs = 'DONE refused: the host verification FAILED at ' + (check.results.find((x) => !x.ok) || {}).name + ':\n' + ((check.results.find((x) => !x.ok) || {}).tail || '').slice(-1800);
       s.observations.push(lastObs); const sig = failureSig(check.results); s.sameSigStreak = sig === s.lastRunSig && !sawProgress(s, check.results) ? s.sameSigStreak + 1 : 1; s.lastRunSig = sig;
     }

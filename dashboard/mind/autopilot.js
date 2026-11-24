@@ -14,6 +14,7 @@ const localBrief = require('./local-brief');
 const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
+const behaviorGate = require('./behavior-gate');
 const tq = require('./qwen-teaching');
 const freellmTeacher = require('./freellm-teacher');
 const applicability = require('./lesson-applicability');
@@ -494,6 +495,8 @@ class MindAutopilot {
     this.def = { label: String(def.label || (this.id === 'default' ? 'Principale' : this.id)).slice(0, 60), profile,
       verify: guard.validCommands(def.verify || []),
       linkDirs: (def.linkDirs || []).map(String).slice(0, 8),
+      // Behaviour gate (see behavior-gate.js): a source change needs a test that fails on the old code and passes on the change.
+      behavior: behaviorGate.normalize(def.behavior),
       protectedPaths: (def.protectedPaths || []).map(String).slice(0, 60),
       // Repository-specific process rules (risk levels, design sheets, lot
       // files...), injected into every stage so the loop follows them.
@@ -1306,7 +1309,7 @@ class MindAutopilot {
       repair ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + String(a.review || '').slice(0, 3500) : '',
       !repair && a.coachGuidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it:\n' + String(a.coachGuidance).slice(0, 3000) : '',
       'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
-    return this.orch.spawnQwenInWorktree({ from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
+    return this.orch.spawnQwenInWorktree({ behavior: this.def.behavior, from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
       existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
       memoryText: this.qwenRealMemory(q).text, sessionFile, deadlineAt,
       // Linked before the first RUN so the repository's own checks can find their dependencies.
@@ -1949,14 +1952,21 @@ class MindAutopilot {
     // Every check of this gate (proof runs, checks, retries) scans for secrets as it starts (see secretMask).
     const runV = (dir, cmds, o = {}) => guard.runVerify(dir, cmds, { ...o, beforeEach: () => { if (mask && mask.observe) { try { mask.observe(); } catch (_) {} } } });
     Promise.resolve().then(async () => {
-      const lint = guard.diffLint(cwd, base);
+      const lint = [...guard.diffLint(cwd, base), ...behaviorGate.lint(cwd, base, this.def.behavior)];
       if (lint.length) return { ok: false, results: [], lint };
       if (!this.def.verify.length) return { ok: true, results: [], lint: [] };
       const onStart = (proc, c) => {
         this._verifyProc = proc;
         if (this.state.active === a && a.verify) { a.verify.current = c.name; try { this.save(); } catch (_) {} }
       };
-      return { ...(await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) })), lint: [] };
+      let vr = await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) });
+      // The checks are green: the tests of the change must also FAIL on the old code (red) and pass on the new (green).
+      if (vr.ok && this.def.behavior.required && this.def.behavior.testCmd.length) {
+        const rg = await behaviorGate.redGreen({ cwd, base, config: this.def.behavior, linkFrom: this.state.repoPath });
+        this.log('verify', rg.skipped ? 'Behaviour gate skipped: ' + rg.message : 'Behaviour gate ' + (rg.ok ? 'PASSED' : 'FAILED') + ': ' + String(rg.message).replace(/\s+/g, ' ').slice(0, 200));
+        if (!rg.ok) vr = { ...vr, ok: false, results: [...(vr.results || []), { name: 'behavior-red-green', ok: false, code: 1, ms: rg.ms || 0, timedOut: false, errors: 0, tail: String(rg.message).slice(-6000) }] };
+      }
+      return { ...vr, lint: [] };
     }).catch(e => ({ ok: false, results: [{ name: 'verification', ok: false, code: -1, ms: 0, timedOut: false, tail: String(e.message || e) }], lint: [] }))
       .then((r) => {
         // The single masking point. Without a mask (scan module failed to load) nothing but the counts goes on.
@@ -2012,11 +2022,12 @@ class MindAutopilot {
       return this.dispatch('code-review');
     }
     const failed = v.results.find(r => !r.ok);
-    const why = v.lint.length ? 'The diff weakens verification:\n- ' + v.lint.join('\n- ')
+    const noTest = v.lint.length && v.lint.every((x) => /^BEHAVIOUR TEST/.test(x));
+    const why = v.lint.length ? (noTest ? 'The change has no behaviour test:\n- ' : 'The diff weakens verification:\n- ') + v.lint.join('\n- ')
       : 'Check "' + failed.name + '" failed' + (failed.timedOut ? ' (timed out)' : ' (exit ' + failed.code + ')') + '. Output tail:\n' + failed.tail;
     this.trace('verify', { ok: false, failed: v.lint.length ? 'lint' : failed.name, detail: String(v.lint.length ? v.lint.join('; ') : failed.tail).replace(/\s+/g, ' ').slice(-300) });
     this.log('verify', 'Local verification FAILED: ' + (v.lint.length ? v.lint.join('; ') : failed.name));
-    this.learn('verification', v.lint.length ? 'Le diff affaiblissait la verification : ' + v.lint.join('; ')
+    this.learn('verification', v.lint.length ? (noTest ? 'Un changement de code sans test de comportement (un test qui echoue avant et passe apres) est refuse : ' : 'Le diff affaiblissait la verification : ') + v.lint.join('; ')
       : 'La verification locale "' + failed.name + '" echouait apres la modification : la lancer avant de terminer.', 'verification locale : ' + (a.plan?.title || ''));
     a.review = 'LOCAL VERIFICATION FAILED (run by Symphonee, not by a reviewer).\n' + why; a.repairs++;
     if (a.repairs > this.limits.repairs) return this.complete('verify-failed', why);

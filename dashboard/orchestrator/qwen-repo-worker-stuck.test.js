@@ -695,3 +695,30 @@ test('teacher: a file Qwen created (not in git diff) is part of the hand-over ev
   assert.match(String(out.teach), /visible-line/);
   assert.doesNotMatch(String(out.teach), /Zq7Xk29LmN4pRtW8/);
 });
+
+test('behaviour gate: DONE is refused while a source change has no test, and accepted once a test file comes with it', async () => {
+  const r = repo();
+  fs.mkdirSync(path.join(r.dir, 'src'));
+  fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a }\nmodule.exports = { add }\n');
+  const g = (...a) => cp.spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: r.dir, encoding: 'utf8' });
+  g('add', '.'); g('commit', '-qm', 'src'); r.base = g('rev-parse', 'HEAD').stdout.trim();
+  const edit = 'EDIT src/add.js\n<<<<<<< SEARCH\nfunction add(a, b) { return a }\n=======\nfunction add(a, b) { return a + b }\n>>>>>>> REPLACE\nRUN\nDONE fixed';
+  const test = 'CREATE src/add.test.js\n<<<<<<< CONTENT\nconst t = require("node:test");\nt("adds", () => {});\n>>>>>>> END\nRUN\nDONE fixed with a test';
+  const lm = fakeLm([edit, test, 'STUCK x']);
+  const out = await run(r, lm, { behavior: { required: true, sourceDirs: ['src/'] },
+    dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
+  assert.equal(out.state, 'completed');
+  assert.match(lm.prompts[1], /DONE refused: BEHAVIOUR TEST REQUIRED: you changed src\/add\.js but no test file/);
+  assert.doesNotMatch(lm.prompts[2] || '', /BEHAVIOUR TEST REQUIRED/, 'once the test file exists the refusal is gone');
+});
+
+test('behaviour gate: without the option (or with required false) DONE is accepted as before', async () => {
+  const r = repo();
+  fs.mkdirSync(path.join(r.dir, 'src'));
+  fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a }\n');
+  const g = (...a) => cp.spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: r.dir, encoding: 'utf8' });
+  g('add', '.'); g('commit', '-qm', 'src'); r.base = g('rev-parse', 'HEAD').stdout.trim();
+  const lm = fakeLm(['EDIT src/add.js\n<<<<<<< SEARCH\nfunction add(a, b) { return a }\n=======\nfunction add(a, b) { return a + b }\n>>>>>>> REPLACE\nRUN\nDONE fixed']);
+  const out = await run(r, lm, { dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
+  assert.equal(out.state, 'completed');
+});
