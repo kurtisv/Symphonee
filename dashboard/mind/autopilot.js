@@ -2275,7 +2275,8 @@ function mountMindAutopilot(addRoute, json, deps) {
   };
   const fromQuery = (req) => { try { return new URL(req.url, 'http://x').searchParams.get('pilot') || 'default'; } catch (_) { return 'default'; } };
   const list = () => peers().map(p => { const s = p.snapshot(); return { pilot: s.pilot, label: s.label, profile: s.profile,
-    profileLabel: s.profileLabel, status: s.status, repoName: s.repoName, today: s.today, limits: s.limits }; });
+    profileLabel: s.profileLabel, status: s.status, repoName: s.repoName, today: s.today, limits: s.limits,
+    behavior: { required: !!(p.def.behavior && p.def.behavior.required), invalid: (p.def.behavior && p.def.behavior.invalid) || [], fingerprint: behaviorGate.fingerprint(p.def.behavior) } }; });
   const route = (fn) => async (req, res) => {
     let p = null;
     try {
@@ -2291,7 +2292,7 @@ function mountMindAutopilot(addRoute, json, deps) {
     if (p.state.enabled || p.state.active) throw new Error('Stop and archive this pilot before changing fallback permissions');
     const settings = fallback.profile(body.fallback);
     if (settings.enabled && (!settings.maxCalls || !settings.tokenCeiling || (settings.provider === 'ollama-mind' ? !settings.localConsent : !settings.cloudConsent || !settings.worktreeWritesConsent))) throw new Error('Qwen provider consent and positive ceilings are required');
-    const all = readDefs(); all[p.id] = { ...p.def, fallback: settings };
+    const all = readDefs(); all[p.id] = { ...(all[p.id] || p.def), fallback: settings }; // the disk is the truth (an activation script may have changed the gate since this process started)
     fs.mkdirSync(path.dirname(defsFile), { recursive: true });
     const tmp = defsFile + '.tmp-' + process.pid;
     fs.writeFileSync(tmp, JSON.stringify({ pilots: all }, null, 2)); fs.renameSync(tmp, defsFile);
@@ -2313,11 +2314,15 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null, fallback: body.fallback || {},
-        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null };
+        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null, behavior: body.behavior };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
+      // ONE read of the disk decides the gate that is kept (for the live pilot AND for the file written below). A form that does not know the
+      // gate must not erase it: the value on disk wins (an activation script may have changed it since this process started), else the one in memory.
+      const all = readDefs();
+      if (body.behavior === undefined) def.behavior = all[id] ? all[id].behavior : existing ? existing.def.behavior : undefined;
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
-      const all = readDefs(); all[id] = pilots.get(id).def;
+      all[id] = pilots.get(id).def;
       fs.mkdirSync(path.dirname(defsFile), { recursive: true });
       const tmp = defsFile + '.tmp-' + process.pid;
       fs.writeFileSync(tmp, JSON.stringify({ pilots: all }, null, 2)); fs.renameSync(tmp, defsFile);
