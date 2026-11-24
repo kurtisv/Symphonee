@@ -1243,8 +1243,14 @@ class MindAutopilot {
   settleSolutions(a, outcome) {
     if (!a || !a.plan || this.qwenFixture) return;
     try {
-      if (a.relayedSolution) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, outcome);
-      if (outcome !== 'completed' || !a.commit || a.implementer !== 'claude-after-qwen' || !a.verify || !a.verify.ok || !a.worktree) return;
+      // Only what Qwen did with the relayed solution counts: confirmed when Qwen itself finished; failed when Claude had to take over after it or the gates rejected it
+      // (an environment or budget stop says nothing about the solution).
+      if (a.relayedSolution) {
+        if (outcome === 'completed' && a.implementer === 'qwen') verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'completed');
+        else if (a.implementer === 'claude-after-qwen' || ['review-rejected', 'verify-failed'].includes(outcome)) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'failed');
+      }
+      // Kept only when the behaviour gate (test red on the base, green on the change) is required for this pilot and the checks passed: otherwise "verified" would be a claim.
+      if (outcome !== 'completed' || !a.commit || a.implementer !== 'claude-after-qwen' || !a.verify || !a.verify.ok || !a.worktree || !(this.def.behavior && this.def.behavior.required)) return;
       const proof = [...a.verify.results.map((r) => 'check ' + r.name), ...(this.def.behavior && this.def.behavior.required ? ['behaviour test red then green'] : []), 'independent review PASS', 'commit ' + String(a.commit).slice(0, 10)];
       const made = verifiedSolutions.fromCommit({ repoPath: a.worktree.path, baseSha: a.baseSha, commit: a.commit, plan: a.plan, scope: this.lessonScope(), proof, createdBy: 'autopilot' });
       if (!made.ok) { this.log('lesson', 'Correction not kept as a verified solution: ' + made.reason); return; }
