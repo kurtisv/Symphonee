@@ -53,7 +53,7 @@ function setup({ askOn = 'implement', category = 'dependency', def = {}, secondP
       else if (/corrective implementer/.test(prompt)) {
         rec.stage = 'repair';
         rec.sawDecision = /OWNER DECISION dec_[0-9a-f]{8} for exactly this request/.test(prompt);
-        rec.sawRefusal = /The owner REFUSED/.test(prompt);
+        rec.sawRefusal = /The owner did NOT authorize it/.test(prompt);
         if (rec.sawRefusal && refuseThenNoChange) out = cj('NO_CHANGE: refused by the owner');
         else { fs.appendFileSync(path.join(opts.cwd, 'index.test.js'), '// with the owner answer\n'); out = cj('repaired'); }
       }
@@ -224,6 +224,39 @@ test('policy: a low-risk category set to automatic is answered by the policy (re
   } finally { f.cleanup(); }
   assert.equal(owner.decide({ dependency: 'auto' }, { category: 'dependency', question: 'add a package that reads the .env file', consequences: '' }), 'ask', 'a sensitive question is never automatic');
   assert.equal(owner.decide({ pleinsens: 'auto' }, { category: 'pleinsens', question: 'x', consequences: '' }), 'ask');
+});
+
+test('a text without the Autoriser button never authorizes ("Non" typed alone is not an accord)', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    assert.equal(f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, text: 'Non' }).ok, true);
+    await drive(f.pilot, () => f.spawns.some((x) => x.task === 'A' && x.stage === 'repair'));
+    const rep = f.spawns.find((x) => x.task === 'A' && x.stage === 'repair');
+    assert.ok(rep.sawRefusal, 'treated as not authorized'); assert.match(rep.prompt, /NOT AUTHORIZED/); assert.match(rep.prompt, /the owner wrote: "Non"/);
+    assert.equal(f.pilot.state.suspendedLog[0].status, 'refused');
+  } finally { f.cleanup(); }
+});
+
+test('the owner decision reaches the later reviewers too (code review prompt), and a lost write is never reported as recorded', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    const store = f.pilot.decisionStore();
+    const blocked = path.join(f.root, '.symphonee', 'decisions.json');
+    fs.rmSync(blocked, { force: true }); fs.mkdirSync(blocked); // the file cannot be written (a folder is in the way)
+    const r = f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    assert.equal(r.ok, false); assert.equal(r.code, 'NOT_SAVED'); assert.equal(store.get(e.decisionId).status, 'pending', 'nothing recorded');
+    fs.rmSync(blocked, { recursive: true, force: true });
+    assert.equal(f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' }).ok, true);
+    await drive(f.pilot, () => f.pilot.state.history.some((h) => /Task A/.test(h.title)));
+    const cr = f.spawns.filter((x) => x.task === 'A' && x.stage === 'code-review').pop();
+    assert.match(cr.prompt, /OWNER DECISIONS FOR THIS TASK/); assert.match(cr.prompt, /AUTHORIZED/);
+  } finally { f.cleanup(); }
 });
 
 test('an authorization is bound to its operation: the same task asking for ANOTHER operation gets a new question', () => {

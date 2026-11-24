@@ -77,13 +77,14 @@ function createStore({ file, now = Date.now, newId = () => 'dec_' + crypto.rando
     const open = items.filter((d) => d.status === 'pending');
     const done = items.filter((d) => d.status !== 'pending').sort((a, b) => (b.answeredAt || b.createdAt) - (a.answeredAt || a.createdAt)).slice(0, LIMITS.keep);
     items = open.concat(done).sort((a, b) => a.createdAt - b.createdAt);
-    if (!file) return;
+    if (!file) return true;
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const tmp = file + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(items, null, 2));
       fs.renameSync(tmp, file);
-    } catch (_) { /* a failed write never breaks the answer in memory */ }
+      return true;
+    } catch (_) { return false; } // the caller undoes the change and reports it: an answer is never "recorded" when it is not on disk
   }
   load();
 
@@ -95,7 +96,8 @@ function createStore({ file, now = Date.now, newId = () => 'dec_' + crypto.rando
       let id = newId();
       while (items.some((d) => d.id === id)) id = newId();
       const d = Object.assign({ id, status: 'pending', createdAt: now(), answeredAt: null, answer: null, notified: null }, n.value);
-      items.push(d); save();
+      items.push(d);
+      if (!save()) { items = items.filter((x) => x !== d); return { error: 'the decision could not be written to disk', code: 500 }; }
       return { decision: d };
     },
     list() {
@@ -117,7 +119,7 @@ function createStore({ file, now = Date.now, newId = () => 'dec_' + crypto.rando
       // Who answered (the page, the phone, or a policy the owner set): recorded, never used to decide.
       const by = ['ui', 'phone', 'bureau', 'policy'].includes(b.by) ? b.by : 'ui';
       d.status = 'answered'; d.answeredAt = now(); d.answer = { choice, text: text || null, by };
-      save();
+      if (!save()) { d.status = 'pending'; d.answeredAt = null; d.answer = null; return { error: 'the answer could not be written to disk; nothing was recorded, try again', code: 500 }; }
       return { decision: d };
     },
     dismiss(id) {
@@ -125,7 +127,7 @@ function createStore({ file, now = Date.now, newId = () => 'dec_' + crypto.rando
       if (!d) return { error: 'decision not found', code: 404 };
       if (d.status !== 'pending') return { error: 'decision is already ' + d.status, code: 409 };
       d.status = 'dismissed'; d.answeredAt = now();
-      save();
+      if (!save()) { d.status = 'pending'; d.answeredAt = null; return { error: 'the decision could not be written to disk', code: 500 }; }
       return { decision: d };
     },
     markNotified(id, ok) { const d = this.get(id); if (d) { d.notified = !!ok; save(); } },

@@ -15,8 +15,8 @@ export function decisionCard(it, esc, busy) {
   const open = it.status === 'waiting' || it.status === 'conflict';
   const buttons = open ? (it.options || []).map((o) => '<button class="tab-bar-btn' + (o.id === 'allow' || o.id === 'resume' ? ' ap-primary' : o.id === 'refuse' || o.id === 'abandon' ? ' ap-danger' : '') + '"' + ids
     + ' data-choice="' + esc(o.id) + '" onclick="MindAutopilot.answerDecision(this)" ' + (busy ? 'disabled' : '') + '>' + esc(o.label) + '</button>').join(' ') : '';
-  const text = open && it.allowText ? '<label class="ap-form" style="margin-top:8px;">Reponse personnalisee (facultative)<textarea id="apDecText-' + esc(it.suspendedId) + '" maxlength="1000" placeholder="Precise ta reponse, ou donne une condition"></textarea></label>'
-    + '<button class="tab-bar-btn"' + ids + ' data-choice="" onclick="MindAutopilot.answerDecision(this)" ' + (busy ? 'disabled' : '') + '>Envoyer seulement le texte</button>' : '';
+  const text = open && it.allowText ? '<label class="ap-form" style="margin-top:8px;">Reponse personnalisee (facultative)<textarea id="apDecText-' + esc(it.suspendedId) + '" maxlength="1000" placeholder="Precise ta reponse ou une condition. Seul le bouton Autoriser autorise."></textarea></label>'
+    + '<button class="tab-bar-btn"' + ids + ' data-choice="" onclick="MindAutopilot.answerDecision(this)" ' + (busy ? 'disabled' : '') + '>Envoyer le texte (sans autoriser)</button>' : '';
   return '<article class="ap-card ap-decision" aria-label="Decision ' + esc(it.decisionId) + '">'
     + '<div class="ap-status"><span class="ap-dot" style="background:' + st.tone + '"></span><b>' + esc(it.pilotLabel || it.pilot) + '</b><span class="ap-tag">' + esc(it.categoryLabel || it.category) + '</span><span class="ap-muted">' + esc(st.label) + '</span></div>'
     + '<div class="ap-note">Tache : <b>' + esc(it.task || '-') + '</b> (etape ' + esc(it.stage || '-') + ', en attente depuis ' + esc(it.at ? new Date(it.at).toLocaleString('fr-CA') : '-') + ')</div>'

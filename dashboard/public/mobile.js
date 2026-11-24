@@ -304,7 +304,7 @@
       b.onclick = function () { send(o.id); };
       bar.appendChild(b);
     });
-    if (it.allowText) { var bt = h('button', 'btn', 'Envoyer le texte'); bt.onclick = function () { send(null); }; bar.appendChild(bt); }
+    if (it.allowText) { var bt = h('button', 'btn', 'Envoyer le texte (sans autoriser)'); bt.onclick = function () { send(null); }; bar.appendChild(bt); }
     d.appendChild(bar); d.appendChild(msg);
     function send(choice) {
       var t = text ? text.value.trim() : '';
