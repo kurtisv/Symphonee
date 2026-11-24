@@ -205,3 +205,11 @@ test('sourceDirs: "." means the whole repository, "./src/" means "src/", absolut
     assert.ok(gate.normalize({ ...CFG, sourceDirs: ['/abs', '../x'] }).invalid.length > 0);
   } finally { r.clean(); }
 });
+
+test('normalize is idempotent (the autopilot stores the normalised config and the gate normalises it again)', () => {
+  for (const c of [CFG, { ...CFG, sourceDirs: ['.'] }, { ...CFG, sourceDirs: ['./src/', 'api'], linkDirs: ['node_modules'] }, { required: true, sourceDirs: ['src/'], lintOnly: true }]) {
+    const once = gate.normalize(c), twice = gate.normalize(once);
+    assert.deepEqual(twice, once, JSON.stringify(c));
+    assert.deepEqual(once.invalid, []);
+  }
+});

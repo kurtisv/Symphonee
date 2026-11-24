@@ -27,7 +27,7 @@ function normalize(c) {
   const testPatterns = arr(c.testPatterns, 10).filter((s) => { try { new RegExp(s); return true; } catch { return false; } });
   const testCmd = arr(c.testCmd, 20);
   // Repository-relative prefixes: "." or "./" means the whole repository, "./src/" means "src/"; absolute paths and ".." are never valid.
-  const sourceDirs = arr(c.sourceDirs, 20).map(posix).filter((d) => !d.startsWith('/') && !/^[A-Za-z]:/.test(d) && !d.split('/').includes('..')).map((d) => (d === '.' || d === './' ? '' : d.replace(/^\.\//, '')));
+  const sourceDirs = arr(c.sourceDirs, 20).map(posix).filter((d) => !d.startsWith('/') && !/^[A-Za-z]:/.test(d) && !d.split('/').includes('..')).map((d) => (d === '.' || d === './' ? '.' : d.replace(/^\.\//, ''))); // "." (the whole repository) is kept as "." so that normalising twice gives the same result
   // A REQUIRED gate that cannot do what it promises must say so, not switch itself off: no sourceDirs means no change would ever count as
   // source, no runnable testCmd means no red/green (lint-only must be asked for explicitly with lintOnly: true).
   const invalid = [];
@@ -61,7 +61,7 @@ async function changed(cwd, base) {
 }
 function classify(ch, cfg) {
   const isTest = (f) => cfg.testPatterns.some((p) => new RegExp(p).test(f));
-  const isSource = (f) => !isTest(f) && cfg.sourceDirs.some((d) => f.startsWith(d)) && /\.[cm]?[jt]sx?$/.test(f);
+  const isSource = (f) => !isTest(f) && cfg.sourceDirs.some((d) => d === '.' || f.startsWith(d)) && /\.[cm]?[jt]sx?$/.test(f);
   return { tests: ch.files.filter(isTest), source: [...ch.files, ...ch.deleted].filter(isSource) };
 }
 const MISCONFIGURED = (cfg) => 'BEHAVIOUR GATE MISCONFIGURED (it is required but cannot verify anything): ' + cfg.invalid.join('; ') + '. Fix def.behavior in the pilot definition.';
