@@ -1250,13 +1250,19 @@ class MindAutopilot {
         if (outcome === 'completed' && a.implementer === 'qwen' && !a.claudeRepaired) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'completed');
         else if ((outcome === 'completed' && (a.implementer === 'claude-after-qwen' || a.claudeRepaired)) || ['review-rejected', 'verify-failed'].includes(outcome)) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'failed');
       }
-      // Kept only when the behaviour gate (test red on the base, green on the change) is required for this pilot and the checks passed: otherwise "verified" would be a claim.
-      if (outcome !== 'completed' || !a.commit || !(a.implementer === 'claude-after-qwen' || a.claudeRepaired) || !a.verify || !a.verify.ok || !a.worktree || !(this.def.behavior && this.def.behavior.required && !this.def.behavior.lintOnly)) return;
-      const proof = [...a.verify.results.map((r) => 'check ' + r.name), ...(this.def.behavior && this.def.behavior.required ? ['behaviour test red then green'] : []), 'independent review PASS', 'commit ' + String(a.commit).slice(0, 10)];
-      const made = verifiedSolutions.fromCommit({ repoPath: a.worktree.path, baseSha: a.baseSha, commit: a.commit, plan: a.plan, scope: this.lessonScope(), proof, createdBy: 'autopilot', sourceDirs: this.def.behavior.sourceDirs || [] });
-      if (!made.ok) { this.log('lesson', 'Correction not kept as a verified solution: ' + made.reason); return; }
-      verifiedSolutions.add(this.repoRoot, made.solution);
-      this.log('lesson', 'Verified solution kept for the next time: ' + made.solution.id + ' (' + made.solution.files.join(', ') + ')');
+      // Kept only when the behaviour gate (test red on the base, green on the change) is required AND really runs the tests for this pilot, the checks passed, and the gate's OWN
+      // classification of the committed change finds a source file and a test (never a second classifier: a skipped gate proves nothing). Returns a promise (the gate reads git asynchronously).
+      const cfg = behaviorGate.normalize(this.def.behavior);
+      if (outcome !== 'completed' || !a.commit || !(a.implementer === 'claude-after-qwen' || a.claudeRepaired) || !a.verify || !a.verify.ok || !a.worktree || !cfg.required || cfg.lintOnly || cfg.invalid.length) return Promise.resolve();
+      const wt = a.worktree.path, base = a.baseSha, commit = a.commit, plan = a.plan, checks = a.verify.results.map((r) => 'check ' + r.name);
+      return behaviorGate.changed(wt, base).then((ch) => {
+        if (!ch) { this.log('lesson', 'Correction not kept as a verified solution: git could not say what changed'); return; }
+        const proof = [...checks, 'behaviour test red then green', 'independent review PASS', 'commit ' + String(commit).slice(0, 10)];
+        const made = verifiedSolutions.fromCommit({ repoPath: wt, baseSha: base, commit, plan, scope: this.lessonScope(), proof, createdBy: 'autopilot', gate: behaviorGate.classify(ch, cfg) });
+        if (!made.ok) { this.log('lesson', 'Correction not kept as a verified solution: ' + made.reason); return; }
+        verifiedSolutions.add(this.repoRoot, made.solution);
+        this.log('lesson', 'Verified solution kept for the next time: ' + made.solution.id + ' (' + made.solution.files.join(', ') + ')');
+      }).catch((e) => { this.log('warn', 'Verified solutions: ' + String(e.message || e).slice(0, 160)); });
     } catch (e) { this.log('warn', 'Verified solutions: ' + String(e.message || e).slice(0, 160)); }
   }
   // Hands Qwen an independent solution that was already verified (see verified-solutions.js) as its guidance, once per task and only when its recorded

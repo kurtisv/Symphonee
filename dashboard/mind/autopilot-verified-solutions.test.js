@@ -9,6 +9,8 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { MindAutopilot } = require('./autopilot');
 const vs = require('./verified-solutions');
+const bg = require('./behavior-gate'); const gateOf = async (dir, base, dirs) => bg.classify(await bg.changed(dir, base), bg.normalize({ required: true, sourceDirs: dirs, testCmd: ['node', '--version', '{files}'] }));
+
 
 function repo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sym-vs-'));
@@ -26,7 +28,7 @@ const solution = (r, extra = {}) => ({ id: 'flush-race', scope: 'gas-saver', tit
 
 function pilot(r, active, qwen = { enabled: true, maxFiles: 6, maxBytes: 48000, maxRepairs: 2, maxResumes: 12, maxCoaching: 1 }) {
   const p = Object.create(MindAutopilot.prototype);
-  p.def = { qwen, protectedPaths: [], verify: [], linkDirs: [], behavior: { required: true, sourceDirs: ['.'] } };
+  p.def = { qwen, protectedPaths: [], verify: [], linkDirs: [], behavior: { required: true, sourceDirs: ['.'], testCmd: ['node', '--version', '{files}'] } };
   p.state = { active, repoPath: r.dir };
   p.repoRoot = r.root; p.lessonScope = () => 'gas-saver';
   p.calls = []; p.logs = []; p.lessons = []; p.traces = [];
@@ -39,7 +41,7 @@ function pilot(r, active, qwen = { enabled: true, maxFiles: 6, maxBytes: 48000, 
 const blocked = { cli: 'qwen3-4b-local', state: 'failed', error: 'QWEN_BLOCKED: the type has no id', execution: { notes: ['x'], strategies: ['y'] } };
 const active = (r, over = {}) => ({ stage: 'repair', plan, implementer: 'qwen', worktree: { path: r.dir }, baseSha: r.base, qwenFiles: ['a.js'], ...over });
 
-test('the store refuses a solution without proof, without files, or with an unsafe id', () => {
+test('the store refuses a solution without proof, without files, or with an unsafe id', async () => {
   const r = repo();
   try {
     assert.throws(() => vs.add(r.root, solution(r, { evidence: { proof: [] } })), /proof/);
@@ -50,7 +52,7 @@ test('the store refuses a solution without proof, without files, or with an unsa
   } finally { r.cleanup(); }
 });
 
-test('a solution applies only under its conditions: files named, the task looks like it, the file unchanged since it was verified', () => {
+test('a solution applies only under its conditions: files named, the task looks like it, the file unchanged since it was verified', async () => {
   const r = repo();
   try {
     vs.add(r.root, solution(r));
@@ -65,7 +67,7 @@ test('a solution applies only under its conditions: files named, the task looks 
   } finally { r.cleanup(); }
 });
 
-test('coach used up: the verified solution is handed to Qwen (not a takeover), once', () => {
+test('coach used up: the verified solution is handed to Qwen (not a takeover), once', async () => {
   const r = repo();
   try {
     vs.add(r.root, solution(r));
@@ -87,7 +89,7 @@ test('coach used up: the verified solution is handed to Qwen (not a takeover), o
   } finally { r.cleanup(); }
 });
 
-test('the coach comes first: with coaching left, Claude coaches and the relay waits', () => {
+test('the coach comes first: with coaching left, Claude coaches and the relay waits', async () => {
   const r = repo();
   try {
     vs.add(r.root, solution(r));
@@ -99,7 +101,7 @@ test('the coach comes first: with coaching left, Claude coaches and the relay wa
   } finally { r.cleanup(); }
 });
 
-test('no applicable solution: the takeover happens as before, and the reason is traced', () => {
+test('no applicable solution: the takeover happens as before, and the reason is traced', async () => {
   const r = repo();
   try {
     const a = active(r, { qwenCoached: 1 });
@@ -110,7 +112,7 @@ test('no applicable solution: the takeover happens as before, and the reason is 
   } finally { r.cleanup(); }
 });
 
-test('the relay helper, as the dispatch branch calls it: Qwen already has work in the worktree, so it repairs', () => {
+test('the relay helper, as the dispatch branch calls it: Qwen already has work in the worktree, so it repairs', async () => {
   const r = repo();
   try {
     vs.add(r.root, solution(r));
@@ -125,7 +127,7 @@ test('the relay helper, as the dispatch branch calls it: Qwen already has work i
   } finally { r.cleanup(); }
 });
 
-test('a relayed solution that failed twice is retired; one that worked is confirmed', () => {
+test('a relayed solution that failed twice is retired; one that worked is confirmed', async () => {
   const r = repo();
   try {
     vs.add(r.root, solution(r));
@@ -137,7 +139,7 @@ test('a relayed solution that failed twice is retired; one that worked is confir
   } finally { r.cleanup(); }
 });
 
-test('a correction Claude finished after Qwen, with every gate passed, is kept as a verified solution; one without a behaviour test is not', () => {
+test('a correction Claude finished after Qwen, with every gate passed, is kept as a verified solution; one without a behaviour test is not', async () => {
   const r = repo();
   try {
     fs.mkdirSync(path.join(r.dir, 'src', '__tests__'), { recursive: true });
@@ -147,7 +149,7 @@ test('a correction Claude finished after Qwen, with every gate passed, is kept a
     const commit = r.g('rev-parse', 'HEAD');
     const a = active(r, { stage: 'code-review', implementer: 'claude-after-qwen', commit, verify: { ok: true, results: [{ name: 'jest' }] } });
     const p = pilot(r, a);
-    p.settleSolutions(a, 'completed');
+    await p.settleSolutions(a, 'completed');
     const kept = vs.read(r.root).solutions;
     assert.equal(kept.length, 1); assert.deepEqual(kept[0].files, ['a.js']);
     assert.equal(kept[0].fileBlobs['a.js'], r.blob, 'bound to the content of the file before the fix');
@@ -155,15 +157,15 @@ test('a correction Claude finished after Qwen, with every gate passed, is kept a
     assert.match(kept[0].guidance, /INDEPENDENT SOLUTION ALREADY VERIFIED/);
     // not completed / written by Qwen: nothing kept
     const r2 = pilot(r, active(r, { implementer: 'qwen', commit, verify: { ok: true, results: [{ name: 'jest' }] } }));
-    r2.settleSolutions(r2.state.active, 'completed'); assert.equal(vs.read(r.root).solutions.length, 1);
+    await r2.settleSolutions(r2.state.active, 'completed'); assert.equal(vs.read(r.root).solutions.length, 1);
     // a change without any test is refused
     fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 5;\n'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qam', 'notest');
-    const made = vs.fromCommit({ repoPath: r.dir, baseSha: commit, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'] });
+    const made = vs.fromCommit({ repoPath: r.dir, baseSha: commit, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], gate: await gateOf(r.dir, commit, ['.']) });
     assert.equal(made.ok, false); assert.match(made.reason, /behaviour test/);
   } finally { r.cleanup(); }
 });
 
-test('a solution without blobs, scope or keywords, with an injected instruction, or beyond the store capacity is refused; nothing is dropped', () => {
+test('a solution without blobs, scope or keywords, with an injected instruction, or beyond the store capacity is refused; nothing is dropped', async () => {
   const r = repo();
   try {
     assert.throws(() => vs.add(r.root, solution(r, { fileBlobs: {} })), /fileBlobs/);
@@ -178,28 +180,28 @@ test('a solution without blobs, scope or keywords, with an injected instruction,
   } finally { r.cleanup(); }
 });
 
-test('only what Qwen did counts: confirmed when Qwen finished, failed when Claude had to take over; an environment stop counts for nothing; no gate, no stored solution', () => {
+test('only what Qwen did counts: confirmed when Qwen finished, failed when Claude had to take over; an environment stop counts for nothing; no gate, no stored solution', async () => {
   const r = repo();
   try {
     vs.add(r.root, solution(r));
     const mk = (over) => { const a = active(r, { relayedSolution: 'flush-race', ...over }); return [a, pilot(r, a)]; };
-    let [a, p] = mk({ implementer: 'claude-after-qwen' }); p.settleSolutions(a, 'completed');
+    let [a, p] = mk({ implementer: 'claude-after-qwen' }); await p.settleSolutions(a, 'completed');
     assert.equal(vs.read(r.root).solutions[0].confirmed, 0); assert.equal(vs.read(r.root).solutions[0].failed, 1);
-    [a, p] = mk({}); p.settleSolutions(a, 'budget-stopped');
+    [a, p] = mk({}); await p.settleSolutions(a, 'budget-stopped');
     assert.equal(vs.read(r.root).solutions[0].failed, 1, 'unchanged');
-    [a, p] = mk({}); p.settleSolutions(a, 'completed');
+    [a, p] = mk({}); await p.settleSolutions(a, 'completed');
     assert.equal(vs.read(r.root).solutions[0].confirmed, 1);
     // behaviour gate off: a Claude correction is not stored as verified
     fs.mkdirSync(path.join(r.dir, 't', '__tests__'), { recursive: true });
     fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 2;\n'); fs.writeFileSync(path.join(r.dir, 't', '__tests__', 'a.test.js'), 'x\n');
     r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'fix');
     const b = active(r, { implementer: 'claude-after-qwen', commit: r.g('rev-parse', 'HEAD'), verify: { ok: true, results: [{ name: 'jest' }] } });
-    const p2 = pilot(r, b); p2.def.behavior = { required: false }; p2.settleSolutions(b, 'completed');
+    const p2 = pilot(r, b); p2.def.behavior = { required: false }; await p2.settleSolutions(b, 'completed');
     assert.equal(vs.read(r.root).solutions.length, 1);
   } finally { r.cleanup(); }
 });
 
-test('round 2 of the review: lint-only gate, Claude repair after Qwen ran out, 13 files, entries without conditions, comments addressed to an assistant', () => {
+test('round 2 of the review: lint-only gate, Claude repair after Qwen ran out, 13 files, entries without conditions, comments addressed to an assistant', async () => {
   const r = repo();
   try {
     assert.throws(() => vs.add(r.root, solution(r, { files: Array.from({ length: 13 }, (_, i) => 'f' + i + '.js') })), /12 files/);
@@ -211,40 +213,40 @@ test('round 2 of the review: lint-only gate, Claude repair after Qwen ran out, 1
     // Claude repaired after Qwen's attempts ran out: not Qwen's success
     vs.add(r.root, solution(r));
     const a = active(r, { relayedSolution: 'flush-race', claudeRepaired: true });
-    pilot(r, a).settleSolutions(a, 'completed');
+    await pilot(r, a).settleSolutions(a, 'completed');
     assert.equal(vs.read(r.root).solutions[0].confirmed, 0); assert.equal(vs.read(r.root).solutions[0].failed, 1);
     // a lint-only gate never proves red/green: nothing is stored
     fs.mkdirSync(path.join(r.dir, 't', '__tests__'), { recursive: true });
     fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 2;\n'); fs.writeFileSync(path.join(r.dir, 't', '__tests__', 'a.test.js'), 'x\n');
     r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'fix');
     const b = active(r, { implementer: 'claude-after-qwen', commit: r.g('rev-parse', 'HEAD'), verify: { ok: true, results: [{ name: 'jest' }] } });
-    const p2 = pilot(r, b); p2.def.behavior = { required: true, lintOnly: true }; p2.settleSolutions(b, 'completed');
+    const p2 = pilot(r, b); p2.def.behavior = { required: true, lintOnly: true, sourceDirs: ['.'] }; await p2.settleSolutions(b, 'completed');
     assert.equal(vs.read(r.root).solutions.length, 1);
   } finally { r.cleanup(); }
 });
 
-test('round 3 of the review: a budget stop never counts against a solution; a change outside the gate source directories is not stored as red/green', () => {
+test('round 3 of the review: a budget stop never counts against a solution; a change outside the gate source directories is not stored as red/green', async () => {
   const r = repo();
   try {
     vs.add(r.root, solution(r));
-    for (let i = 0; i < 3; i++) { const a = active(r, { relayedSolution: 'flush-race', claudeRepaired: true }); pilot(r, a).settleSolutions(a, 'budget-stopped'); }
+    for (let i = 0; i < 3; i++) { const a = active(r, { relayedSolution: 'flush-race', claudeRepaired: true }); await pilot(r, a).settleSolutions(a, 'budget-stopped'); }
     assert.equal(vs.read(r.root).solutions[0].failed, 0); assert.equal(vs.read(r.root).solutions[0].retired, false);
     fs.mkdirSync(path.join(r.dir, 'lib', '__tests__'), { recursive: true });
     fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 2;\n'); fs.writeFileSync(path.join(r.dir, 'lib', '__tests__', 'a.test.js'), 'x\n');
     r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'fix');
-    const made = vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], sourceDirs: ['src/'] });
-    assert.equal(made.ok, false); assert.match(made.reason, /outside the behaviour gate/);
-    assert.equal(vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], sourceDirs: ['.'] }).ok, true);
+    const made = vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], gate: await gateOf(r.dir, r.base, ['src/']) });
+    assert.equal(made.ok, false); assert.match(made.reason, /no source file changed/);
+    assert.equal(vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], gate: await gateOf(r.dir, r.base, ['.']) }).ok, true);
   } finally { r.cleanup(); }
 });
 
-test('round 4 of the review: a non-code source file (json) changed with a test is not captured: the gate would not run red/green for it', () => {
+test('round 4 of the review: a non-code source file (json) changed with a test is not captured: the gate would not run red/green for it', async () => {
   const r = repo();
   try {
     fs.mkdirSync(path.join(r.dir, 'src', '__tests__'), { recursive: true });
     fs.writeFileSync(path.join(r.dir, 'src', 'config.json'), '{}\n'); fs.writeFileSync(path.join(r.dir, 'src', '__tests__', 'a.test.js'), 'x\n');
     r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'cfg');
-    const made = vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], sourceDirs: ['src/'] });
+    const made = vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], gate: await gateOf(r.dir, r.base, ['src/']) });
     assert.equal(made.ok, false);
   } finally { r.cleanup(); }
 });
