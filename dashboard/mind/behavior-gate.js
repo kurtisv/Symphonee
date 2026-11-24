@@ -156,4 +156,7 @@ async function redGreen({ cwd, base, config, linkFrom = null, redact = null }) {
   } finally { if (!(await removeScratch(top, tmp, links))) console.warn('[behavior-gate] scratch checkout left behind: ' + tmp); }
 }
 
-module.exports = { normalize, changed, classify, lint, redGreen, safeLink, underSymlink };
+// Same configuration => same string, whatever the key order (the server reports it, the activation script compares it with the disk).
+function fingerprint(rawCfg) { const n = normalize(rawCfg); const sort = (v) => (Array.isArray(v) ? v.map(sort) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])])) : v); return require('crypto').createHash('sha1').update(JSON.stringify(sort(n))).digest('hex').slice(0, 12); }
+
+module.exports = { fingerprint, normalize, changed, classify, lint, redGreen, safeLink, underSymlink };
