@@ -1391,13 +1391,48 @@ class MindAutopilot {
     const hasWork = !!(a.worktree && a.baseSha && changedFiles(a.worktree.path, a.baseSha));
     let stage = owner.resumeStage(entry.stage, hasWork || !!(a.worktree && a.baseSha && fs.existsSync(a.worktree.path)));
     if (entry.resumeAt === 'verify') stage = refused ? 'repair' : 'verify';
+    else if (entry.request.category === 'protected-zone' && refused && a.worktree) stage = 'repair'; // the protected change must be removed
     else if (stage === 'code-review' && entry.baseMoved) stage = 'verify'; // the code context changed: checks again before the review
     // Parked at the target stage in the same save: a restart now resumes exactly this stage (recoverAfterRestart keeps a waiting stage), and the
     // launch goes through the tick's usual gates (window, budget, peers).
     a.waitingStage = stage; a.stage = 'budget-wait'; a.parkReason = 'owner';
+    a.ownerPark = a.worktree && fs.existsSync(a.worktree.path) ? this.worktreeState(a.worktree.path) : null;
     this.state.nextAt = Math.min(this.state.nextAt || now, now);
     this.save();
     return this.snapshot();
+  }
+  // A protected-path request bound to every protected path AND its content (another content is another operation).
+  protectedRequest(a, hits) {
+    const content = hits.slice().sort().map((p) => p + '=' + (fs.existsSync(path.join(a.worktree.path, p)) ? (() => { try { return git(a.worktree.path, ['hash-object', '--', p]); } catch (_) { return '?'; } })() : 'deleted')).join(';');
+    return { category: 'protected-zone', fingerprint: crypto.createHash('sha256').update(content).digest('hex').slice(0, 24), question: 'La tache a modifie ' + hits.length + ' chemin(s) protege(s) : ' + hits.slice(0, 6).join(', ') + (hits.length > 6 ? ' et ' + (hits.length - 6) + ' autre(s)' : '') + '. Autoriser exactement ce contenu ?',
+      consequences: 'Autoriser : le changement passe aux controles puis a la revue independante. Refuser : la tache doit retirer ces modifications, ou elle s arrete.' };
+  }
+  worktreeState(p) {
+    let branch = null, head = null; try { branch = git(p, ['rev-parse', '--abbrev-ref', 'HEAD']); head = git(p, ['rev-parse', 'HEAD']); } catch (_) {}
+    return { branch, head, fingerprint: worktreeFingerprint(p) };
+  }
+  // Just before a task parked after an owner answer starts: same branch, commit and content as when it was claimed; otherwise it is set aside
+  // again with a conflict question (nothing runs on a worktree that changed without the owner seeing it).
+  ownerParkIntact(a, now = Date.now()) {
+    if (a.parkReason !== 'owner' || !a.ownerPark || !a.worktree) return true;
+    const cur = fs.existsSync(a.worktree.path) ? this.worktreeState(a.worktree.path) : null;
+    const problems = !cur ? ['le worktree n existe plus'] : [cur.branch !== a.ownerPark.branch ? 'la branche est ' + cur.branch + ' au lieu de ' + a.ownerPark.branch : '', cur.head !== a.ownerPark.head ? 'le commit a change' : '', cur.head === a.ownerPark.head && cur.fingerprint !== a.ownerPark.fingerprint ? 'des fichiers ont change' : ''].filter(Boolean);
+    if (!problems.length) return true;
+    const store = this.decisionStore(), id = 'sus_' + crypto.randomBytes(5).toString('hex');
+    const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change avant la reprise', body: 'Tache : ' + ((a.plan && a.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nReprendre repose la question sur le nouvel etat ; Archiver retire la tache (worktree conserve).',
+      options: [{ id: 'resume', label: 'Reprendre (reposer la question)' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + id,
+      meta: { pilot: this.id, pilotLabel: this.def.label, task: (a.plan && a.plan.title) || '', stage: a.waitingStage, category: 'other', suspendedId: id, kind: 'conflict' } });
+    if (c.error) throw new Error('The owner question could not be recorded (' + c.error + ')');
+    const last = (a.ownerDecisions || []).slice(-1)[0] || {};
+    this.unlinkActive(a); a.links = [];
+    const stage = a.waitingStage; a.waitingStage = null; a.parkReason = null; a.ownerPark = null;
+    this.state.suspended = [...(this.state.suspended || []), { id, decisionId: c.decision.id, key: last.key || null, kind: 'conflict', problems,
+      request: { category: last.category || 'other', question: last.question || 'Reprise de la tache', consequences: '' }, stage, at: new Date(now).toISOString(), status: 'waiting', files: [],
+      worktree: cur ? { path: a.worktree.path, branch: cur.branch, head: cur.head, fingerprint: cur.fingerprint } : null, mainBase: this.ownerBase(), active: JSON.parse(JSON.stringify(a)) }];
+    this.state.active = null;
+    this.log('owner', 'Le worktree a change avant la reprise (' + problems.join('; ') + ') : tache remise de cote, question ' + c.decision.id);
+    this.save();
+    return false;
   }
   // The owner's answer, bound to the EXACT suspended task and its current question; recorded once (a second answer is refused).
   answerOwner(body = {}, by = 'ui') {
@@ -1460,9 +1495,7 @@ class MindAutopilot {
         if (e.worktree.branch && branch !== e.worktree.branch) problems.push('la branche est ' + branch + ' au lieu de ' + e.worktree.branch);
         if (head !== e.worktree.head) problems.push('le commit a change');
         else if (worktreeFingerprint(e.worktree.path) !== e.worktree.fingerprint) problems.push('des fichiers ont change pendant l attente');
-        const allowedProtected = e.request.category === 'protected-zone';
-        const a0 = e.active || {};
-        if (!allowedProtected && a0.baseSha) { const hits = guard.protectedHits(guard.changedPaths(e.worktree.path, a0.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths); if (hits.length) problems.push('chemins proteges modifies : ' + hits.slice(0, 4).join(', ')); }
+
       }
     }
     if (problems.length) {
@@ -2165,9 +2198,7 @@ class MindAutopilot {
       }
       const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
       if (hits.length) {
-        const content = hits.slice().sort().map((p) => p + '=' + (() => { try { return git(a.worktree.path, ['hash-object', '--', p]); } catch (_) { return 'deleted'; } })()).join(';');
-        const req = { category: 'protected-zone', fingerprint: crypto.createHash('sha256').update(content).digest('hex').slice(0, 24), question: 'La tache a modifie ' + hits.length + ' chemin(s) protege(s) : ' + hits.slice(0, 6).join(', ') + (hits.length > 6 ? ' et ' + (hits.length - 6) + ' autre(s)' : '') + '. Autoriser exactement ce contenu ?',
-          consequences: 'Autoriser : le changement passe aux controles puis a la revue independante. Refuser : la tache doit retirer ces modifications, ou elle s arrete.' };
+        const req = this.protectedRequest(a, hits);
         if (!(a.ownerAsks && a.ownerAsks[owner.operationKey(req)] && a.ownerAsks[owner.operationKey(req)].answered === 'allowed')) return this.ownerRequest(a, req, a.stage, now, { resumeAt: 'verify' });
       }
       // The deep profile always passes through the gate: the diff lint runs
@@ -2184,6 +2215,11 @@ class MindAutopilot {
       this.trace('review', { by: 'codex', verdict: v || 'NONE', findings: v === 'PASS' ? '' : String(raw || '').replace(/\s+/g, ' ').slice(0, 400) });
       if (v === 'PASS') {
         if (!changedFiles(a.worktree.path, a.baseSha)) throw new Error('Review passed with no diff');
+        const pHits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
+        if (pHits.length) {
+          const req = this.protectedRequest(a, pHits);
+          if (!(a.ownerAsks && a.ownerAsks[owner.operationKey(req)] && a.ownerAsks[owner.operationKey(req)].answered === 'allowed')) return this.ownerRequest(a, req, 'code-review', now);
+        }
         this.unlinkActive(a);
         a.commit = commitReviewed(a.worktree.path, a.plan, a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : []);
         this.log('commit', 'Changement revu commite sur ' + a.worktree.branch + ' : ' + a.commit.slice(0, 10));
@@ -2480,7 +2516,8 @@ class MindAutopilot {
             }
             a.localSuggestion = null;
           }
-          a.parkReason = null;
+          if (!this.ownerParkIntact(a, now)) return this.snapshot();
+          a.parkReason = null; a.ownerPark = null;
           if (a.waitingStage === 'verify') { a.waitingStage = null; this.startVerify(); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
           return this.snapshot();

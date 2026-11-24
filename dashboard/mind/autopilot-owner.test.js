@@ -259,6 +259,32 @@ test('the owner decision reaches the later reviewers too (code review prompt), a
   } finally { f.cleanup(); }
 });
 
+test('a change made to the worktree after the answer was claimed (before the parked stage starts) sets the task aside again', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    f.pilot.resumeAnswered(Date.now());
+    assert.equal(f.pilot.state.active.parkReason, 'owner', 'claimed and parked');
+    fs.writeFileSync(path.join(e.worktree.path, 'index.test.js'), 'changed by someone else\n');
+    f.pilot.state.nextAt = 0; await f.pilot.tick();
+    assert.ok(!f.pilot.state.active || f.pilot.state.active.stage === 'discover', 'not started on the changed worktree');
+    const again = f.pilot.state.suspended.find((x) => x.kind === 'conflict');
+    assert.ok(again); assert.match(again.problems.join(' '), /fichiers ont change/);
+    assert.equal(f.spawns.filter((x) => x.task === 'A' && x.stage === 'repair').length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('every refusal always reaches the prompts, however many decisions the task received; policy limited to worktree categories', () => {
+  const list = [{ category: 'dependency', question: 'q0', allowed: false, decisionId: 'dec_00000000' }, ...Array.from({ length: 9 }, (_, i) => ({ category: 'config', question: 'q' + (i + 1), allowed: true, decisionId: 'dec_0000000' + i }))];
+  const t = owner.decisionsText(list);
+  assert.match(t, /"q0": NOT AUTHORIZED/); assert.ok(!/"q1":/.test(t), 'old authorizations are bounded');
+  assert.deepEqual(owner.normalizePolicy({ product: 'auto', 'external-service': 'auto', config: 'auto' }), { config: 'auto' });
+  assert.equal(owner.decide({ config: 'auto' }, { category: 'config', question: 'empty the customer profiles', consequences: '' }), 'ask');
+});
+
 test('an authorization is bound to its operation: the same task asking for ANOTHER operation gets a new question', () => {
   const k1 = owner.operationKey({ category: 'dependency', question: 'Add left-pad?' });
   assert.equal(k1, owner.operationKey({ category: 'dependency', question: '  add LEFT-PAD? ' }));
