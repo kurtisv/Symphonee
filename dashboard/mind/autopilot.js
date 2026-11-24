@@ -1280,6 +1280,8 @@ class MindAutopilot {
     a.coachFindings = String(findings || '').slice(0, 6000);
     a.review = 'VERIFIED SOLUTION RELAYED BY THE HOST - follow it:\n' + a.coachGuidance + '\n\nWHAT FAILED BEFORE:\n' + a.coachFindings.slice(0, 3000);
     a.implementer = 'qwen'; a.qwenCoachGrant = true; // one more Qwen attempt, as an explicit grant (the counters are left as they are)
+    // A FRESH Qwen session (the worktree is kept): the turn counter of the saved session is cumulative, and a session already worn out by the earlier attempts and the coach would end the relayed attempt at once (seen live 2026-11-24: 'Turn limit reached (80)' after 20 s).
+    a.qwenSessionId = null; a.qwenCallsSeen = null;
     try { verifiedSolutions.recordUse(this.repoRoot, s.id); } catch (_) {}
     this.trace('relay', { used: true, id: s.id, conditions: s.conditions });
     this.learn('solution-relayee', 'Solution verifiee "' + s.id + '" transmise a Qwen sur "' + (a.plan.title || '') + '" (' + String(s.conditions || '').slice(0, 200) + ')', 'qwen-local');
