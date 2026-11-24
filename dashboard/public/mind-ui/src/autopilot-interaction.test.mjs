@@ -4,12 +4,15 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { makeLatest } from './latest.js';
 import { createSnapshotStore } from './autopilot-state.js';
+import { cardModel, cardHtml, CARD_CSS } from './autopilot-card.js';
+import { pilotIdsFrom, calendarModel, kpiModel, kpiHtml, calendarHtml, OVERVIEW_CSS } from './autopilot-overview.js';
 
 function harness() {
   const main = { innerHTML: '' }, pending = [], posts = [], elements = {};
   const response = data => ({ ok: true, json: async () => data });
   const context = vm.createContext({
     $, state: { view: 'other' }, escapeHtml: s => String(s).replaceAll('<', '&lt;'), makeLatest, createSnapshotStore,
+    cardModel, cardHtml, CARD_CSS, pilotIdsFrom, calendarModel, kpiModel, kpiHtml, calendarHtml, OVERVIEW_CSS,
     localStorage: { getItem() {}, setItem() {} }, window: { confirm: () => false },
     Date, Promise, AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
     fetch(url, opts = {}) {
@@ -72,4 +75,18 @@ test('fallback configuration sends independent explicit consents, never inherits
   assert.equal(h.posts[0].body.fallback.cloudConsent, true);
   assert.equal(h.posts[0].body.fallback.worktreeWritesConsent, false);
   assert.equal(h.posts[0].body.fallback.tokenCeiling, 500000);
+});
+
+test('a third pilot announced by the server is read on the next refresh (no hard-coded pair)', async () => {
+  const h = harness();
+  const first = h.api.refresh();
+  h.pending[0].resolve({ ...snapshot('default', 100), pilots: [{ pilot: 'default' }, { pilot: 'gas-saver' }, { pilot: 'nuit' }] });
+  h.pending[1].resolve(snapshot('gas-saver', 100));
+  await first;
+  const second = h.api.refresh();
+  const next = h.pending.slice(2);
+  assert.equal(next.length, 3);
+  assert.ok(next.some(p => p.url.includes('pilot=nuit')));
+  next.forEach(p => p.resolve(snapshot(decodeURIComponent(p.url.split('pilot=')[1]), 200)));
+  await second;
 });
