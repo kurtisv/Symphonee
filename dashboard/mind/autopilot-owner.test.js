@@ -432,3 +432,22 @@ test('a second change while a conflict question waits: "Reprendre" does not run 
     assert.equal(f.pilot.state.suspended.length, 0); assert.ok(f.pilot.state.active.ownerRefused.length >= 1);
   } finally { f.cleanup(); }
 });
+
+test('a deleted worktree: one conflict question, Archiver retires the task (no endless loop)', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    gitc(f.repo, 'worktree', 'remove', '--force', e.worktree.path);
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(e.kind, 'conflict'); const q = e.decisionId;
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(e.decisionId, q, 'no second question while unanswered');
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'abandon' });
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(f.pilot.state.suspended.length, 0);
+    assert.equal(f.pilot.state.history.find((h) => /Task A/.test(h.title)).outcome, 'abandoned-by-owner');
+  } finally { f.cleanup(); }
+});

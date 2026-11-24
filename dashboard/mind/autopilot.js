@@ -1486,7 +1486,8 @@ class MindAutopilot {
   worktreeProblems(e) {
     const problems = [];
     if (!e.worktree) return problems;
-    if (!fs.existsSync(e.worktree.path)) return ['le worktree n existe plus'];
+    if (!fs.existsSync(e.worktree.path)) return e.worktree.missing ? [] : ['le worktree n existe plus'];
+    if (e.worktree.missing) return ['le worktree est revenu'];
     const cur = this.worktreeState(e.worktree.path);
     if (e.worktree.branch && cur.branch !== e.worktree.branch) problems.push('la branche est ' + cur.branch + ' au lieu de ' + e.worktree.branch);
     if (cur.head !== e.worktree.head) problems.push('le commit a change');
@@ -1516,22 +1517,7 @@ class MindAutopilot {
     if (!budget.canDispatch(this.state, now, this.limits)) return false;
     if (this.def.capacity) { const { decision } = this.capacityDecision(now); if (decision.admissible < 1) return false; }
     const d = e.answer;
-    // What changed since the state the owner last saw (e.worktree: at suspension, or the state shown in a conflict question).
-    const problems = this.worktreeProblems(e);
-    // Any change the owner has not seen: a (new) conflict question, bound to the worktree as it is NOW; the earlier answer is kept with it.
-    if (problems.length) {
-      const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change pendant l attente', body: 'Tache : ' + ((e.active && e.active.plan && e.active.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nReprendre : un refus est applique tel quel ; une autorisation est redemandee sur cet etat. Archiver retire la tache (worktree conserve).',
-        options: [{ id: 'resume', label: 'Reprendre' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
-        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, suspendedId: e.id, kind: 'conflict' } });
-      if (c.error) return false;
-      if (e.kind !== 'conflict') e.priorAnswer = e.priorAnswer || d; // the owner's answer to the request (a conflict answer is not one)
-      e.worktree = e.worktree && fs.existsSync(e.worktree.path) ? { path: e.worktree.path, ...this.worktreeState(e.worktree.path) } : e.worktree;
-      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null;
-      this.log('owner', 'La tache en attente ne reprend pas : ' + problems.join('; ') + '. Nouvelle question ' + c.decision.id);
-      this.save();
-      return false;
-    }
-    // A conflict question answered, on exactly the state it showed: archive; or resume (a refusal applies as it was, an authorization is asked again).
+    // A conflict answered "Archiver": the task is retired at once (worktree kept), whatever the worktree looks like now.
     if (e.kind === 'conflict') {
       if (!(d.answer && d.answer.choice === 'resume')) {
         this.state.suspended = list.filter((x) => x !== e);
@@ -1541,6 +1527,24 @@ class MindAutopilot {
         this.complete('abandoned-by-owner', 'The worktree changed while the task waited; the owner archived it');
         return true;
       }
+    }
+    // What changed since the state the owner last saw (e.worktree: at suspension, or the state shown in a conflict question).
+    const problems = this.worktreeProblems(e);
+    // Any change the owner has not seen: a (new) conflict question, bound to the worktree as it is NOW; the earlier answer is kept with it.
+    if (problems.length) {
+      const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change pendant l attente', body: 'Tache : ' + ((e.active && e.active.plan && e.active.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nReprendre : un refus est applique tel quel ; une autorisation est redemandee sur cet etat. Archiver retire la tache (worktree conserve).',
+        options: [{ id: 'resume', label: 'Reprendre' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
+        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, suspendedId: e.id, kind: 'conflict' } });
+      if (c.error) return false;
+      if (e.kind !== 'conflict') e.priorAnswer = e.priorAnswer || d; // the owner's answer to the request (a conflict answer is not one)
+      e.worktree = e.worktree ? (fs.existsSync(e.worktree.path) ? { path: e.worktree.path, ...this.worktreeState(e.worktree.path) } : { path: e.worktree.path, missing: true }) : e.worktree;
+      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null;
+      this.log('owner', 'La tache en attente ne reprend pas : ' + problems.join('; ') + '. Nouvelle question ' + c.decision.id);
+      this.save();
+      return false;
+    }
+    // A conflict question answered, on exactly the state it showed: archive; or resume (a refusal applies as it was, an authorization is asked again).
+    if (e.kind === 'conflict') {
       if (e.priorAnswer && !owner.isAllowed(e.priorAnswer)) {
         const refusal = e.priorAnswer;
         this.state.suspended = list.filter((x) => x !== e);
