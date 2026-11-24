@@ -278,14 +278,58 @@
     });
   }
 
+  // ---------- Mes decisions (questions des autopilotes) ----------
+  // Une reponse porte le pilote, la tache mise de cote ET la decision : le serveur la donne a cette tache seulement, une seule fois.
+  function loadDecisions(box) {
+    quiet(getJson('/api/mind/autopilot/decisions')).then(function (r) {
+      var items = arr(r, ['items']);
+      box.replaceChildren(list(items.map(function (it) { return decisionItem(it, box); }), 'Aucune tache n attend ta decision.'));
+    });
+  }
+  function decisionItem(it, box) {
+    var d = h('div', 'hit');
+    d.appendChild(h('div', 'hit-t', (it.pilotLabel || it.pilot) + ' - ' + (it.categoryLabel || it.category)));
+    d.appendChild(h('div', 'muted', 'Tache : ' + (it.task || '-') + ' (etape ' + (it.stage || '-') + ')'));
+    d.appendChild(h('p', null, it.question));
+    if (it.consequences) d.appendChild(h('div', 'muted', 'Consequences : ' + it.consequences));
+    if (it.problems && it.problems.length) d.appendChild(h('div', 'muted', 'Probleme : ' + it.problems.join('; ')));
+    var open = it.status === 'waiting' || it.status === 'conflict';
+    if (!open) { d.appendChild(h('div', 'muted', 'Repondu : reprise au prochain passage du pilote.')); return d; }
+    var text = null;
+    if (it.allowText) { text = h('textarea'); text.maxLength = 1000; text.placeholder = 'Reponse personnalisee (facultative)'; d.appendChild(text); }
+    var msg = h('div', 'muted');
+    var bar = h('div', 'row');
+    (it.options || []).forEach(function (o) {
+      var b = h('button', 'btn', o.label);
+      b.onclick = function () { send(o.id); };
+      bar.appendChild(b);
+    });
+    if (it.allowText) { var bt = h('button', 'btn', 'Envoyer le texte (sans autoriser)'); bt.onclick = function () { send(null); }; bar.appendChild(bt); }
+    d.appendChild(bar); d.appendChild(msg);
+    function send(choice) {
+      var t = text ? text.value.trim() : '';
+      if (!choice && !t) { msg.textContent = 'Ecris une reponse ou choisis un bouton.'; return; }
+      Array.prototype.forEach.call(bar.querySelectorAll('button'), function (b) { b.disabled = true; });
+      msg.textContent = 'Envoi...';
+      api('POST', '/api/mind/autopilot/decisions/answer', { pilot: it.pilot, suspendedId: it.suspendedId, decisionId: it.decisionId, choice: choice, text: t || undefined }).then(function (r) {
+        var j = r.json || {};
+        msg.textContent = r.status === 200 && j.ok ? 'Reponse enregistree.' : 'Non envoyee : ' + (j.code === 'ALREADY_ANSWERED' ? 'deja repondue' : j.error || ('HTTP ' + r.status));
+        setTimeout(function () { loadDecisions(box); }, 800);
+      }).catch(function () { msg.textContent = 'Connexion perdue : rien n a ete envoye si ce message reste. Reessaie.'; Array.prototype.forEach.call(bar.querySelectorAll('button'), function (b) { b.disabled = false; }); });
+    }
+    return d;
+  }
+
   // ---------- Autopilotes ----------
   function showAutopilots() {
     var box = h('div');
     content.replaceChildren(box);
-    var a = loading(), j = loading();
+    var a = loading(), j = loading(), dec = loading();
+    box.appendChild(card('Mes decisions', dec));
     box.appendChild(card('Autopilotes', a));
     box.appendChild(card('Boucles planifiees', j));
-    box.appendChild(card('Controles', muted('Demarrer, arreter ou modifier un autopilote se fait depuis le PC. Le telephone consulte seulement.')));
+    box.appendChild(card('Controles', muted('Demarrer, arreter ou modifier un autopilote, et sa politique de decision, se fait depuis le PC. Le telephone consulte et repond aux decisions.')));
+    loadDecisions(dec);
     quiet(getJson('/api/mind/autopilots')).then(function (r) {
       a.replaceChildren(list(arr(r, ['pilots']).map(function (p) {
         var d = h('div', 'hit'), t = p.today || {}, l = p.limits || {};

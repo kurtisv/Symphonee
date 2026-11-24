@@ -31,14 +31,16 @@ const REMOTE_GET_ALLOW = new Set([
   '/ws', // WebSocket upgrade (terminal output); its own checks are in server.js
   '/api/busy', '/api/startup/status', '/api/ui/context', '/api/remote/session',
   '/api/orchestrator/agents', '/api/orchestrator/tasks', '/api/orchestrator/task',
-  '/api/mind/stats', '/api/mind/wakeup', '/api/mind/autopilots', '/api/mind/autopilot',
+  '/api/mind/stats', '/api/mind/wakeup', '/api/mind/autopilots', '/api/mind/autopilot', '/api/mind/autopilot/decisions',
   '/api/learnings', '/api/jobs', '/api/ledger', '/api/repos',
   '/api/git/status', '/api/git/branches', '/api/git/log',
   '/api/permissions/pending', '/api/github/pulls',
   '/api/remote/files', '/api/remote/file', // read-only, sandboxed file browsing (lib/remote-files.js)
 ]);
-// Writes a phone may do: log out, ask for ONE terminal command (approved on the PC), and search Mind (read-only POST).
-const REMOTE_WRITE_ALLOW = new Set(['/api/remote/logout', '/api/remote/terminal/command', '/api/mind/recall']);
+// Writes a phone may do: log out, ask for ONE terminal command (approved on the PC), search Mind (read-only POST), and answer an autopilot's
+// question to the owner (decision of 2026-11-24: the owner answers from the phone; bound to the exact waiting task, once, recorded as 'phone').
+// The decision POLICY stays PC-only.
+const REMOTE_WRITE_ALLOW = new Set(['/api/remote/logout', '/api/remote/terminal/command', '/api/mind/recall', '/api/mind/autopilot/decisions/answer']);
 
 function hostname(req) {
   const h = String((req && req.headers && req.headers.host) || '').toLowerCase().trim();
