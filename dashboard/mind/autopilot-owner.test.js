@@ -313,8 +313,12 @@ test('moved base: a conflict with the task\'s UNCOMMITTED work is detected and r
     const before = gitc(e.worktree.path, 'status', '--porcelain');
     f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
     f.pilot.resumeAnswered(Date.now());
-    assert.match(f.pilot.state.active.review, /CONFLIT avec la nouvelle base/);
+    assert.ok(!/BASE MOVED/.test(f.pilot.state.active.review), 'judged at launch, not at claim');
+    f.pilot.state.nextAt = 0; await f.pilot.tick();
+    const rep = f.spawns.find((x) => x.task === 'A' && x.stage === 'repair');
+    assert.match(rep.prompt, /CONFLICTS with the new base/, 'the agent is told at launch');
     assert.equal(gitc(e.worktree.path, 'status', '--porcelain'), before, 'nothing staged in the worktree');
+    assert.equal(f.pilot.state.active.ownerPark, null, 'snapshot cleared once the stage really started');
   } finally { f.cleanup(); }
 });
 

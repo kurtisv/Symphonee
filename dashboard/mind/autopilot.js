@@ -1393,7 +1393,7 @@ class MindAutopilot {
     a.ownerDecisions = [...(a.ownerDecisions || []), { decisionId: d.id, key: entry.key, category: entry.request.category, question: entry.request.question, status: d.status, answer: d.answer || null, allowed: !refused, at: new Date(now).toISOString() }];
     // Every refusal is kept for the life of the task (it must reach every later prompt); only the authorizations are bounded.
     a.ownerDecisions = [...a.ownerDecisions.filter((x) => !x.allowed), ...a.ownerDecisions.filter((x) => x.allowed).slice(-20)];
-    a.review = owner.answerText(entry.request, d, refused) + (entry.baseMoved ? '\nThe base moved since the task was suspended (' + entry.baseMoved + '): the checks run again.' : '')
+    a.review = owner.answerText(entry.request, d, refused)
       + (a.review ? '\n\nEARLIER FINDINGS (still to address):\n' + String(a.review).slice(0, 6000) : '');
     a.taskId = null; a.budgetRef = null; a.waitingStage = null; a.parkReason = null;
     if (a.worktree && fs.existsSync(a.worktree.path)) {
@@ -1407,12 +1407,12 @@ class MindAutopilot {
     let stage = owner.resumeStage(entry.stage, hasWork || !!(a.worktree && a.baseSha && fs.existsSync(a.worktree.path)));
     if (entry.resumeAt === 'verify') stage = refused ? 'repair' : 'verify';
     else if (entry.request.category === 'protected-zone' && refused && a.worktree) stage = 'repair'; // the protected change must be removed
-    else if (stage === 'code-review' && entry.baseMoved) stage = 'verify'; // the code context changed: checks again before the review
     // Parked at the target stage in the same save: a restart now resumes exactly this stage (recoverAfterRestart keeps a waiting stage), and the
     // launch goes through the tick's usual gates (window, budget, peers).
     a.waitingStage = stage; a.stage = 'budget-wait'; a.parkReason = 'owner';
     a.ownerPark = a.worktree && fs.existsSync(a.worktree.path) ? this.worktreeState(a.worktree.path) : null;
     a.ownerResuming = { key: entry.key, request: entry.request };
+    a.ownerMainBase = entry.mainBase || null; // compared with the base at the moment the stage really starts
     this.state.nextAt = Math.min(this.state.nextAt || now, now);
     this.save();
     return this.snapshot();
@@ -1422,6 +1422,23 @@ class MindAutopilot {
     const content = hits.slice().sort().map((p) => p + '=' + (fs.existsSync(path.join(a.worktree.path, p)) ? (() => { try { return git(a.worktree.path, ['hash-object', '--', p]); } catch (_) { return '?'; } })() : 'deleted')).join(';');
     return { category: 'protected-zone', fingerprint: crypto.createHash('sha256').update(content).digest('hex').slice(0, 24), question: 'La tache a modifie ' + hits.length + ' chemin(s) protege(s) : ' + hits.slice(0, 6).join(', ') + (hits.length > 6 ? ' et ' + (hits.length - 6) + ' autre(s)' : '') + '. Autoriser exactement ce contenu ?',
       consequences: 'Autoriser : le changement passe aux controles puis a la revue independante. Refuser : la tache doit retirer ces modifications, ou elle s arrete.' };
+  }
+  // At the moment a stage resumed after an owner answer really starts: if the base moved since the task was suspended, the agent is told whether
+  // its work (including uncommitted files) still merges onto it, and a pending review becomes local verification first.
+  ownerBaseCheck(a) {
+    if (!a.ownerMainBase) return;
+    const base = this.ownerBase();
+    if (!base || base === a.ownerMainBase) return;
+    let note = 'THE BASE MOVED since the task was suspended (' + a.ownerMainBase.slice(0, 10) + ' -> ' + base.slice(0, 10) + '): the checks run again.';
+    if (a.worktree && fs.existsSync(a.worktree.path)) {
+      const work = worktreeSnapshotCommit(a.worktree.path);
+      const m = work ? runGit(a.worktree.path, ['merge-tree', '--write-tree', '--quiet', base, work]) : { status: 2 };
+      note += m.status === 1 ? ' WARNING: the change CONFLICTS with the new base (CONFLIT avec la nouvelle base).' : m.status === 0 ? ' The change still merges cleanly onto it.' : ' Whether it still merges could not be checked.';
+    }
+    a.review = note + '\n' + String(a.review || '').replace(/^THE BASE MOVED[^\n]*\n/, '');
+    if (a.waitingStage === 'code-review') a.waitingStage = 'verify';
+    a.ownerMainBase = base;
+    this.log('owner', note.slice(0, 200));
   }
   worktreeState(p) {
     let branch = null, head = null; try { branch = git(p, ['rev-parse', '--abbrev-ref', 'HEAD']); head = git(p, ['rev-parse', 'HEAD']); } catch (_) {}
@@ -1527,11 +1544,6 @@ class MindAutopilot {
       return false;
     }
     const answer = d;
-    const base = this.ownerBase();
-    if (base && e.mainBase && base !== e.mainBase) {
-      e.baseMoved = e.mainBase.slice(0, 10) + ' -> ' + base.slice(0, 10);
-      if (e.worktree) { const work = worktreeSnapshotCommit(e.worktree.path); const m = work ? runGit(e.worktree.path, ['merge-tree', '--write-tree', '--quiet', base, work]) : { status: 2 }; if (m.status === 1) e.baseMoved += ' ; ATTENTION : le changement est en CONFLIT avec la nouvelle base'; else if (m.status !== 0) e.baseMoved += ' ; compatibilite avec la nouvelle base non verifiee'; }
-    }
     // Claimed exactly once: the entry leaves the waiting list in the same save that makes the task active again.
     this.state.suspended = list.filter((x) => x !== e);
     this.state.suspendedLog = [...(this.state.suspendedLog || []), { id: e.id, decisionId: answer.id, task: e.active && e.active.plan && e.active.plan.title, question: e.request.question,
@@ -2536,9 +2548,12 @@ class MindAutopilot {
             }
             a.localSuggestion = null;
           }
-          a.parkReason = null; a.ownerPark = null; a.ownerResuming = null;
-          if (a.waitingStage === 'verify') { a.waitingStage = null; this.startVerify(); return this.snapshot(); }
+          a.parkReason = null;
+          this.ownerBaseCheck(a);
+          const ownerDone = () => { a.ownerPark = null; a.ownerResuming = null; a.ownerMainBase = null; };
+          if (a.waitingStage === 'verify') { a.waitingStage = null; ownerDone(); this.startVerify(); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
+          if (this.state.active === a && (a.taskId || a.stage === 'verify') && !a.waitingStage) { ownerDone(); this.save(); }
           return this.snapshot();
         }
         if (a.stage === 'verify') {
