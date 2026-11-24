@@ -285,6 +285,22 @@ test('every refusal always reaches the prompts, however many decisions the task 
   assert.equal(owner.decide({ config: 'auto' }, { category: 'config', question: 'empty the customer profiles', consequences: '' }), 'ask');
 });
 
+test('a refusal is never dropped from the task, even after many later decisions', async () => {
+  const f = setup();
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    e.active.ownerDecisions = Array.from({ length: 30 }, (_, i) => ({ category: 'config', question: 'q' + i, allowed: true, decisionId: 'dec_1000000' + (i % 10), key: 'k' + i }));
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'refuse' });
+    f.pilot.resumeAnswered(Date.now());
+    const a = f.pilot.state.active;
+    assert.ok(a.ownerDecisions.some((x) => !x.allowed && /left-pad/.test(x.question)), 'the refusal is kept');
+    assert.equal(a.ownerDecisions.filter((x) => x.allowed).length, 20, 'authorizations bounded');
+    assert.match(owner.decisionsText(a.ownerDecisions), /left-pad[^\n]*NOT AUTHORIZED/);
+  } finally { f.cleanup(); }
+});
+
 test('an authorization is bound to its operation: the same task asking for ANOTHER operation gets a new question', () => {
   const k1 = owner.operationKey({ category: 'dependency', question: 'Add left-pad?' });
   assert.equal(k1, owner.operationKey({ category: 'dependency', question: '  add LEFT-PAD? ' }));

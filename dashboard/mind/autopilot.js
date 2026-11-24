@@ -1377,7 +1377,9 @@ class MindAutopilot {
     const refused = !owner.isAllowed(d);
     a.ownerAsks = a.ownerAsks || {}; a.ownerAsks[entry.key] = { ...(a.ownerAsks[entry.key] || {}), answered: refused ? 'refused' : 'allowed' };
     if (refused) a.ownerRefused = [...new Set([...(a.ownerRefused || []), entry.key])];
-    a.ownerDecisions = [...(a.ownerDecisions || []), { decisionId: d.id, key: entry.key, category: entry.request.category, question: entry.request.question, status: d.status, answer: d.answer || null, allowed: !refused, at: new Date(now).toISOString() }].slice(-20);
+    a.ownerDecisions = [...(a.ownerDecisions || []), { decisionId: d.id, key: entry.key, category: entry.request.category, question: entry.request.question, status: d.status, answer: d.answer || null, allowed: !refused, at: new Date(now).toISOString() }];
+    // Every refusal is kept for the life of the task (it must reach every later prompt); only the authorizations are bounded.
+    a.ownerDecisions = [...a.ownerDecisions.filter((x) => !x.allowed), ...a.ownerDecisions.filter((x) => x.allowed).slice(-20)];
     a.review = owner.answerText(entry.request, d, refused) + (entry.baseMoved ? '\nThe base moved since the task was suspended (' + entry.baseMoved + '): the checks run again.' : '')
       + (a.review ? '\n\nEARLIER FINDINGS (still to address):\n' + String(a.review).slice(0, 6000) : '');
     a.taskId = null; a.budgetRef = null; a.waitingStage = null; a.parkReason = null;
