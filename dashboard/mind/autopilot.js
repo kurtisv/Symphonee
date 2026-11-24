@@ -1712,7 +1712,10 @@ class MindAutopilot {
       a.qwenResumes = (a.qwenResumes || 0) + 1;
       if (a.qwenResumes <= q.maxResumes) {
         a.waitingStage = a.stage; a.stage = 'budget-wait'; a.taskId = null; a.budgetRef = null; a.parkReason = 'qwen-paused';
-        this.state.nextAt = /slot ended/.test(why) && this.def.schedule ? nextWindowStart(this.def.schedule, now) : now + 10 * 60000;
+        // The worker says "slot ended" for its deadline, which is the EARLIER of the step time limit and the window end.
+        // Wait for the next window only when the window really is closed; a step that ran out of time inside an open
+        // window resumes like any other interruption (2026-11-24: a 45-minute step at 16:26 was parked until 14:00 the next day).
+        this.state.nextAt = /slot ended/.test(why) && this.def.schedule && !a.manual && !this.inWindow(now) ? nextWindowStart(this.def.schedule, now) : now + 10 * 60000;
         this.log('qwen', 'Qwen paused (' + why + '); progress kept, ' + a.waitingStage + ' resumes at ' + new Date(this.state.nextAt).toLocaleString() + ' (' + a.qwenResumes + '/' + q.maxResumes + ')');
         this.save(); return true;
       }
