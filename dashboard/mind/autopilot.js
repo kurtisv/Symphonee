@@ -15,6 +15,7 @@ const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
 const behaviorGate = require('./behavior-gate');
+const verifiedSolutions = require('./verified-solutions');
 const tq = require('./qwen-teaching');
 const freellmTeacher = require('./freellm-teacher');
 const applicability = require('./lesson-applicability');
@@ -1074,6 +1075,9 @@ class MindAutopilot {
       this.log('qwen', 'Qwen used its repair attempts; Claude analyses the errors and guides Qwen before any takeover');
       return this.dispatch('coach', now);
     }
+    // The coach is used up (or off): an independent solution already verified on this same code is handed to Qwen before any takeover.
+    if (stage === 'repair' && qwenStage && !qwenStage.ok && a.implementer === 'qwen' && /repair attempts used/.test(qwenStage.reason) && this.relayVerifiedSolution(a, now, String(a.review || ''))) return;
+    if (stage === 'repair' && qwenStage && !qwenStage.ok && a.implementer === 'qwen') a.claudeRepaired = true; // Claude writes this repair: it is not Qwen's success
     if (qwenStage && !qwenStage.ok) { this.log('qwen', 'Qwen not used for ' + stage + ': ' + qwenStage.reason); if (stage === 'implement' && this.state.active.implementer !== 'claude-after-qwen') this.state.active.implementer = 'claude'; }
     // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
     const held = cli === 'codex' && a.reviewHold && this.state.budgetCalls.find(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
@@ -1219,7 +1223,7 @@ class MindAutopilot {
     // lessons.record keeps 400 characters: proof and conditions come FIRST and every field is bounded, so a long cause cannot push them out.
     const cut = (x, n) => String(x || '').replace(/\s+/g, ' ').trim().slice(0, n);
     const fields = {
-      text: 'Verifiee (Claude explique, Qwen applique, controles+revue ok, commit ' + String(a.commit).slice(0, 8) + ', ' + checks.slice(0, 3).join('+') + '). Conditions: ' + cut(lesson, 100) + ' Cause: ' + cut(cause, 80) + ' Raisonnement: ' + cut(reasoning, 80),
+      text: 'Verifiee (' + (a.relayedSolution ? 'solution independante relayee' : 'Claude explique') + ', Qwen applique, controles+revue ok, commit ' + String(a.commit).slice(0, 8) + ', ' + checks.slice(0, 3).join('+') + '). Conditions: ' + cut(lesson, 100) + ' Cause: ' + cut(cause, 80) + ' Raisonnement: ' + cut(reasoning, 80),
       trigger: cut(a.coachTrigger, 150), action: cut(lesson, 200),
     };
     // Claude read repository content to write this: mask known secret values in EVERY stored field (fail closed), and refuse text that reads like an instruction to a future assistant.
@@ -1234,6 +1238,56 @@ class MindAutopilot {
   canCoachQwen(a) {
     const q = this.def.qwen;
     return !!(q && q.enabled && !this.qwenFixture && a && a.plan && !a.qwenFailed && (a.qwenCoached || 0) < (Number.isInteger(q.maxCoaching) ? q.maxCoaching : 1));
+  }
+  // The end of a task settles the solutions it touched: a relayed solution is confirmed or counted as failed, and a correction that Claude finished
+  // after Qwen gave up, with every gate passed (checks, behaviour test, independent review, commit), becomes a verified solution for the next time.
+  settleSolutions(a, outcome) {
+    if (!a || !a.plan || this.qwenFixture) return;
+    try {
+      // Only what Qwen did with the relayed solution counts: confirmed when Qwen itself finished; failed when Claude had to take over after it or the gates rejected it
+      // (an environment or budget stop says nothing about the solution).
+      if (a.relayedSolution) {
+        if (outcome === 'completed' && a.implementer === 'qwen' && !a.claudeRepaired) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'completed');
+        else if ((outcome === 'completed' && (a.implementer === 'claude-after-qwen' || a.claudeRepaired)) || ['review-rejected', 'verify-failed'].includes(outcome)) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'failed');
+      }
+      // Kept only when the behaviour gate (test red on the base, green on the change) is required AND really runs the tests for this pilot, the checks passed, and the gate's OWN
+      // classification of the committed change finds a source file and a test (never a second classifier: a skipped gate proves nothing). Returns a promise (the gate reads git asynchronously).
+      const cfg = behaviorGate.normalize(this.def.behavior);
+      if (outcome !== 'completed' || !a.commit || !(a.implementer === 'claude-after-qwen' || a.claudeRepaired) || !a.verify || !a.verify.ok || !a.worktree || !cfg.required || cfg.lintOnly || cfg.invalid.length) return Promise.resolve();
+      const wt = a.worktree.path, base = a.baseSha, commit = a.commit, plan = a.plan, checks = a.verify.results.map((r) => 'check ' + r.name);
+      return behaviorGate.changed(wt, base).then((ch) => {
+        if (!ch) { this.log('lesson', 'Correction not kept as a verified solution: git could not say what changed'); return; }
+        const proof = [...checks, 'behaviour test red then green', 'independent review PASS', 'commit ' + String(commit).slice(0, 10)];
+        const made = verifiedSolutions.fromCommit({ repoPath: wt, baseSha: base, commit, plan, scope: this.lessonScope(), proof, createdBy: 'autopilot', gate: behaviorGate.classify(ch, cfg) });
+        if (!made.ok) { this.log('lesson', 'Correction not kept as a verified solution: ' + made.reason); return; }
+        verifiedSolutions.add(this.repoRoot, made.solution);
+        this.log('lesson', 'Verified solution kept for the next time: ' + made.solution.id + ' (' + made.solution.files.join(', ') + ')');
+      }).catch((e) => { this.log('warn', 'Verified solutions: ' + String(e.message || e).slice(0, 160)); });
+    } catch (e) { this.log('warn', 'Verified solutions: ' + String(e.message || e).slice(0, 160)); }
+  }
+  // Hands Qwen an independent solution that was already verified (see verified-solutions.js) as its guidance, once per task and only when its recorded
+  // conditions hold on this exact code. It is guidance, not a verdict: Qwen applies it itself and the change goes through every gate again.
+  relayVerifiedSolution(a, now, findings) {
+    const q = this.def.qwen;
+    if (!q || !q.enabled || this.qwenFixture || !a || !a.plan || a.qwenFailed || a.relayedSolution || a.implementer !== 'qwen') return false;
+    let found;
+    try { found = verifiedSolutions.find(this.repoRoot, { scope: this.lessonScope(), plan: a.plan, namedFiles: a.qwenFiles || this.qwenFilesFor(a.plan).files || [], repoPath: this.state.repoPath, baseSha: a.baseSha }); }
+    catch (e) { this.log('qwen', 'Verified solutions unavailable: ' + String(e.message || e).slice(0, 160)); return false; }
+    if (!found.solution) { this.trace('relay', { used: false, why: found.reason }); return false; }
+    const s = found.solution;
+    a.relayedSolution = s.id;
+    a.coachGuidance = String(s.guidance).slice(0, GUIDANCE_MAX);
+    a.coachFindings = String(findings || '').slice(0, 6000);
+    a.review = 'VERIFIED SOLUTION RELAYED BY THE HOST - follow it:\n' + a.coachGuidance + '\n\nWHAT FAILED BEFORE:\n' + a.coachFindings.slice(0, 3000);
+    a.implementer = 'qwen'; a.qwenCoachGrant = true; // one more Qwen attempt, as an explicit grant (the counters are left as they are)
+    try { verifiedSolutions.recordUse(this.repoRoot, s.id); } catch (_) {}
+    this.trace('relay', { used: true, id: s.id, conditions: s.conditions });
+    this.learn('solution-relayee', 'Solution verifiee "' + s.id + '" transmise a Qwen sur "' + (a.plan.title || '') + '" (' + String(s.conditions || '').slice(0, 200) + ')', 'qwen-local');
+    const hasWork = !!(a.worktree && a.baseSha && changedFiles(a.worktree.path, a.baseSha));
+    this.log('qwen', 'Coach exhausted: verified solution "' + s.id + '" handed to Qwen as guidance; Qwen tries again (' + (hasWork ? 'repair' : 'implement') + ')');
+    this.save();
+    this.dispatch(hasWork ? 'repair' : 'implement', now);
+    return true;
   }
   qwenCanTake(plan) {
     if (this.qwenFixture || !this.def.qwen || !this.def.qwen.enabled) return false;
@@ -1374,6 +1428,8 @@ class MindAutopilot {
       this.log('qwen', 'Qwen blocked (' + why.slice(0, 160) + '); Claude analyses the errors and guides Qwen before any takeover');
       this.dispatch('coach', now); return true;
     }
+    // Claude's coaching is used up: an independent solution already verified on this same code goes to Qwen as guidance first (Claude's takeover stays the last resort).
+    if (this.relayVerifiedSolution(a, now, 'Qwen stopped during ' + a.stage + ': ' + why + '\nIts notes: ' + ((e.notes || []).slice(-5).join(' | ') || 'none'))) return true;
     // hand back to Claude, reversibly: the worktree and Qwen's session file are kept
     a.qwenFailed = true; a.implementer = 'claude-after-qwen';
     (a.qwenStats = a.qwenStats || { handoffs: [] }).handoffs = [...(a.qwenStats.handoffs || []), { stage: a.stage, reason: why, at: new Date(now).toISOString() }];
@@ -1771,6 +1827,7 @@ class MindAutopilot {
       this.state.pendingCosts = [...(this.state.pendingCosts || []), { before: a.usageBefore, launchedAt: a.launchedAt || null, endedAt, done: {} }].slice(-20);
     }
     this.recordTaughtLesson(a, outcome);
+    this.settleSolutions(a, outcome);
     this.state.history.push({ category: a.plan?.category || null,
       title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
       evidence: a.plan?.evidence || [],
@@ -2297,6 +2354,23 @@ function mountMindAutopilot(addRoute, json, deps) {
     const tmp = defsFile + '.tmp-' + process.pid;
     fs.writeFileSync(tmp, JSON.stringify({ pilots: all }, null, 2)); fs.renameSync(tmp, defsFile);
     p.applyDefinition(all[p.id]); p.save(); return p.snapshot();
+  }));
+  // Verified solutions (see verified-solutions.js): listed, added (evidence mandatory) and removed behind the per-boot token; the plan of a task can be queued as such.
+  addRoute('GET', '/api/mind/autopilot/verified-solutions', (_req, res) => json(res, verifiedSolutions.read(deps.repoRoot)));
+  addRoute('POST', '/api/mind/autopilot/verified-solutions', async (req, res) => {
+    try {
+      const body = await readBody(req);
+      if (body.remove) { verifiedSolutions.remove(deps.repoRoot, String(body.remove)); return json(res, { ok: true }); }
+      json(res, { ok: true, solution: verifiedSolutions.add(deps.repoRoot, body) });
+    } catch (e) { json(res, { ok: false, error: e.message }, 400); }
+  });
+  // Queues a plan decided by the owner: it goes through the normal admission (duplicates; a blocked task needs newEvidence) and the normal pipeline (plan review, Qwen, gates).
+  addRoute('POST', '/api/mind/autopilot/enqueue', route((p, body) => {
+    const pl = body.plan || {};
+    if (!pl.title || !pl.objective) throw new Error('plan.title and plan.objective are required');
+    const plan = { ...pl, title: String(pl.title).slice(0, 400), objective: String(pl.objective).slice(0, 6000), evidence: (Array.isArray(pl.evidence) ? pl.evidence : []).slice(0, 12), category: pl.category || 'correctness' };
+    const before = (p.state.queue || []).length, size = p.enqueue([plan]);
+    return { ok: size > before, queued: size, snapshot: p.snapshot() };
   }));
   addRoute('POST', '/api/mind/autopilot/tick', route((p) => p.tick()));
   addRoute('POST', '/api/mind/autopilot/run-now', route((p) => p.runNow()));
