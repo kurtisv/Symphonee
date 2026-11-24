@@ -539,3 +539,24 @@ test('a protected change found after a PASSED review: on authorization it is com
     assert.equal(f.spawns.slice(before).filter((x) => x.stage === 'code-review').length, 0, 'no second review');
   } finally { f.cleanup(); }
 });
+
+test('a protection added while the task waited: the direct commit asks again for the newly protected file instead of committing it', async () => {
+  const f = setup({ def: { protectedPaths: ['^secrets/'] } });
+  try {
+    const base = gitc(f.repo, 'rev-parse', 'HEAD'), wt = path.join(f.root, 'wt-y');
+    gitc(f.repo, 'worktree', 'add', '-q', '-b', 'mind-autopilot/test-y', wt, base);
+    fs.mkdirSync(path.join(wt, 'secrets')); fs.writeFileSync(path.join(wt, 'secrets', 'k.txt'), 'x'); fs.writeFileSync(path.join(wt, 'z.test.js'), '1');
+    const { worktreeFingerprint } = require('./autopilot');
+    const a = { stage: 'code-review', plan: { title: 'Task Y', objective: 'x', evidence: [] }, worktree: { path: wt, branch: 'mind-autopilot/test-y' }, baseSha: base, repairs: 0, verify: { ok: true, results: [{ name: 'c' }] } };
+    a.reviewFingerprint = worktreeFingerprint(wt);
+    f.pilot.state.enabled = true; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
+    f.pilot.advance('VERDICT: PASS\nok');
+    const e = f.pilot.state.suspended[0];
+    f.pilot.def.protectedPaths = ['^secrets/', 'z\.test\.js$']; // a new protection while it waited
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    f.pilot.state.nextAt = 0; await f.pilot.tick(); f.pilot.state.nextAt = 0; await f.pilot.tick();
+    assert.ok(!f.pilot.state.history.some((x) => x.title === 'Task Y' && x.outcome === 'completed'), 'not committed');
+    const again = f.pilot.state.suspended.find((x) => x.request.category === 'protected-zone');
+    assert.ok(again && /z\.test\.js/.test(again.request.question));
+  } finally { f.cleanup(); }
+});

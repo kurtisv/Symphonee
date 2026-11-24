@@ -1448,7 +1448,13 @@ class MindAutopilot {
     this.log('owner', note.slice(0, 200));
   }
   // The independent review had passed and the owner authorized the protected change it contains: commit it as the review saw it.
-  commitAfterOwner(a) {
+  commitAfterOwner(a, now = Date.now()) {
+    // The protected paths under the CURRENT rules: anything not covered by an authorization of exactly this content is asked first.
+    const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
+    if (hits.length) {
+      const req = this.protectedRequest(a, hits), k = owner.operationKey(req);
+      if (!(a.ownerAsks && a.ownerAsks[k] && a.ownerAsks[k].answered === 'allowed')) return this.ownerRequest(a, req, 'code-review', now, { resumeAt: 'commit' });
+    }
     this.unlinkActive(a);
     a.commit = commitReviewed(a.worktree.path, a.plan, a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : []);
     this.log('commit', 'Changement revu commite apres ton autorisation sur ' + a.worktree.branch + ' : ' + a.commit.slice(0, 10));
@@ -2571,7 +2577,7 @@ class MindAutopilot {
           // reservation. The internal token cap only gates provider calls.
           const localVerify = a.waitingStage === 'verify' || a.waitingStage === 'commit'; // both local: no model call
           if (now < this.state.nextAt || (!localVerify && !heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
-          if (localVerify && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow('verify', now);
+          if (localVerify && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow(a.waitingStage, now); // keeps 'commit' as 'commit'
           if (a.ownerMainBase && a.waitingStage === 'code-review' && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow('code-review', now);
           if (a.localSuggestion) {
             const readings = this.readUsage ? this.readUsage(now) : capacity.readAll(this.repoRoot, this.def.capacity || {}, now);
@@ -2584,7 +2590,7 @@ class MindAutopilot {
           this.ownerBaseCheck(a);
           const ownerDone = () => { a.ownerPark = null; a.ownerResuming = null; a.ownerMainBase = null; };
           if (a.waitingStage === 'verify') { a.waitingStage = null; ownerDone(); this.startVerify(); return this.snapshot(); }
-          if (a.waitingStage === 'commit') { a.waitingStage = null; ownerDone(); this.commitAfterOwner(a); return this.snapshot(); }
+          if (a.waitingStage === 'commit') { a.waitingStage = null; ownerDone(); this.commitAfterOwner(a, now); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
           if (this.state.active === a && (a.taskId || a.stage === 'verify') && !a.waitingStage) { ownerDone(); this.save(); }
           return this.snapshot();
