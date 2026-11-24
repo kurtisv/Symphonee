@@ -1952,7 +1952,7 @@ class MindAutopilot {
     // Every check of this gate (proof runs, checks, retries) scans for secrets as it starts (see secretMask).
     const runV = (dir, cmds, o = {}) => guard.runVerify(dir, cmds, { ...o, beforeEach: () => { if (mask && mask.observe) { try { mask.observe(); } catch (_) {} } } });
     Promise.resolve().then(async () => {
-      const lint = [...guard.diffLint(cwd, base), ...behaviorGate.lint(cwd, base, this.def.behavior)];
+      const lint = [...guard.diffLint(cwd, base), ...(await behaviorGate.lint(cwd, base, this.def.behavior))];
       if (lint.length) return { ok: false, results: [], lint };
       if (!this.def.verify.length && !this.def.behavior.required) return { ok: true, results: [], lint: [] };
       const onStart = (proc, c) => {

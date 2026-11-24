@@ -26,33 +26,33 @@ const behaviourTest = (dir, name = 'add.test.js') => fs.writeFileSync(path.join(
 const weakTest = (dir) => fs.writeFileSync(path.join(dir, 'src/weak.test.js'),
   "const test = require('node:test'); const assert = require('node:assert/strict'); const { add } = require('./add');" + NL + "test('is a function', () => { assert.equal(typeof add, 'function') })" + NL);
 
-test('the gate is off unless required is true', () => {
+test('the gate is off unless required is true', async () => {
   const r = repo();
-  try { fix(r.dir); assert.deepEqual(gate.lint(r.dir, r.base, undefined), []); assert.deepEqual(gate.lint(r.dir, r.base, { required: false, sourceDirs: ['src/'] }), []); } finally { r.clean(); }
+  try { fix(r.dir); assert.deepEqual(await gate.lint(r.dir, r.base, undefined), []); assert.deepEqual(await gate.lint(r.dir, r.base, { required: false, sourceDirs: ['src/'] }), []); } finally { r.clean(); }
 });
 
-test('lint: a source change without any test file is refused, with the reason a repair prompt needs', () => {
+test('lint: a source change without any test file is refused, with the reason a repair prompt needs', async () => {
   const r = repo();
   try {
     fix(r.dir);
-    const f = gate.lint(r.dir, r.base, CFG);
+    const f = await gate.lint(r.dir, r.base, CFG);
     assert.equal(f.length, 1); assert.match(f[0], /BEHAVIOUR TEST REQUIRED: you changed src\/add\.js but no test file/);
     assert.match(f[0], /FAILS on the old code/); assert.match(f[0], /passing type check does not prove/);
   } finally { r.clean(); }
 });
 
-test('lint: a test file (new or edited) satisfies it; a change outside the source dirs, or tests only, is not concerned', () => {
+test('lint: a test file (new or edited) satisfies it; a change outside the source dirs, or tests only, is not concerned', async () => {
   const r = repo();
   try {
     fix(r.dir); behaviourTest(r.dir);
-    assert.deepEqual(gate.lint(r.dir, r.base, CFG), []);
+    assert.deepEqual(await gate.lint(r.dir, r.base, CFG), []);
   } finally { r.clean(); }
   const r2 = repo();
   try {
     fs.writeFileSync(path.join(r2.dir, 'README.md'), 'doc' + NL);
-    assert.deepEqual(gate.lint(r2.dir, r2.base, CFG), [], 'a docs-only change needs no test');
+    assert.deepEqual(await gate.lint(r2.dir, r2.base, CFG), [], 'a docs-only change needs no test');
     behaviourTest(r2.dir, 'only.test.js');
-    assert.deepEqual(gate.lint(r2.dir, r2.base, CFG), [], 'a tests-only change is not a source change');
+    assert.deepEqual(await gate.lint(r2.dir, r2.base, CFG), [], 'a tests-only change is not a source change');
   } finally { r2.clean(); }
 });
 
@@ -123,17 +123,17 @@ test('fail closed: when git cannot say what changed, the gate does not say "fine
   try {
     fix(r.dir); behaviourTest(r.dir);
     const bad = '0000000000000000000000000000000000000000';
-    assert.match(gate.lint(r.dir, bad, CFG)[0], /BEHAVIOUR GATE COULD NOT READ THE CHANGE/);
+    assert.match((await gate.lint(r.dir, bad, CFG))[0], /BEHAVIOUR GATE COULD NOT READ THE CHANGE/);
     const out = await gate.redGreen({ cwd: r.dir, base: bad, config: CFG });
     assert.equal(out.ok, false); assert.match(out.message, /COULD NOT READ THE CHANGE/);
   } finally { r.clean(); }
 });
 
-test('a deleted source file without a test is a source change too', () => {
+test('a deleted source file without a test is a source change too', async () => {
   const r = repo();
   try {
     fs.rmSync(path.join(r.dir, 'src/add.js'));
-    assert.match(gate.lint(r.dir, r.base, CFG)[0], /BEHAVIOUR TEST REQUIRED: you changed src\/add\.js/);
+    assert.match((await gate.lint(r.dir, r.base, CFG))[0], /BEHAVIOUR TEST REQUIRED: you changed src\/add\.js/);
   } finally { r.clean(); }
 });
 
@@ -154,4 +154,29 @@ test('red for the WRONG reason (the test cannot even load on the old code) is no
     const relaxed = await gate.redGreen({ cwd: r.dir, base: r.base, config: { ...CFG, allowLoadErrorRed: true } });
     assert.equal(relaxed.ok, true, relaxed.message);
   } finally { r.clean(); }
+});
+
+test('a source file with accents in its name is still a source change (git path quoting is off)', async () => {
+  const r = repo();
+  try {
+    fs.writeFileSync(path.join(r.dir, 'src', 'caf\u00e9.js'), 'module.exports = 1' + NL);
+    r.g('add', '.'); r.g('commit', '-qm', 'cafe'); const base = r.g('rev-parse', 'HEAD').stdout.trim();
+    fs.writeFileSync(path.join(r.dir, 'src', 'caf\u00e9.js'), 'module.exports = 2' + NL);
+    assert.match((await gate.lint(r.dir, base, CFG))[0], /BEHAVIOUR TEST REQUIRED: you changed src\/caf\u00e9\.js/);
+  } finally { r.clean(); }
+});
+
+test('a test file located under a linked folder is refused (it would be written through the link into the real checkout)', async () => {
+  const r = repo();
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'bgate-shared-'));
+  try {
+    fix(r.dir);
+    fs.mkdirSync(path.join(r.dir, 'src', 'vendor'), { recursive: true });
+    fs.symlinkSync(shared, path.join(r.dir, 'src', 'vendor', 'linked'), 'junction');
+    fs.writeFileSync(path.join(r.dir, 'src', 'vendor', 'linked', 'x.test.js'), 'x' + NL);
+    // the change adds a test whose path lies under the configured link folder
+    const out = await gate.redGreen({ cwd: r.dir, base: r.base, config: { ...CFG, sourceDirs: ['src/'], linkDirs: ['src/vendor/linked'] } });
+    assert.equal(out.ok, false);
+    assert.equal(fs.readdirSync(shared).length, 1, 'nothing was written through the link');
+  } finally { try { fs.rmdirSync(path.join(r.dir, 'src', 'vendor', 'linked')); } catch { /* ignore */ } fs.rmSync(shared, { recursive: true, force: true }); r.clean(); }
 });

@@ -30,11 +30,23 @@ function normalize(c) {
     testCmd: testCmd.includes('{files}') ? testCmd : [], linkDirs: arr(c.linkDirs, 8).map(posix).filter(safeLink), allowLoadErrorRed: c.allowLoadErrorRed === true,
     timeoutMs: Math.min(Math.max(Number(c.timeoutMs) || 600000, 10000), 30 * 60000) };
 }
-function git(cwd, args) { return cp.spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024, timeout: GIT_MS }); }
+// Asynchronous (the server is never frozen by a slow git) with a hard timeout, and no path quoting: "src/caf\u00e9.js" must come back as itself.
+function git(cwd, args) {
+  return new Promise((resolve) => {
+    let out = '', err = '', done = false, proc, timer = null;
+    const end = (status) => { if (done) return; done = true; clearTimeout(timer); resolve({ status, stdout: out, stderr: err }); };
+    try { proc = cp.spawn('git', ['-c', 'core.quotePath=false', ...args], { cwd, windowsHide: true }); } catch (e) { return resolve({ status: -1, stdout: '', stderr: String(e.message) }); }
+    proc.stdout.on('data', (d) => { out += d; if (out.length > 32e6) out = out.slice(-16e6); });
+    proc.stderr.on('data', (d) => { err += d; if (err.length > 1e6) err = err.slice(-5e5); });
+    timer = setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } try { proc.stdout.destroy(); proc.stderr.destroy(); } catch { /* ignore */ } end(-1); }, GIT_MS);
+    proc.on('error', () => end(-1));
+    proc.on('close', (c) => end(c === null ? -1 : c));
+  });
+}
 // { files, deleted } of the change since `base`, or null when git could not tell (the caller must fail closed).
-function changed(cwd, base) {
-  const a = git(cwd, ['diff', '--name-status', '--no-renames', base, '--']), b = git(cwd, ['ls-files', '--others', '--exclude-standard']);
-  if (a.status !== 0 || b.status !== 0 || a.error || b.error) return null;
+async function changed(cwd, base) {
+  const a = await git(cwd, ['diff', '--name-status', '--no-renames', base, '--']), b = await git(cwd, ['ls-files', '--others', '--exclude-standard']);
+  if (a.status !== 0 || b.status !== 0) return null;
   const files = new Set(), deleted = new Set();
   for (const line of String(a.stdout).split('\n')) { const m = /^([A-Z])\t(.+)$/.exec(line.trim()); if (!m) continue; (m[1] === 'D' ? deleted : files).add(posix(m[2])); }
   for (const f of String(b.stdout).split('\n').map((s) => posix(s.trim())).filter(Boolean)) files.add(f);
@@ -47,9 +59,9 @@ function classify(ch, cfg) {
 }
 const GIT_FAILED = 'BEHAVIOUR GATE COULD NOT READ THE CHANGE (git failed or timed out): the behaviour of this change is not verified.';
 // Findings for the repair prompt; [] when the gate is off or the change touches no source code.
-function lint(cwd, base, rawCfg) {
+async function lint(cwd, base, rawCfg) {
   const cfg = normalize(rawCfg); if (!cfg.required) return [];
-  const ch = changed(cwd, base); if (!ch) return [GIT_FAILED];
+  const ch = await changed(cwd, base); if (!ch) return [GIT_FAILED];
   const { source, tests } = classify(ch, cfg);
   if (!source.length || tests.length) return [];
   return ['BEHAVIOUR TEST REQUIRED: you changed ' + source.slice(0, 4).join(', ') + ' but no test file. Add or extend a test that FAILS on the old code (it must reproduce the problem the task describes: a concrete sequence of events, not only that the code compiles) and PASSES on your change. A passing type check does not prove the task is done.'];
@@ -77,35 +89,35 @@ function runCmd(cmd, cwd, files, timeoutMs) {
   });
 }
 // Removes a scratch checkout without ever following a link into the real one. Returns false when something had to be left behind.
-function removeScratch(repo, tmp, links) {
+async function removeScratch(repo, tmp, links) {
   for (const l of links) { try { const p = path.join(tmp, l); if (fs.lstatSync(p).isSymbolicLink()) fs.rmdirSync(p); } catch { try { cp.spawnSync('cmd', ['/c', 'rmdir', path.join(tmp, l)], { windowsHide: true, timeout: 10000 }); } catch { /* left for the OS temp cleaner */ } } }
   const stillLinked = links.some((l) => { try { return fs.lstatSync(path.join(tmp, l)).isSymbolicLink(); } catch { return false; } });
   if (stillLinked) return false; // never delete through a link that could not be removed
-  const rm = git(repo, ['worktree', 'remove', '--force', tmp]);
+  const rm = await git(repo, ['worktree', 'remove', '--force', tmp]);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
-  git(repo, ['worktree', 'prune']); // a directory that is gone must not stay registered
+  await git(repo, ['worktree', 'prune']); // a directory that is gone must not stay registered
   return rm.status === 0 || !fs.existsSync(tmp);
 }
 // Red then green. `ok` is true only when the tests fail on the base (for a behavioural reason) and pass on the change.
 async function redGreen({ cwd, base, config, linkFrom = null }) {
   const cfg = normalize(config);
   if (!cfg.required || !cfg.testCmd.length) return { ok: true, skipped: true, message: 'behaviour gate: no test command configured (lint only)' };
-  const ch = changed(cwd, base); if (!ch) return { ok: false, message: GIT_FAILED };
+  const ch = await changed(cwd, base); if (!ch) return { ok: false, message: GIT_FAILED };
   const { source, tests } = classify(ch, cfg);
   if (!source.length) return { ok: true, skipped: true, message: 'behaviour gate: no source change' };
-  if (!tests.length) return { ok: false, message: lint(cwd, base, config)[0] || 'BEHAVIOUR TEST REQUIRED' };
+  if (!tests.length) return { ok: false, message: (await lint(cwd, base, config))[0] || 'BEHAVIOUR TEST REQUIRED' };
   const t0 = Date.now(), tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'behavior-gate-')), links = [];
-  const topRun = git(cwd, ['rev-parse', '--show-toplevel']), top = String(topRun.stdout || '').trim();
+  const topRun = await git(cwd, ['rev-parse', '--show-toplevel']), top = String(topRun.stdout || '').trim();
   if (topRun.status !== 0 || !top) { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ } return { ok: false, message: GIT_FAILED }; }
   try {
-    const add = git(top, ['worktree', 'add', '--detach', tmp, base]);
+    const add = await git(top, ['worktree', 'add', '--detach', tmp, base]);
     if (add.status !== 0) return { ok: false, message: 'behaviour gate could not create a checkout of the base: ' + String(add.stderr || '').slice(0, 300) };
     for (const d of cfg.linkDirs) {
       const from = path.resolve(linkFrom || cwd, d), to = path.resolve(tmp, d);
       if (!to.startsWith(path.resolve(tmp) + path.sep)) continue; // never outside the scratch checkout
       if (fs.existsSync(from) && !fs.existsSync(to)) { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.symlinkSync(from, to, 'junction'); links.push(d); }
     }
-    for (const f of tests) { const to = path.resolve(tmp, f); if (!to.startsWith(path.resolve(tmp) + path.sep)) return { ok: false, message: 'behaviour gate refused a test path outside the checkout: ' + f }; fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(path.join(cwd, f), to); }
+    for (const f of tests) { if (cfg.linkDirs.some((d) => f === d || f.startsWith(d + '/'))) return { ok: false, message: 'behaviour gate refused a test located under a linked folder (' + f + '): it would be written through the link' }; const to = path.resolve(tmp, f); if (!to.startsWith(path.resolve(tmp) + path.sep)) return { ok: false, message: 'behaviour gate refused a test path outside the checkout: ' + f }; fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(path.join(cwd, f), to); }
     const red = await runCmd(cfg.testCmd, tmp, tests, cfg.timeoutMs);
     const green = await runCmd(cfg.testCmd, cwd, tests, cfg.timeoutMs);
     const wrongReason = red.code !== 0 && !red.timedOut && !cfg.allowLoadErrorRed && LOAD_ERROR.test(red.out) && !/(AssertionError|expect\(|Expected[: ]|Received[: ])/.test(red.out); // an ASSERTION failed: that is behaviour. A failed file summary alone (✖, FAIL, not ok) also appears when the file cannot load.
@@ -118,7 +130,7 @@ async function redGreen({ cwd, base, config, linkFrom = null }) {
     return { ok, red: red.code !== 0 && !wrongReason, green: green.code === 0, message, ms: Date.now() - t0, tests, scratch: tmp };
   } catch (e) {
     return { ok: false, message: 'behaviour gate error: ' + String(e.message || e).slice(0, 300) };
-  } finally { if (!removeScratch(top, tmp, links)) console.warn('[behavior-gate] scratch checkout left behind: ' + tmp); }
+  } finally { if (!(await removeScratch(top, tmp, links))) console.warn('[behavior-gate] scratch checkout left behind: ' + tmp); }
 }
 
 module.exports = { normalize, changed, classify, lint, redGreen, safeLink };
