@@ -705,7 +705,7 @@ test('behaviour gate: DONE is refused while a source change has no test, and acc
   const edit = 'EDIT src/add.js\n<<<<<<< SEARCH\nfunction add(a, b) { return a }\n=======\nfunction add(a, b) { return a + b }\n>>>>>>> REPLACE\nRUN\nDONE fixed';
   const test = 'CREATE src/add.test.js\n<<<<<<< CONTENT\nconst t = require("node:test");\nt("adds", () => {});\n>>>>>>> END\nRUN\nDONE fixed with a test';
   const lm = fakeLm([edit, test, 'STUCK x']);
-  const out = await run(r, lm, { behavior: { required: true, sourceDirs: ['src/'] },
+  const out = await run(r, lm, { behavior: { required: true, sourceDirs: ['src/'], lintOnly: true },
     dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
   assert.equal(out.state, 'completed');
   assert.match(lm.prompts[1], /DONE refused: BEHAVIOUR TEST REQUIRED: you changed src\/add\.js but no test file/);
