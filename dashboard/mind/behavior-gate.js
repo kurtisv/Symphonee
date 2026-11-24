@@ -136,6 +136,7 @@ async function redGreen({ cwd, base, config, linkFrom = null }) {
     for (const d of cfg.linkDirs) {
       const from = path.resolve(linkFrom || cwd, d), to = path.resolve(tmp, d);
       if (!to.startsWith(path.resolve(tmp) + path.sep)) continue; // never outside the scratch checkout
+      if (underSymlink(tmp, d)) continue; // nor through a link the base itself contains (a parent of the link target may point elsewhere)
       if (fs.existsSync(from) && !fs.existsSync(to)) { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.symlinkSync(from, to, 'junction'); links.push(d); }
     }
     for (const f of tests) { if (cfg.linkDirs.some((d) => f === d || f.startsWith(d + '/'))) return { ok: false, message: 'behaviour gate refused a test located under a linked folder (' + f + '): it would be written through the link' }; const to = path.resolve(tmp, f); if (!to.startsWith(path.resolve(tmp) + path.sep)) return { ok: false, message: 'behaviour gate refused a test path outside the checkout: ' + f }; if (underSymlink(tmp, f)) return { ok: false, message: 'behaviour gate refused a test path that goes through a symbolic link of the base: ' + f }; fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(path.join(cwd, f), to); }
