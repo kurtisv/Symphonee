@@ -238,6 +238,26 @@ test('the repair/implement call sends Claude guidance and findings as their own 
     assert.deepEqual(seen.behavior, { required: true, sourceDirs: ['src/'] });
     a.stage = 'repair'; a.review = 'LOCAL VERIFICATION FAILED: boom END-FINDINGS';
     p.spawnQwenRepoStage('repair', { files: ['a.js'] }, Date.now(), {});
-    assert.match(seen.task.findings, /END-FINDINGS/); assert.equal(seen.task.guidance, '');
+    assert.match(seen.task.findings, /END-FINDINGS/); assert.equal(seen.task.guidance, guidance, 'the guidance keeps its own field in the repair stage too');
+  } finally { r.cleanup(); }
+});
+
+test('after a coach, the repair stage splits the wrapper: guidance in its own field, only "what failed" in the findings', () => {
+  const r = repo();
+  try {
+    const guidance = 'ROOT CAUSE: x. 7. BEHAVIOUR TEST: FILE: src/t.test.ts END-TEST';
+    const a = { stage: 'repair', plan, implementer: 'qwen', worktree: { path: r.dir }, baseSha: r.base, coachGuidance: guidance,
+      review: 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it:\n' + guidance + '\n\nWHAT FAILED BEFORE:\nFAILED-PART tsc error TS2304' };
+    const p = pilot(r, a);
+    p.stepMs = 600000; p.repoRoot = r.dir; p.id = 'default'; p.profile = {}; p.state.repoPath = r.dir; p.qwenRealMemory = () => ({ text: '' });
+    let seen = null; p.orch = { spawnQwenInWorktree: (o) => { seen = o; return { id: 't' }; } };
+    p.spawnQwenRepoStage('repair', { files: ['a.js'] }, Date.now(), {});
+    assert.equal(seen.task.guidance, guidance);
+    assert.match(seen.task.findings, /FAILED-PART tsc error TS2304/);
+    assert.doesNotMatch(seen.task.findings, /END-TEST|GUIDANCE FROM CLAUDE/, 'the guidance is not duplicated inside the findings');
+    // a later repair (the review text is now plain findings): guidance is still sent
+    a.review = 'LOCAL VERIFICATION FAILED: later failure';
+    p.spawnQwenRepoStage('repair', { files: ['a.js'] }, Date.now(), {});
+    assert.equal(seen.task.guidance, guidance); assert.match(seen.task.findings, /later failure/);
   } finally { r.cleanup(); }
 });

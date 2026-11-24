@@ -203,6 +203,8 @@ const WORK_CATEGORIES = Object.freeze(['correctness', 'performance', 'quality', 
 const STAGES = Object.freeze(['discover', 'plan-review', 'implement', 'code-review', 'repair', 'coach']);
 // Decision of 2026-11-22: Qwen writes the code; when it fails, Claude first ANALYSES and GUIDES it
 // (read-only), Qwen tries again, and Claude only takes the correction over if Qwen is still stuck.
+// Claude's guidance can carry a complete test file: one size for what is stored, sent and shown to Qwen (a size, not a limit on Claude's help).
+const GUIDANCE_MAX = 9000;
 const COACH_PROMPT = [
   'Claude, senior technical assistant of a small local developer (Qwen, 9B parameters, 8k context, edits files with exact SEARCH/REPLACE blocks).',
   'Qwen could not finish the approved task below. READ-ONLY: do not edit, create or delete any file, do not commit. Your job is to help Qwen succeed by itself.',
@@ -1305,11 +1307,14 @@ class MindAutopilot {
     const sessionFile = path.join(this.repoRoot, '.symphonee', 'qwen-sessions', this.id + '-' + a.qwenSessionId + '.json');
     const win = windowEndAfter(this.def.schedule, now), stepEnd = now + this.stepMs - 90000;
     const deadlineAt = a.manual || !win ? stepEnd : Math.min(stepEnd, win);
-    // The findings and Claude's guidance travel as their own fields: inside the objective the worker cut them at 1800 characters.
+    // Claude's guidance (with its behaviour test) travels in its OWN field at EVERY stage, and the findings in theirs: inside the objective the
+    // worker cut them at 1800 characters, and after a coach the repair stage used to carry the guidance inside the findings (cut under pressure).
+    const reviewText = String(a.review || '');
+    const failedPart = a.coachGuidance && /^GUIDANCE FROM CLAUDE/.test(reviewText) ? ((/\n\nWHAT FAILED BEFORE:\n([\s\S]*)$/.exec(reviewText) || [])[1] || '').slice(0, 7000) : reviewText.slice(0, 7000);
     const objective = [String(a.plan.objective || ''), (a.plan.evidence || []).length ? 'Evidence: ' + JSON.stringify(a.plan.evidence).slice(0, 700) : '',
       'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
     return this.orch.spawnQwenInWorktree({ behavior: this.def.behavior, from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
-      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, findings: repair ? String(a.review || '').slice(0, 7000) : '', guidance: !repair && a.coachGuidance ? String(a.coachGuidance).slice(0, 6000) : '', files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
+      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, findings: repair ? failedPart : '', guidance: a.coachGuidance ? String(a.coachGuidance).slice(0, GUIDANCE_MAX) : '', files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
       memoryText: this.qwenRealMemory(q).text, sessionFile, deadlineAt,
       // Linked before the first RUN so the repository's own checks can find their dependencies.
       onWorktree: (wt) => { a.worktree = wt; const top = repoTopLevel(wt.path); if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed'); a.links = guard.linkDirs(this.state.repoPath, wt.path, this.def.linkDirs); } });
@@ -1920,7 +1925,7 @@ class MindAutopilot {
       && worktreeFingerprint(a.coachCwd, a.coachCwd === this.state.repoPath ? { head: false } : undefined) !== a.coachFingerprint) {
       throw new Error('Files changed during Claude\'s read-only guidance; stopped for inspection: ' + a.coachCwd);
     }
-    const guidance = String(raw || '').trim().slice(0, 6000);
+    const guidance = String(raw || '').trim().slice(0, GUIDANCE_MAX);
     a.qwenCoached = (a.qwenCoached || 0) + 1;
     if (!guidance) { a.qwenFailed = true; a.implementer = 'claude-after-qwen'; this.log('qwen', 'Claude returned no guidance; Claude takes the correction over'); return this.dispatch(a.worktree ? 'repair' : 'implement', now); }
     a.coachGuidance = guidance;
