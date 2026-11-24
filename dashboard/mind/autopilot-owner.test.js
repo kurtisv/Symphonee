@@ -410,3 +410,25 @@ test('an authorization is bound to its operation: the same task asking for ANOTH
   assert.equal(owner.parseRequest('no marker'), null);
   assert.equal(owner.parseRequest(owner.MARKER + ' {"category":"weird","question":"q"}').category, 'other', 'an unknown category is "other" (always asks)');
 });
+
+test('a second change while a conflict question waits: "Reprendre" does not run on the unseen state, a new conflict question is asked', async () => {
+  const f = setup({ refuseThenNoChange: true });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'refuse' });
+    fs.writeFileSync(path.join(e.worktree.path, 'index.test.js'), 'change 1');
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    const firstConflict = e.decisionId;
+    fs.writeFileSync(path.join(e.worktree.path, 'index.test.js'), 'change 2, not seen by the owner');
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'resume' });
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.ok(f.pilot.state.suspended.includes(e), 'still waiting');
+    assert.notEqual(e.decisionId, firstConflict, 'a new conflict question about the new state');
+    assert.ok(e.priorAnswer && !require('./autopilot-owner').isAllowed(e.priorAnswer), 'the refusal is still kept');
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'resume' });
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(f.pilot.state.suspended.length, 0); assert.ok(f.pilot.state.active.ownerRefused.length >= 1);
+  } finally { f.cleanup(); }
+});

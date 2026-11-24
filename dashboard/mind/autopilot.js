@@ -1483,6 +1483,16 @@ class MindAutopilot {
     this.save();
     return { ok: true, decision: r.decision };
   }
+  worktreeProblems(e) {
+    const problems = [];
+    if (!e.worktree) return problems;
+    if (!fs.existsSync(e.worktree.path)) return ['le worktree n existe plus'];
+    const cur = this.worktreeState(e.worktree.path);
+    if (e.worktree.branch && cur.branch !== e.worktree.branch) problems.push('la branche est ' + cur.branch + ' au lieu de ' + e.worktree.branch);
+    if (cur.head !== e.worktree.head) problems.push('le commit a change');
+    else if (cur.fingerprint !== e.worktree.fingerprint) problems.push('des fichiers ont change pendant l attente');
+    return problems;
+  }
   // A task whose decision was answered comes back first, under the same work window, budget and capacity rules as any launch.
   // Before it resumes: the same worktree, branch, commit and content as when it was suspended, and no protected path changed under the current rules.
   resumeAnswered(now = Date.now()) {
@@ -1506,7 +1516,22 @@ class MindAutopilot {
     if (!budget.canDispatch(this.state, now, this.limits)) return false;
     if (this.def.capacity) { const { decision } = this.capacityDecision(now); if (decision.admissible < 1) return false; }
     const d = e.answer;
-    // A conflict question (the worktree changed while it waited) answered: archive, or resume with the first answer and the worktree as it is now.
+    // What changed since the state the owner last saw (e.worktree: at suspension, or the state shown in a conflict question).
+    const problems = this.worktreeProblems(e);
+    // Any change the owner has not seen: a (new) conflict question, bound to the worktree as it is NOW; the earlier answer is kept with it.
+    if (problems.length) {
+      const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change pendant l attente', body: 'Tache : ' + ((e.active && e.active.plan && e.active.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nReprendre : un refus est applique tel quel ; une autorisation est redemandee sur cet etat. Archiver retire la tache (worktree conserve).',
+        options: [{ id: 'resume', label: 'Reprendre' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
+        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, suspendedId: e.id, kind: 'conflict' } });
+      if (c.error) return false;
+      if (e.kind !== 'conflict') e.priorAnswer = e.priorAnswer || d; // the owner's answer to the request (a conflict answer is not one)
+      e.worktree = e.worktree && fs.existsSync(e.worktree.path) ? { path: e.worktree.path, ...this.worktreeState(e.worktree.path) } : e.worktree;
+      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null;
+      this.log('owner', 'La tache en attente ne reprend pas : ' + problems.join('; ') + '. Nouvelle question ' + c.decision.id);
+      this.save();
+      return false;
+    }
+    // A conflict question answered, on exactly the state it showed: archive; or resume (a refusal applies as it was, an authorization is asked again).
     if (e.kind === 'conflict') {
       if (!(d.answer && d.answer.choice === 'resume')) {
         this.state.suspended = list.filter((x) => x !== e);
@@ -1517,41 +1542,18 @@ class MindAutopilot {
         return true;
       }
       if (e.priorAnswer && !owner.isAllowed(e.priorAnswer)) {
-        // The owner had REFUSED and now resumes: the refusal is applied as it was (it authorizes nothing), on the worktree as it is now.
         const refusal = e.priorAnswer;
         this.state.suspended = list.filter((x) => x !== e);
         this.state.suspendedLog = [...(this.state.suspendedLog || []), { id: e.id, decisionId: refusal.id, task: e.active && e.active.plan && e.active.plan.title, question: e.request.question, status: 'refused', by: refusal.answer ? refusal.answer.by : null, at: new Date(now).toISOString() }].slice(-40);
         this.applyOwnerAnswer(e, refusal, now);
         return true;
       }
-      e.worktree = e.worktree && fs.existsSync(e.worktree.path) ? { ...e.worktree, branch: (() => { try { return git(e.worktree.path, ['rev-parse', '--abbrev-ref', 'HEAD']); } catch (_) { return e.worktree.branch; } })(), head: git(e.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(e.worktree.path) } : e.worktree;
-      const again = this.decisionStore().create({ title: (this.def.label || this.id) + ' : ' + e.request.question.slice(0, 180), body: 'Question posee a nouveau : le worktree a change pendant l attente, ta premiere reponse ne couvre pas ce nouvel etat.\n\n' + e.request.question + (e.request.consequences ? '\n\nConsequences : ' + e.request.consequences : ''),
+      const again = store.create({ title: (this.def.label || this.id) + ' : ' + e.request.question.slice(0, 180), body: 'Question posee a nouveau : le worktree a change pendant l attente, ta premiere reponse ne couvre pas ce nouvel etat.\n\n' + e.request.question + (e.request.consequences ? '\n\nConsequences : ' + e.request.consequences : ''),
         options: [{ id: 'allow', label: 'Autoriser' }, { id: 'refuse', label: 'Refuser' }], allowText: true, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
         meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, consequences: e.request.consequences, suspendedId: e.id, kind: 'autopilot' } });
       if (again.error) return false;
       e.decisionId = again.decision.id; e.kind = 'request'; e.problems = null; e.firstDecisionId = null; e.answer = null; e.priorAnswer = null;
       this.log('owner', 'Worktree accepte dans son nouvel etat : la question est reposee (' + again.decision.id + ')');
-      this.save();
-      return false;
-    }
-    const problems = [];
-    if (e.worktree) {
-      if (!fs.existsSync(e.worktree.path)) problems.push('le worktree n existe plus');
-      else {
-        let branch = null, head = null; try { branch = git(e.worktree.path, ['rev-parse', '--abbrev-ref', 'HEAD']); head = git(e.worktree.path, ['rev-parse', 'HEAD']); } catch (_) {}
-        if (e.worktree.branch && branch !== e.worktree.branch) problems.push('la branche est ' + branch + ' au lieu de ' + e.worktree.branch);
-        if (head !== e.worktree.head) problems.push('le commit a change');
-        else if (worktreeFingerprint(e.worktree.path) !== e.worktree.fingerprint) problems.push('des fichiers ont change pendant l attente');
-
-      }
-    }
-    if (problems.length) {
-      const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change pendant l attente', body: 'Tache : ' + ((e.active && e.active.plan && e.active.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nTa reponse precedente (' + d.id + ') est gardee. Reprendre continue avec le worktree tel qu il est maintenant ; Archiver retire la tache (worktree conserve).',
-        options: [{ id: 'resume', label: 'Reprendre quand meme' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
-        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, suspendedId: e.id, kind: 'conflict' } });
-      if (c.error) return false;
-      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.priorAnswer = e.priorAnswer || d; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems; e.answer = null;
-      this.log('owner', 'La tache en attente ne reprend pas : ' + problems.join('; ') + '. Nouvelle question ' + c.decision.id);
       this.save();
       return false;
     }
