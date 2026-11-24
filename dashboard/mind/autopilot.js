@@ -496,7 +496,7 @@ class MindAutopilot {
       verify: guard.validCommands(def.verify || []),
       linkDirs: (def.linkDirs || []).map(String).slice(0, 8),
       // Behaviour gate (see behavior-gate.js): a source change needs a test that fails on the old code and passes on the change.
-      behavior: behaviorGate.normalize(def.behavior),
+      behavior: behaviorGate.normalize(def.behavior), // an invalid REQUIRED gate stays invalid on purpose: every change is then refused with the reason (fail closed)
       protectedPaths: (def.protectedPaths || []).map(String).slice(0, 60),
       // Repository-specific process rules (risk levels, design sheets, lot
       // files...), injected into every stage so the loop follows them.
@@ -1960,7 +1960,6 @@ class MindAutopilot {
       };
       let vr = this.def.verify.length ? await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) }) : { ok: true, results: [] };
       // The checks are green: the tests of the change must also FAIL on the old code (red) and pass on the new (green).
-      if (vr.ok && this.def.behavior.required && !this.def.behavior.testCmd.length) this.log('verify', 'Behaviour gate is lint-only: no testCmd configured, the tests are required but not executed');
       if (vr.ok && this.def.behavior.required && this.def.behavior.testCmd.length) {
         const rg = await behaviorGate.redGreen({ cwd, base, config: this.def.behavior, linkFrom: this.state.repoPath });
         this.log('verify', rg.skipped ? 'Behaviour gate skipped: ' + rg.message : 'Behaviour gate ' + (rg.ok ? 'PASSED' : 'FAILED') + ': ' + String(rg.message).replace(/\s+/g, ' ').slice(0, 200));

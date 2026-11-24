@@ -26,7 +26,13 @@ function normalize(c) {
   const arr = (x, n) => (Array.isArray(x) ? x.map(String).filter(Boolean).slice(0, n) : []);
   const testPatterns = arr(c.testPatterns, 10).filter((s) => { try { new RegExp(s); return true; } catch { return false; } });
   const testCmd = arr(c.testCmd, 20);
-  return { required: true, sourceDirs: arr(c.sourceDirs, 20).map(posix), testPatterns: testPatterns.length ? testPatterns : ['(^|/)__tests__/', '\\.(test|spec)\\.[jt]sx?$'],
+  const sourceDirs = arr(c.sourceDirs, 20).map(posix);
+  // A REQUIRED gate that cannot do what it promises must say so, not switch itself off: no sourceDirs means no change would ever count as
+  // source, no runnable testCmd means no red/green (lint-only must be asked for explicitly with lintOnly: true).
+  const invalid = [];
+  if (!sourceDirs.length) invalid.push('sourceDirs is empty (no change would count as source code)');
+  if (!testCmd.includes('{files}') && c.lintOnly !== true) invalid.push('testCmd must be a command containing "{files}" (or set lintOnly: true to accept a presence-only check)');
+  return { required: true, invalid, lintOnly: c.lintOnly === true, sourceDirs, testPatterns: testPatterns.length ? testPatterns : ['(^|/)__tests__/', '\\.(test|spec)\\.[jt]sx?$'],
     testCmd: testCmd.includes('{files}') ? testCmd : [], linkDirs: arr(c.linkDirs, 8).map(posix).filter(safeLink), allowLoadErrorRed: c.allowLoadErrorRed === true,
     timeoutMs: Math.min(Math.max(Number(c.timeoutMs) || 600000, 10000), 30 * 60000) };
 }
@@ -57,10 +63,12 @@ function classify(ch, cfg) {
   const isSource = (f) => !isTest(f) && cfg.sourceDirs.some((d) => f.startsWith(d)) && /\.[cm]?[jt]sx?$/.test(f);
   return { tests: ch.files.filter(isTest), source: [...ch.files, ...ch.deleted].filter(isSource) };
 }
+const MISCONFIGURED = (cfg) => 'BEHAVIOUR GATE MISCONFIGURED (it is required but cannot verify anything): ' + cfg.invalid.join('; ') + '. Fix def.behavior in the pilot definition.';
 const GIT_FAILED = 'BEHAVIOUR GATE COULD NOT READ THE CHANGE (git failed or timed out): the behaviour of this change is not verified.';
 // Findings for the repair prompt; [] when the gate is off or the change touches no source code.
 async function lint(cwd, base, rawCfg) {
   const cfg = normalize(rawCfg); if (!cfg.required) return [];
+  if (cfg.invalid.length) return [MISCONFIGURED(cfg)];
   const ch = await changed(cwd, base); if (!ch) return [GIT_FAILED];
   const { source, tests } = classify(ch, cfg);
   if (!source.length || tests.length) return [];
@@ -101,7 +109,9 @@ async function removeScratch(repo, tmp, links) {
 // Red then green. `ok` is true only when the tests fail on the base (for a behavioural reason) and pass on the change.
 async function redGreen({ cwd, base, config, linkFrom = null }) {
   const cfg = normalize(config);
-  if (!cfg.required || !cfg.testCmd.length) return { ok: true, skipped: true, message: 'behaviour gate: no test command configured (lint only)' };
+  if (!cfg.required) return { ok: true, skipped: true, message: 'behaviour gate: off' };
+  if (cfg.invalid.length) return { ok: false, message: MISCONFIGURED(cfg) };
+  if (!cfg.testCmd.length) return { ok: true, skipped: true, message: 'behaviour gate: lint only (lintOnly: true), the tests are required but not executed' };
   const ch = await changed(cwd, base); if (!ch) return { ok: false, message: GIT_FAILED };
   const { source, tests } = classify(ch, cfg);
   if (!source.length) return { ok: true, skipped: true, message: 'behaviour gate: no source change' };

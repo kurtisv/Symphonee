@@ -89,3 +89,12 @@ test('a pilot with the gate required but NO ordinary check command is still gate
     assert.equal(a.verify.ok, false); assert.equal(a.verify.results.at(-1).name, 'behavior-red-green'); assert.deepEqual(p.dispatched, ['repair']);
   } finally { r.clean(); }
 });
+
+test('a required gate without sourceDirs refuses every change with the reason instead of silently passing', async () => {
+  const r = repo();
+  try {
+    fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a + b }' + NL + 'module.exports = { add }' + NL);
+    const { p, a } = pilot(r, { required: true, testCmd: BEHAVIOR.testCmd }); p.startVerify(); await settle(a);
+    assert.equal(a.verify.ok, false); assert.match(a.review, /BEHAVIOUR GATE MISCONFIGURED/); assert.deepEqual(p.dispatched, ['repair']);
+  } finally { r.clean(); }
+});

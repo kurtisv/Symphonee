@@ -92,7 +92,7 @@ test('red-green: without a test file the answer is the lint message; without a c
   try {
     fix(r.dir);
     assert.match((await gate.redGreen({ cwd: r.dir, base: r.base, config: CFG })).message, /BEHAVIOUR TEST REQUIRED/);
-    assert.equal((await gate.redGreen({ cwd: r.dir, base: r.base, config: { ...CFG, testCmd: [] } })).skipped, true);
+    assert.equal((await gate.redGreen({ cwd: r.dir, base: r.base, config: { ...CFG, testCmd: [], lintOnly: true } })).skipped, true, 'lint-only must be asked for');
     assert.equal((await gate.redGreen({ cwd: r.dir, base: r.base, config: undefined })).skipped, true);
   } finally { r.clean(); }
   const r2 = repo();
@@ -114,8 +114,8 @@ test('the scratch checkout is removed, and a linked folder (node_modules) is nev
 });
 
 test('normalize: bad patterns are dropped, a command without {files} is ignored, links cannot leave the checkout', () => {
-  const n = gate.normalize({ required: true, sourceDirs: ['src\\'], testPatterns: ['(', '\\.spec\\.js$'], testCmd: ['node', '--test'], linkDirs: ['node_modules', '../x', 'C:\\x'] });
-  assert.deepEqual(n.sourceDirs, ['src/']); assert.deepEqual(n.testPatterns, ['\\.spec\\.js$']); assert.deepEqual(n.testCmd, []); assert.deepEqual(n.linkDirs, ['node_modules']);
+  const n = gate.normalize({ required: true, sourceDirs: ['src\\'], testPatterns: ['(', '\\.spec\\.js$'], testCmd: ['node', '--test'], lintOnly: true, linkDirs: ['node_modules', '../x', 'C:\\x'] });
+  assert.deepEqual(n.sourceDirs, ['src/']); assert.deepEqual(n.testPatterns, ['\\.spec\\.js$']); assert.deepEqual(n.testCmd, []); assert.deepEqual(n.linkDirs, ['node_modules']); assert.deepEqual(n.invalid, []);
 });
 
 test('fail closed: when git cannot say what changed, the gate does not say "fine"', async () => {
@@ -179,4 +179,19 @@ test('a test file located under a linked folder is refused (it would be written 
     assert.equal(out.ok, false);
     assert.equal(fs.readdirSync(shared).length, 1, 'nothing was written through the link');
   } finally { try { fs.rmdirSync(path.join(r.dir, 'src', 'vendor', 'linked')); } catch { /* ignore */ } fs.rmSync(shared, { recursive: true, force: true }); r.clean(); }
+});
+
+test('a REQUIRED gate that cannot verify anything says so (fail closed): no sourceDirs, or no runnable testCmd without lintOnly', async () => {
+  const r = repo();
+  try {
+    fix(r.dir);
+    for (const bad of [{ required: true, testCmd: CFG.testCmd }, { required: true, sourceDirs: ['src/'] }, { required: true, sourceDirs: ['src/'], testCmd: ['node', '--test'] }]) {
+      assert.ok(gate.normalize(bad).invalid.length > 0);
+      assert.match((await gate.lint(r.dir, r.base, bad))[0], /BEHAVIOUR GATE MISCONFIGURED \(it is required but cannot verify anything\)/);
+      const out = await gate.redGreen({ cwd: r.dir, base: r.base, config: bad });
+      assert.equal(out.ok, false); assert.match(out.message, /MISCONFIGURED/);
+    }
+    assert.deepEqual(gate.normalize({ required: true, sourceDirs: ['src/'], lintOnly: true }).invalid, []);
+    assert.deepEqual(gate.normalize(CFG).invalid, []);
+  } finally { r.clean(); }
 });
