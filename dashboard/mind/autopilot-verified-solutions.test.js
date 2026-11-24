@@ -237,3 +237,14 @@ test('round 3 of the review: a budget stop never counts against a solution; a ch
     assert.equal(vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], sourceDirs: ['.'] }).ok, true);
   } finally { r.cleanup(); }
 });
+
+test('round 4 of the review: a non-code source file (json) changed with a test is not captured: the gate would not run red/green for it', () => {
+  const r = repo();
+  try {
+    fs.mkdirSync(path.join(r.dir, 'src', '__tests__'), { recursive: true });
+    fs.writeFileSync(path.join(r.dir, 'src', 'config.json'), '{}\n'); fs.writeFileSync(path.join(r.dir, 'src', '__tests__', 'a.test.js'), 'x\n');
+    r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'cfg');
+    const made = vs.fromCommit({ repoPath: r.dir, baseSha: r.base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], sourceDirs: ['src/'] });
+    assert.equal(made.ok, false);
+  } finally { r.cleanup(); }
+});

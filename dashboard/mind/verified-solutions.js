@@ -144,7 +144,7 @@ function fromCommit({ repoPath, baseSha, commit, plan, scope, proof, createdBy, 
   if (!source.length) return { ok: false, reason: 'no source file changed' };
   // The behaviour gate only runs red/green when a changed file lies in its source directories: otherwise it skips, and nothing proves the claim.
   if (Array.isArray(sourceDirs)) {
-    const out = source.find((f) => !sourceDirs.some((d) => d === '.' || f.startsWith(String(d).replace(/\\/g, '/'))));
+    const out = source.find((f) => !/.[cm]?[jt]sx?$/.test(f) || !sourceDirs.some((d) => d === '.' || f.startsWith(String(d).replace(/\\/g, '/'))));
     if (out) return { ok: false, reason: out + ' lies outside the behaviour gate source directories: the red/green run was not proven for it' };
   }
   if (!changed.some(isTest)) return { ok: false, reason: 'no behaviour test in the change' };
