@@ -1519,7 +1519,8 @@ class MindAutopilot {
     const d = e.answer;
     // A conflict answered "Archiver": the task is retired at once (worktree kept), whatever the worktree looks like now.
     if (e.kind === 'conflict') {
-      if (!(d.answer && d.answer.choice === 'resume')) {
+      // Without its worktree a task cannot resume (its work is gone): only archiving is offered, and any answer archives it.
+      if (!(d.answer && d.answer.choice === 'resume') || (e.worktree && e.worktree.missing)) {
         this.state.suspended = list.filter((x) => x !== e);
         this.state.suspendedLog = [...(this.state.suspendedLog || []), { id: e.id, decisionId: e.decisionId, task: e.active && e.active.plan && e.active.plan.title, status: 'abandoned', at: new Date(now).toISOString() }].slice(-40);
         this.state.active = e.active;
@@ -1533,7 +1534,7 @@ class MindAutopilot {
     // Any change the owner has not seen: a (new) conflict question, bound to the worktree as it is NOW; the earlier answer is kept with it.
     if (problems.length) {
       const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change pendant l attente', body: 'Tache : ' + ((e.active && e.active.plan && e.active.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nReprendre : un refus est applique tel quel ; une autorisation est redemandee sur cet etat. Archiver retire la tache (worktree conserve).',
-        options: [{ id: 'resume', label: 'Reprendre' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
+        options: e.worktree && !fs.existsSync(e.worktree.path) ? [{ id: 'abandon', label: 'Archiver la tache (son worktree a disparu)' }] : [{ id: 'resume', label: 'Reprendre' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
         meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, suspendedId: e.id, kind: 'conflict' } });
       if (c.error) return false;
       if (e.kind !== 'conflict') e.priorAnswer = e.priorAnswer || d; // the owner's answer to the request (a conflict answer is not one)

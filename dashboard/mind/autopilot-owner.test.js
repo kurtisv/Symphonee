@@ -451,3 +451,21 @@ test('a deleted worktree: one conflict question, Archiver retires the task (no e
     assert.equal(f.pilot.state.history.find((h) => /Task A/.test(h.title)).outcome, 'abandoned-by-owner');
   } finally { f.cleanup(); }
 });
+
+test('a deleted worktree after a refusal: only Archiver is offered, and a stale "resume" archives too (never resumes without its work)', async () => {
+  const f = setup({ refuseThenNoChange: true });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'refuse' });
+    gitc(f.repo, 'worktree', 'remove', '--force', e.worktree.path);
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.deepEqual(f.pilot.decisionStore().get(e.decisionId).options.map((o) => o.id), ['abandon']);
+    e.answer = { id: e.decisionId, status: 'answered', answer: { choice: 'resume', by: 'ui' } }; // a stale or forged "resume"
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(f.pilot.state.suspended.length, 0);
+    assert.equal(f.pilot.state.history.find((h) => /Task A/.test(h.title)).outcome, 'abandoned-by-owner');
+    assert.equal(f.spawns.filter((x) => x.task === 'A' && x.stage === 'implement').length, 1, 'implementation not replayed');
+  } finally { f.cleanup(); }
+});
