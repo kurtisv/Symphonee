@@ -180,6 +180,38 @@ test('an ordinary interruption (work slot ended) still uses a resume', () => {
   } finally { r.cleanup(); }
 });
 
+// A local time today at hh:mm (the window helpers use local time).
+const at = (h, m) => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime(); };
+test('a step that ran out of time inside an open window resumes soon, not at the next window start', () => {
+  const r = repo();
+  try {
+    const a = { stage: 'implement', plan, implementer: 'qwen', worktree: { path: r.dir }, baseSha: r.base, qwenResumes: 1 };
+    const p = pilot(r, a);
+    p.def.schedule = { start: '14:00', end: '19:00' };
+    const now = at(16, 26);
+    p.qwenStopped(a, stop('Work slot ended; progress saved, the task resumes in the next slot'), now);
+    assert.equal(a.stage, 'budget-wait');
+    assert.equal(a.waitingStage, 'implement');
+    assert.equal(p.state.nextAt, now + 10 * 60000, 'resumes in the same window');
+    assert.equal(a.qwenResumes, 2);
+  } finally { r.cleanup(); }
+});
+
+test('a slot that ended with the window waits for the next window start', () => {
+  const r = repo();
+  try {
+    const a = { stage: 'implement', plan, implementer: 'qwen', worktree: { path: r.dir }, baseSha: r.base };
+    const p = pilot(r, a);
+    p.def.schedule = { start: '14:00', end: '19:00' };
+    const now = at(19, 0) + 30000;
+    p.qwenStopped(a, stop('Work slot ended; progress saved, the task resumes in the next slot'), now);
+    const next = new Date(p.state.nextAt);
+    assert.ok(p.state.nextAt > now);
+    assert.equal(next.getHours(), 14);
+    assert.equal(next.getMinutes(), 0);
+  } finally { r.cleanup(); }
+});
+
 test('a real block (not an outage) still goes to the coach', () => {
   const r = repo();
   try {
