@@ -2317,10 +2317,11 @@ function mountMindAutopilot(addRoute, json, deps) {
         stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null, behavior: body.behavior };
       const existing = pilots.get(id);
       // Saving a definition from a form that does not know the behaviour gate must not erase it.
-      if (body.behavior === undefined) { const onDisk = readDefs()[id]; def.behavior = onDisk ? onDisk.behavior : existing ? existing.def.behavior : undefined; }
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
-      const all = readDefs(); all[id] = pilots.get(id).def;
+      const all = readDefs(); const written = pilots.get(id).def;
+      // A save that does not mention the gate keeps what is ON DISK in this same read (an activation script may have changed it since this process started).
+      all[id] = body.behavior === undefined && all[id] ? { ...written, behavior: all[id].behavior } : written;
       fs.mkdirSync(path.dirname(defsFile), { recursive: true });
       const tmp = defsFile + '.tmp-' + process.pid;
       fs.writeFileSync(tmp, JSON.stringify({ pilots: all }, null, 2)); fs.renameSync(tmp, defsFile);

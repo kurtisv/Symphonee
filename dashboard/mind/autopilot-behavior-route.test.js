@@ -77,8 +77,22 @@ test('fingerprint: same configuration, same value, whatever the key order; anoth
   assert.equal(gate.fingerprint({ required: false }), gate.fingerprint(undefined), 'off is off');
 });
 
-test('the fallback-permissions route also keeps the gate that is on disk (it used to write the in-memory definition over it)', () => {
-  const src = fs.readFileSync(path.join(__dirname, 'autopilot.js'), 'utf8');
-  assert.match(src, /all\[p\.id\] = \{ \.\.\.\(all\[p\.id\] \|\| p\.def\), fallback: settings \}/);
-  assert.doesNotMatch(src, /all\[p\.id\] = \{ \.\.\.p\.def, fallback: settings \}/);
+test('the fallback-permissions route keeps the gate that is on disk (it used to write the in-memory definition over it)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abr-fb-'));
+  try {
+    fs.mkdirSync(path.join(root, '.symphonee'));
+    const file = path.join(root, '.symphonee', 'mind-autopilots.json');
+    fs.writeFileSync(file, JSON.stringify({ pilots: { 'gas-saver': { label: 'GS', verify: [], behavior: BEHAVIOR } } }));
+    const routes = {}; const addRoute = (m, p, h) => { routes[m + ' ' + p] = h; };
+    const json = (res, body, status) => { res.body = body; res.status = status || 200; };
+    mountMindAutopilot(addRoute, json, { repoRoot: root, orchestrator: {}, orch: {}, spawn: () => {}, log: () => {} });
+    // after the server started, an external script changes the gate on disk
+    const defs = JSON.parse(fs.readFileSync(file, 'utf8')); defs.pilots['gas-saver'].behavior = { ...BEHAVIOR, sourceDirs: ['lib/'] }; fs.writeFileSync(file, JSON.stringify(defs));
+    const req = { method: 'POST', url: '/api/mind/autopilot/fallback', on(ev, cb) { if (ev === 'data') setImmediate(() => cb(JSON.stringify({ pilot: 'gas-saver', fallback: { enabled: false } }))); if (ev === 'end') setImmediate(() => setImmediate(() => cb())); return this; } };
+    const res = {}; await routes['POST /api/mind/autopilot/fallback'](req, res);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const after = JSON.parse(fs.readFileSync(file, 'utf8')).pilots['gas-saver'];
+    assert.deepEqual(after.behavior.sourceDirs, ['lib/'], 'the on-disk gate survives the fallback save');
+    assert.ok(after.fallback, 'and the fallback setting was saved');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
