@@ -26,7 +26,8 @@ function normalize(c) {
   const arr = (x, n) => (Array.isArray(x) ? x.map(String).filter(Boolean).slice(0, n) : []);
   const testPatterns = arr(c.testPatterns, 10).filter((s) => { try { new RegExp(s); return true; } catch { return false; } });
   const testCmd = arr(c.testCmd, 20);
-  const sourceDirs = arr(c.sourceDirs, 20).map(posix);
+  // Repository-relative prefixes: "." or "./" means the whole repository, "./src/" means "src/"; absolute paths and ".." are never valid.
+  const sourceDirs = arr(c.sourceDirs, 20).map(posix).filter((d) => !d.startsWith('/') && !/^[A-Za-z]:/.test(d) && !d.split('/').includes('..')).map((d) => (d === '.' || d === './' ? '' : d.replace(/^\.\//, '')));
   // A REQUIRED gate that cannot do what it promises must say so, not switch itself off: no sourceDirs means no change would ever count as
   // source, no runnable testCmd means no red/green (lint-only must be asked for explicitly with lintOnly: true).
   const invalid = [];

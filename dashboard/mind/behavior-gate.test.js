@@ -195,3 +195,13 @@ test('a REQUIRED gate that cannot verify anything says so (fail closed): no sour
     assert.deepEqual(gate.normalize(CFG).invalid, []);
   } finally { r.clean(); }
 });
+
+test('sourceDirs: "." means the whole repository, "./src/" means "src/", absolute and .. entries are dropped (and a gate left with none is invalid)', async () => {
+  const r = repo();
+  try {
+    fix(r.dir);
+    for (const dirs of [['.'], ['./'], ['./src/'], ['src']]) assert.match((await gate.lint(r.dir, r.base, { ...CFG, sourceDirs: dirs }))[0], /BEHAVIOUR TEST REQUIRED: you changed src\/add\.js/, JSON.stringify(dirs));
+    assert.deepEqual(gate.normalize({ ...CFG, sourceDirs: ['/abs', '../x', 'C:/x', './src/'] }).sourceDirs, ['src/']);
+    assert.ok(gate.normalize({ ...CFG, sourceDirs: ['/abs', '../x'] }).invalid.length > 0);
+  } finally { r.clean(); }
+});
