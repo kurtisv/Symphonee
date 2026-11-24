@@ -96,3 +96,24 @@ test('the fallback-permissions route keeps the gate that is on disk (it used to 
     assert.ok(after.fallback, 'and the fallback setting was saved');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('after a save that does not mention the gate, the LIVE pilot still runs with it (memory, not only the file) - from disk, else from memory', async () => {
+  const m = mount();
+  try {
+    const gate = require('./behavior-gate');
+    const live = async () => { const res = {}; await m.routes['GET /api/mind/autopilots']({}, res); return res.body.pilots.find((p) => p.pilot === 'demo').behavior; };
+    assert.equal((await live()).required, true);
+    const r = await post(m.routes, { id: 'demo', label: 'Saved', verify: [] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(await live(), { required: true, invalid: [], fingerprint: gate.fingerprint(BEHAVIOR) }, 'the live gate survives the save');
+    // disk newer than memory: the live pilot takes the disk value as well
+    const file = path.join(m.root, '.symphonee', 'mind-autopilots.json');
+    const defs = JSON.parse(fs.readFileSync(file, 'utf8')); defs.pilots.demo.behavior = { ...BEHAVIOR, sourceDirs: ['lib/'] }; fs.writeFileSync(file, JSON.stringify(defs));
+    await post(m.routes, { id: 'demo', label: 'Saved again', verify: [] });
+    assert.equal((await live()).fingerprint, gate.fingerprint({ ...BEHAVIOR, sourceDirs: ['lib/'] }));
+    // not on disk at all (entry removed): the in-memory gate is the fallback, not lost
+    delete defs.pilots.demo; fs.writeFileSync(file, JSON.stringify(defs));
+    await post(m.routes, { id: 'demo', label: 'Saved a third time', verify: [] });
+    assert.equal((await live()).required, true);
+  } finally { m.clean(); }
+});

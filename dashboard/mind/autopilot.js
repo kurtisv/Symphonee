@@ -2316,12 +2316,13 @@ function mountMindAutopilot(addRoute, json, deps) {
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null, fallback: body.fallback || {},
         stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null, behavior: body.behavior };
       const existing = pilots.get(id);
-      // Saving a definition from a form that does not know the behaviour gate must not erase it.
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
+      // ONE read of the disk decides the gate that is kept (for the live pilot AND for the file written below). A form that does not know the
+      // gate must not erase it: the value on disk wins (an activation script may have changed it since this process started), else the one in memory.
+      const all = readDefs();
+      if (body.behavior === undefined) def.behavior = all[id] ? all[id].behavior : existing ? existing.def.behavior : undefined;
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
-      const all = readDefs(); const written = pilots.get(id).def;
-      // A save that does not mention the gate keeps what is ON DISK in this same read (an activation script may have changed it since this process started).
-      all[id] = body.behavior === undefined && all[id] ? { ...written, behavior: all[id].behavior } : written;
+      all[id] = pilots.get(id).def;
       fs.mkdirSync(path.dirname(defsFile), { recursive: true });
       const tmp = defsFile + '.tmp-' + process.pid;
       fs.writeFileSync(tmp, JSON.stringify({ pilots: all }, null, 2)); fs.renameSync(tmp, defsFile);
