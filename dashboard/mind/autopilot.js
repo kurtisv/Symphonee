@@ -1412,6 +1412,7 @@ class MindAutopilot {
     const hasWork = !!(a.worktree && a.baseSha && changedFiles(a.worktree.path, a.baseSha));
     let stage = owner.resumeStage(entry.stage, hasWork || !!(a.worktree && a.baseSha && fs.existsSync(a.worktree.path)));
     if (entry.resumeAt === 'verify') stage = refused ? 'repair' : 'verify';
+    else if (entry.resumeAt === 'commit') stage = refused ? 'repair' : 'commit';
     else if (entry.request.category === 'protected-zone' && refused && a.worktree) stage = 'repair'; // the protected change must be removed
     // Parked at the target stage in the same save: a restart now resumes exactly this stage (recoverAfterRestart keeps a waiting stage), and the
     // launch goes through the tick's usual gates (window, budget, peers).
@@ -1442,9 +1443,16 @@ class MindAutopilot {
       note += m.status === 1 ? ' WARNING: the change CONFLICTS with the new base (CONFLIT avec la nouvelle base).' : m.status === 0 ? ' The change still merges cleanly onto it.' : ' Whether it still merges could not be checked.';
     }
     a.review = note + '\n' + String(a.review || '').replace(/^THE BASE MOVED[^\n]*\n/, '');
-    if (a.waitingStage === 'code-review') a.waitingStage = 'verify';
+    if (a.waitingStage === 'code-review' || a.waitingStage === 'commit') a.waitingStage = 'verify'; // the reviewed context changed: checks, then a new review
     a.ownerMainBase = base;
     this.log('owner', note.slice(0, 200));
+  }
+  // The independent review had passed and the owner authorized the protected change it contains: commit it as the review saw it.
+  commitAfterOwner(a) {
+    this.unlinkActive(a);
+    a.commit = commitReviewed(a.worktree.path, a.plan, a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : []);
+    this.log('commit', 'Changement revu commite apres ton autorisation sur ' + a.worktree.branch + ' : ' + a.commit.slice(0, 10));
+    return this.complete('completed', a.ownerReviewRaw || 'Review PASS; the protected change was authorized by the owner');
   }
   worktreeState(p) {
     let branch = null, head = null; try { branch = git(p, ['rev-parse', '--abbrev-ref', 'HEAD']); head = git(p, ['rev-parse', 'HEAD']); } catch (_) {}
@@ -2270,7 +2278,8 @@ class MindAutopilot {
         const pHits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
         if (pHits.length) {
           const req = this.protectedRequest(a, pHits);
-          if (!(a.ownerAsks && a.ownerAsks[owner.operationKey(req)] && a.ownerAsks[owner.operationKey(req)].answered === 'allowed')) return this.ownerRequest(a, req, 'code-review', now);
+          // The review already PASSED: an authorization goes straight to the commit (no second review), unless the worktree or the base changed.
+          if (!(a.ownerAsks && a.ownerAsks[owner.operationKey(req)] && a.ownerAsks[owner.operationKey(req)].answered === 'allowed')) { a.ownerReviewRaw = String(raw || '').slice(0, 6000); return this.ownerRequest(a, req, 'code-review', now, { resumeAt: 'commit' }); }
         }
         this.unlinkActive(a);
         a.commit = commitReviewed(a.worktree.path, a.plan, a.verify && a.verify.ok ? a.verify.results.map(r => r.name) : []);
@@ -2560,7 +2569,7 @@ class MindAutopilot {
             && this.state.budgetCalls.some(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
           // Local verification does not dispatch a model or consume a token
           // reservation. The internal token cap only gates provider calls.
-          const localVerify = a.waitingStage === 'verify';
+          const localVerify = a.waitingStage === 'verify' || a.waitingStage === 'commit'; // both local: no model call
           if (now < this.state.nextAt || (!localVerify && !heldReview && !budget.canDispatch(this.state, now, this.limits))) return this.snapshot();
           if (localVerify && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow('verify', now);
           if (a.ownerMainBase && a.waitingStage === 'code-review' && this.def.schedule && !this.inWindow(now) && !a.manual) return this.parkForWindow('code-review', now);
@@ -2575,6 +2584,7 @@ class MindAutopilot {
           this.ownerBaseCheck(a);
           const ownerDone = () => { a.ownerPark = null; a.ownerResuming = null; a.ownerMainBase = null; };
           if (a.waitingStage === 'verify') { a.waitingStage = null; ownerDone(); this.startVerify(); return this.snapshot(); }
+          if (a.waitingStage === 'commit') { a.waitingStage = null; ownerDone(); this.commitAfterOwner(a); return this.snapshot(); }
           this.dispatch(a.waitingStage, now);
           if (this.state.active === a && (a.taskId || a.stage === 'verify') && !a.waitingStage) { ownerDone(); this.save(); }
           return this.snapshot();

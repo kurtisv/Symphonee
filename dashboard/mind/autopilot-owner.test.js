@@ -517,3 +517,25 @@ test('automatic policy never applies when the task already lost its worktree: th
     assert.equal(f.pilot.decisionStore().get(f.pilot.state.suspended[0].decisionId).status, 'pending');
   } finally { f.cleanup(); }
 });
+
+test('a protected change found after a PASSED review: on authorization it is committed as reviewed, no second Codex review', async () => {
+  const f = setup({ def: { protectedPaths: ['^secrets/'] } });
+  try {
+    const base = gitc(f.repo, 'rev-parse', 'HEAD'), wt = path.join(f.root, 'wt-z');
+    gitc(f.repo, 'worktree', 'add', '-q', '-b', 'mind-autopilot/test-z', wt, base);
+    fs.mkdirSync(path.join(wt, 'secrets')); fs.writeFileSync(path.join(wt, 'secrets', 'k.txt'), 'x'); fs.writeFileSync(path.join(wt, 'z.test.js'), '1');
+    const { worktreeFingerprint } = require('./autopilot');
+    const a = { stage: 'code-review', plan: { title: 'Task Z', objective: 'x', evidence: [] }, worktree: { path: wt, branch: 'mind-autopilot/test-z' }, baseSha: base, repairs: 0, verify: { ok: true, results: [{ name: 'c' }] } };
+    a.reviewFingerprint = worktreeFingerprint(wt);
+    f.pilot.state.enabled = true; f.pilot.state.consent = { worktreeWrites: true }; f.pilot.state.active = a;
+    f.pilot.advance('VERDICT: PASS\nok');
+    const e = f.pilot.state.suspended[0];
+    assert.equal(e.request.category, 'protected-zone'); assert.equal(e.resumeAt, 'commit');
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'allow' });
+    const before = f.spawns.length;
+    f.pilot.state.nextAt = 0; await f.pilot.tick(); f.pilot.state.nextAt = 0; await f.pilot.tick();
+    const h = f.pilot.state.history.find((x) => x.title === 'Task Z');
+    assert.equal(h && h.outcome, 'completed'); assert.ok(h.commit);
+    assert.equal(f.spawns.slice(before).filter((x) => x.stage === 'code-review').length, 0, 'no second review');
+  } finally { f.cleanup(); }
+});
