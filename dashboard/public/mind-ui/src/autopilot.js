@@ -8,6 +8,7 @@ import { escapeHtml } from './helpers.js';
 import { makeLatest } from './latest.js';
 import { createSnapshotStore } from './autopilot-state.js';
 import { cardModel, cardHtml, CARD_CSS } from './autopilot-card.js';
+import { decisionsHtml } from './autopilot-decisions.js';
 const snapshots = createSnapshotStore();
 const statusRequests = makeLatest();
 
@@ -61,6 +62,7 @@ const statusRequests = makeLatest();
       .then(d => { if (current()) { ap.loopsError = !(d && d.loops); if (!ap.loopsError) ap.loops = d; paint(); } }).catch(() => { if (current()) { ap.loopsError = true; paint(); } });
     if (ap.loopView) loadLoopDetail();
     loadClair();
+    loadDecisions();
     try {
       const results = await Promise.all(['default', 'gas-saver'].map(async id => {
         const r = await fetch('/api/mind/autopilot?pilot=' + encodeURIComponent(id), { cache: 'no-store', signal: controller.signal });
@@ -87,6 +89,13 @@ const statusRequests = makeLatest();
     paint();
   }
 
+  // Mes decisions: every pilot's questions to the owner (GET /api/mind/autopilot/decisions).
+  const decisionRequests = makeLatest();
+  function loadDecisions() {
+    const current = decisionRequests.start();
+    return fetch('/api/mind/autopilot/decisions', { cache: 'no-store' }).then(r => r.ok ? r.json() : null)
+      .then(d => { if (current() && d && d.items) { ap.decisions = d; paint(); } }).catch(() => {});
+  }
   const detailRequests = makeLatest();
   const clairRequests = makeLatest();
   // The loop whose plain summary belongs on screen: the shown loop, else the pilot.
@@ -131,6 +140,28 @@ const statusRequests = makeLatest();
     acknowledge() { return act('Archivage', () => call('/api/mind/autopilot/acknowledge', {})); },
     resume() { return act('Reprise', () => call('/api/mind/autopilot/resume', {})); },
     refresh() { return load(); },
+    // The answer names the pilot, the suspended task AND the decision: the server sends it to that task only, once.
+    async answerDecision(btn) {
+      if (ap.busy || !btn) return;
+      const sus = btn.dataset.sus, choice = btn.dataset.choice || null;
+      const box = document.getElementById('apDecText-' + sus);
+      const text = box ? box.value.trim() : '';
+      if (!choice && !text) { ap.decisionMessage = 'Ecris une reponse ou choisis un bouton.'; paint(); return; }
+      ap.busy = true; ap.decisionMessage = 'Envoi de ta reponse...'; paint();
+      try {
+        const r = await fetch('/api/mind/autopilot/decisions/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pilot: btn.dataset.pilot, suspendedId: sus, decisionId: btn.dataset.dec, choice, text: text || undefined }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.ok === false) throw new Error(d.code === 'ALREADY_ANSWERED' ? 'cette question a deja une reponse' : d.code === 'STALE' || d.code === 'NOT_WAITING' ? 'la question a change ou n attend plus : la liste est actualisee' : (d.error || 'HTTP ' + r.status));
+        if (d.view) ap.decisions = d.view;
+        ap.decisionMessage = 'Reponse enregistree : la tache reprendra au prochain passage du pilote.';
+      } catch (e) { ap.decisionMessage = 'Reponse non envoyee : ' + e.message; }
+      finally { ap.busy = false; await loadDecisions(); paint(); }
+    },
+    setPolicy(sel) {
+      if (!sel) return;
+      return act('Politique', () => call('/api/mind/autopilot/decision-policy', { category: sel.dataset.cat, mode: sel.value })).then(loadDecisions);
+    },
     // Scrolls to the full detail card of the selected pilot (the "Voir le detail" button of the summary card).
     detail() {
       const el = $('apDetail'); if (!el) return;
@@ -472,6 +503,7 @@ const statusRequests = makeLatest();
         <p>${interventions} pilote(s) a examiner : erreurs, interruptions ou releves bloquees.</p>
         <p>${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.enabled).length} pilotes actifs | ${['default', 'gas-saver'].map(id => snapshots.get(id)).filter(p => p && p.status === 'running').length} taches en cours | ${['default', 'gas-saver'].reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
         <p role="status" aria-live="polite">${ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45000 ? 'Etat perime ou inaccessible' : 'Derniere lecture fiable : ' + esc(when(ap.lastRead))}</p>
+        ${decisionsHtml(ap.decisions, ap.pilot, esc, ap.busy, ap.decisionMessage)}
         ${ap.loopView ? '' : cardHtml(cardModel(s), esc, ap.busy)}
         <div class="ap-grid" aria-label="Pilotes">
           ${['default', 'gas-saver'].map(pilotCard).join('')}

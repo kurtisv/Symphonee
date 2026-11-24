@@ -272,16 +272,19 @@ test('deep loop: failed local verification repairs without a Codex call, two rep
   } finally { f.cleanup(); }
 });
 
-test('deep loop: a change under a protected path halts before any review', async () => {
+// Decision of 2026-11-24: a protected path is a question to the owner for THIS change; the task is suspended, the pilot is not halted.
+test('deep loop: a change under a protected path suspends the task (owner question) before any review; the pilot stays on', async () => {
   const f = setup({ planVerdicts: ['PASS'], def: DEEP, id: 'deep-demo', protect: true });
   try {
     f.pilot.configure({ enabled: true, goal: 'Improve correctness in depth', allowWorktreeWrites: true });
     await drive(f.pilot, 200);
     const s = f.pilot.snapshot();
-    assert.equal(s.enabled, false);
-    assert.match(s.error, /Protected path modified during implement: secrets\/key\.txt/);
+    assert.equal(s.enabled, true); assert.equal(s.error, null);
+    assert.equal(s.suspended.length, 1);
+    assert.equal(s.suspended[0].category, 'protected-zone');
+    assert.match(s.suspended[0].question, /secrets\/key\.txt/);
     assert.equal(f.spawns.some(x => x.stage === 'code-review'), false);
-    assert.equal(fs.existsSync(path.join(s.active.worktree.path, 'deps')), false, 'junction removed on halt');
+    assert.equal(fs.existsSync(path.join(s.suspended[0].worktree, 'deps')), false, 'junction removed while it waits');
   } finally { f.cleanup(); }
 });
 

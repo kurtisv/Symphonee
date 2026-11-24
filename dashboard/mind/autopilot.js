@@ -16,6 +16,7 @@ const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
 const behaviorGate = require('./behavior-gate');
 const verifiedSolutions = require('./verified-solutions');
+const owner = require('./autopilot-owner');
 const tq = require('./qwen-teaching');
 const freellmTeacher = require('./freellm-teacher');
 const applicability = require('./lesson-applicability');
@@ -29,7 +30,7 @@ try { sentry = require('../automation/sentry-report'); } catch (_) {}
 // PowerShell 5.1's default (ANSI) decoding, saw garbled accents and failed a
 // correct change on that alone.
 const ENCODING_NOTE = 'Text files here are UTF-8 without BOM. On Windows read them with an explicit UTF-8 decoding (PowerShell: Get-Content -Raw -Encoding UTF8; Python: open(..., encoding="utf-8"); or git show / node). Garbled accents after a default read are YOUR reading artifact, not a defect: re-read with UTF-8 before reporting any encoding or "not verbatim" problem.';
-const RULES = 'Stay in the selected repository. Never touch secrets, credentials, billing, production data, deployments, CI policies or authentication. Never push, merge or delete branches. If the task needs these, reject it.\n' + ENCODING_NOTE;
+const RULES = 'Stay in the selected repository. Never touch secrets, credentials, billing, production data, deployments, CI policies or authentication. Never push, merge or delete branches. If the task needs these, reject it.\n' + owner.OWNER_RULE + '\n' + ENCODING_NOTE;
 // A profile sets the depth of a loop; a pilot definition binds it to one
 // repository's own checks. "standard" is the original loop, unchanged.
 const PROFILES = Object.freeze({
@@ -521,6 +522,8 @@ class MindAutopilot {
       // Qwen3.5-4B (local) as the first candidate for small tasks on this repository; Claude stays the fallback. Off unless enabled.
       qwen: validQwen(def.qwen),
       fallback: fallback.profile(def.fallback),
+      // Owner decisions: categories the owner set to automatic (autopilot-owner.js); sensitive categories always ask.
+      decisionPolicy: owner.normalizePolicy(def.decisionPolicy),
       // Adaptive task capacity (0..6 per work window) from the real remaining
       // subscription capacity; false turns it off (fixed daily limit again).
       capacity: def.capacity === false ? false : capacity.settings(def.capacity || {}),
@@ -761,6 +764,11 @@ class MindAutopilot {
       schedule: this.def.schedule, inWindow: this.inWindow(now), ambition: this.def.ambition, sources: this.def.sources,
       history: s.history.slice(-20).reverse(), events: s.events.slice(-30).reverse(),
       queue: (s.queue || []).map(x => ({ key: x.key, title: x.plan.title, category: x.plan.category, discoveredAt: x.discoveredAt })),
+      // Tasks waiting for the owner (kept with their whole state) and what happened to the previous ones.
+      suspended: (s.suspended || []).map((e) => ({ id: e.id, decisionId: e.decisionId, kind: e.kind || 'request', stage: e.stage, category: e.request.category, question: e.request.question, consequences: e.request.consequences,
+        task: (e.active && e.active.plan && e.active.plan.title) || null, at: e.at, worktree: e.worktree ? e.worktree.path : null, branch: e.worktree ? e.worktree.branch : null, problems: e.problems || null })),
+      suspendedLog: (s.suspendedLog || []).slice(-15).reverse(),
+      decisionPolicy: this.def.decisionPolicy,
       today: { completed: this.todayCompleted(now), discoveries: this.todayDiscoveries(now) },
       nextAt: s.nextAt, error: s.error, budget: budget.dailyUsage(s, now, this.limits),
       limits: { ...this.limits },
@@ -908,7 +916,9 @@ class MindAutopilot {
     const graph = store.loadGraph(this.repoRoot, s.space);
     const learnings = (graph?.nodes || []).filter(x => x.kind === 'learning').slice(-8)
       .map(x => ({ label: x.label, body: String(x.body || '').slice(0, 200) }));
+    const waiting = (s.suspended || []).map((e) => '- ' + String((e.active && e.active.plan && e.active.plan.title) || '').slice(0, 110) + ' [' + [...new Set([...(e.files || []), ...this.namedFiles(e.active && e.active.plan)])].slice(0, 6).join(', ') + ']');
     return ['READ-ONLY independent work discovery. Goal: ' + s.goal,
+      waiting.length ? 'WAITING FOR THE OWNER (do not propose these again and do not choose a task that touches their files):\n' + waiting.join('\n') : '',
       this.contextPolicy(), this.profile.deep ? DEEP_DISCOVERY : '', this.guardText(),
       'Local token-free Git signals (hints, not verified issues): ' + JSON.stringify(a.localSignals || {}),
       'untested.sample lists source files with no sibling test file. Before answering NO_TASK, inspect at least three of them (and the real markers) and check whether an important path is genuinely untested or buggy.',
@@ -1289,6 +1299,176 @@ class MindAutopilot {
     this.log('qwen', 'Coach exhausted: verified solution "' + s.id + '" handed to Qwen as guidance; Qwen tries again (' + (hasWork ? 'repair' : 'implement') + ')');
     this.save();
     this.dispatch(hasWork ? 'repair' : 'implement', now);
+    return true;
+  }
+  // ── Owner decisions (autopilot-owner.js): suspend a task, go on with others, resume it at the same stage after the answer ──
+  decisionStore() { return this._decisions || (this._decisions = require('../decisions/decisions').sharedStore(this.repoRoot)); }
+  ownerBase() {
+    try {
+      if (this.def.baseRef) { const [remote, ...rest] = this.def.baseRef.split('/'); if (rest.length) runGit(this.state.repoPath, ['fetch', '--quiet', remote, rest.join('/')]); }
+      return git(this.state.repoPath, ['rev-parse', '--verify', (this.def.baseRef || 'HEAD') + '^{commit}']);
+    } catch (_) { return null; }
+  }
+  // The tracked files a plan names (the same reading as qwenFilesFor, without its size limits).
+  namedFiles(plan) {
+    if (!plan) return [];
+    const tracked = (runGit(this.state.repoPath, ['ls-files']).stdout || '').split('\n').filter(Boolean);
+    const text = [plan.title, plan.objective, ...(plan.evidence || [])].map((x) => typeof x === 'string' ? x : JSON.stringify(x)).join('\n').replace(/\\/g, '/');
+    return tracked.filter((p) => p.length >= 4 && text.includes(p));
+  }
+  // Files held by tasks waiting for the owner: what they changed and what their plan names.
+  suspendedFiles() {
+    const held = new Set();
+    for (const e of this.state.suspended || []) for (const x of [...(e.files || []), ...this.namedFiles(e.active && e.active.plan)]) held.add(x);
+    return held;
+  }
+  pickQueuedFree(allowPaid) {
+    const q = this.state.queue || [], held = this.suspendedFiles();
+    if (!held.size) return this.pickQueued(allowPaid);
+    const free = q.map((x, i) => ({ x, i })).filter(({ x }) => !this.namedFiles(x.plan).some((p) => held.has(p)));
+    const all = this.state.queue; this.state.queue = free.map((o) => o.x);
+    try { const j = this.pickQueued(allowPaid); return j < 0 ? -1 : free[j].i; } finally { this.state.queue = all; }
+  }
+  // The agent asked for an authorization. Policy 'auto' (a low-risk category the owner set): answered at once, the stage goes on.
+  // Otherwise the task is SUSPENDED with everything it needs to resume, and the slot is freed for another task.
+  ownerRequest(a, req, stage, now = Date.now(), opts = {}) {
+    const key = owner.operationKey(req);
+    a.ownerAsks = a.ownerAsks || {};
+    if ((a.ownerRefused || []).includes(key)) { this.log('owner', 'La tache redemande ce que tu as refuse : elle est archivee comme refusee'); return this.complete('owner-refused', 'Refused by the owner: ' + req.question); }
+    if (a.ownerAsks[key] && a.ownerAsks[key].answered) { this.log('owner', 'La tache redemande une autorisation deja donnee : aucun progres, elle est archivee'); return this.complete('owner-no-progress', 'Asked again after the answer: ' + req.question); }
+    // Nothing of this task may still run: its stage process ended (we are reading its answer) and no local check is running.
+    const t = a.taskId && this.orch.getTask ? this.orch.getTask(a.taskId) : null;
+    if ((t && ['running', 'pending', 'queued'].includes(t.state)) || this._verifyProc) throw new Error('A process of the task is still running; it cannot be suspended safely');
+    const store = this.decisionStore(), id = 'sus_' + crypto.randomBytes(5).toString('hex');
+    const label = this.def.label || this.id, title = (a.plan && a.plan.title) || '(tache)';
+    const created = store.create({ title: label + ' : ' + req.question.slice(0, 180),
+      body: 'Tache : ' + title + '\nEtape : ' + stage + '\nCategorie : ' + (owner.CATEGORIES[req.category] || req.category) + '\n\nQuestion : ' + req.question + (req.consequences ? '\n\nConsequences : ' + req.consequences : '') + (a.worktree ? '\n\nWorktree : ' + a.worktree.path + ' (branche ' + (a.worktree.branch || '-') + ')' : ''),
+      options: [{ id: 'allow', label: 'Autoriser' }, { id: 'refuse', label: 'Refuser' }], allowText: true, from: 'autopilot:' + this.id, ref: 'suspend:' + id,
+      meta: { pilot: this.id, pilotLabel: label, task: title, stage, category: req.category, consequences: req.consequences, suspendedId: id, kind: 'autopilot' } });
+    if (created.error) throw new Error('The owner request could not be recorded (' + created.error + '); the task does not go on without the answer');
+    const d = created.decision;
+    a.ownerAsks[key] = { decisionId: d.id, at: now, answered: null };
+    const files = a.worktree && a.baseSha && fs.existsSync(a.worktree.path) ? guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }) : [];
+    const entry = { id, decisionId: d.id, key, request: req, stage, resumeAt: opts.resumeAt || null, at: new Date(now).toISOString(), status: 'waiting', files,
+      worktree: a.worktree && fs.existsSync(a.worktree.path) ? { path: a.worktree.path, branch: a.worktree.branch || null, head: git(a.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(a.worktree.path) } : null,
+      mainBase: this.ownerBase(), active: null };
+    if (owner.decide(this.def.decisionPolicy, req) === 'auto') {
+      store.answer(d.id, { choice: 'allow', text: 'Politique automatique du proprietaire pour la categorie ' + req.category, by: 'policy' });
+      this.log('owner', 'Autorisation donnee par ta politique (' + req.category + ') : ' + req.question.slice(0, 120));
+      entry.active = a;
+      return this.applyOwnerAnswer(entry, store.get(d.id), now);
+    }
+    this.unlinkActive(a); a.links = [];
+    a.taskId = null; a.budgetRef = null; a.waitingStage = null;
+    entry.active = JSON.parse(JSON.stringify(a));
+    this.state.suspended = [...(this.state.suspended || []), entry];
+    this.state.active = null;
+    this.state.nextAt = Math.min(this.state.nextAt || now, now);
+    this.trace('owner', { suspended: id, decision: d.id, category: req.category });
+    this.log('owner', 'Tache mise de cote, en attente de ta decision ' + d.id + ' (' + req.category + ') : ' + title.slice(0, 90) + '. Le pilote continue avec une autre tache.');
+    this.report('info', 'Autopilote ' + label + ' : une tache attend ta decision dans Mind Autopilot (' + req.question.slice(0, 160) + ')', ['owner', id]);
+    this.save();
+    return this.snapshot();
+  }
+  // The answer goes to THIS task only: it is written into the review the next stage reads, bound to the operation key.
+  applyOwnerAnswer(entry, d, now = Date.now()) {
+    const a = this.state.active = entry.active;
+    const refused = d.status === 'dismissed' || (d.answer && d.answer.choice === 'refuse');
+    a.ownerAsks = a.ownerAsks || {}; a.ownerAsks[entry.key] = { ...(a.ownerAsks[entry.key] || {}), answered: refused ? 'refused' : 'allowed' };
+    if (refused) a.ownerRefused = [...new Set([...(a.ownerRefused || []), entry.key])];
+    a.ownerDecisions = [...(a.ownerDecisions || []), { decisionId: d.id, key: entry.key, category: entry.request.category, question: entry.request.question, status: d.status, answer: d.answer || null, at: new Date(now).toISOString() }].slice(-20);
+    a.review = owner.answerText(entry.request, d, refused) + (entry.baseMoved ? '\nThe base moved since the task was suspended (' + entry.baseMoved + '): the checks run again.' : '')
+      + (a.review ? '\n\nEARLIER FINDINGS (still to address):\n' + String(a.review).slice(0, 6000) : '');
+    a.taskId = null; a.budgetRef = null; a.waitingStage = null; a.parkReason = null;
+    if (a.worktree && fs.existsSync(a.worktree.path)) {
+      a.links = guard.linkDirs(this.state.repoPath, a.worktree.path, this.def.linkDirs);
+      a.mainFingerprint = worktreeFingerprint(this.state.repoPath, { head: false });
+    }
+    if (a.implementer === 'qwen') a.qwenCoachGrant = true; // waiting for the owner never uses up Qwen's attempts
+    this.trace('owner', { answered: d.id, refused, by: d.answer ? d.answer.by : 'dismissed' });
+    this.log('owner', 'Decision ' + d.id + ' ' + (refused ? 'REFUS' : 'accord') + ' : la tache reprend (' + (a.plan ? a.plan.title.slice(0, 80) : '') + ')');
+    const hasWork = !!(a.worktree && a.baseSha && changedFiles(a.worktree.path, a.baseSha));
+    let stage = owner.resumeStage(entry.stage, hasWork);
+    if (entry.resumeAt === 'verify') stage = refused ? 'repair' : 'verify';
+    else if (stage === 'code-review' && entry.baseMoved) stage = 'verify'; // the code context changed: checks again before the review
+    this.save();
+    if (stage === 'verify') return this.startVerify();
+    return this.dispatch(stage, now);
+  }
+  // The owner's answer, bound to the EXACT suspended task and its current question; recorded once (a second answer is refused).
+  answerOwner(body = {}, by = 'ui') {
+    const e = (this.state.suspended || []).find((x) => x.id === body.suspendedId);
+    if (!e) return { ok: false, status: 409, code: 'NOT_WAITING', error: 'this task is no longer waiting (already answered or resumed)' };
+    if (e.decisionId !== body.decisionId) return { ok: false, status: 409, code: 'STALE', error: 'this answer is for another question of this task (it changed): reload' };
+    const r = this.decisionStore().answer(e.decisionId, { choice: body.choice, text: body.text, by });
+    if (r.error) return { ok: false, status: r.code || 400, code: r.code === 409 ? 'ALREADY_ANSWERED' : 'BAD_ANSWER', error: r.error };
+    this.log('owner', 'Ta reponse a ' + e.decisionId + ' est enregistree (' + (r.decision.answer.choice || 'texte') + ', ' + by + ') ; la tache reprendra au prochain passage du pilote');
+    this.save();
+    return { ok: true, decision: r.decision };
+  }
+  // A task whose decision was answered comes back first, under the same work window, budget and capacity rules as any launch.
+  // Before it resumes: the same worktree, branch, commit and content as when it was suspended, and no protected path changed under the current rules.
+  resumeAnswered(now = Date.now()) {
+    const list = this.state.suspended || [];
+    if (!list.length) return false;
+    const store = this.decisionStore();
+    for (const e of list) if (e.status === 'waiting' && !store.get(e.decisionId)) {
+      // The decisions file was lost: ask again rather than resume without an answer.
+      const again = store.create({ title: (this.def.label || this.id) + ' : ' + e.request.question.slice(0, 180), body: 'Question posee a nouveau (la premiere demande a ete perdue).\n' + e.request.question, options: [{ id: 'allow', label: 'Autoriser' }, { id: 'refuse', label: 'Refuser' }], allowText: true, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
+        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, consequences: e.request.consequences, suspendedId: e.id, kind: 'autopilot' } });
+      if (!again.error) { e.decisionId = again.decision.id; this.save(); }
+    }
+    const e = list.find((x) => x.status === 'waiting' && store.get(x.decisionId) && store.get(x.decisionId).status !== 'pending');
+    if (!e) return false;
+    if (this.blockedByPeer()) return false;
+    const manual = this.state.manualRunUntil && this.state.manualRunUntil > now;
+    if (!manual && !this.inWindow(now)) return false;
+    if (!budget.canDispatch(this.state, now, this.limits)) return false;
+    if (this.def.capacity) { const { decision } = this.capacityDecision(now); if (decision.admissible < 1) return false; }
+    const d = store.get(e.decisionId);
+    // A conflict question (the worktree changed while it waited) answered: archive, or resume with the first answer and the worktree as it is now.
+    if (e.kind === 'conflict') {
+      if (!(d.answer && d.answer.choice === 'resume')) {
+        this.state.suspended = list.filter((x) => x !== e);
+        this.state.suspendedLog = [...(this.state.suspendedLog || []), { id: e.id, decisionId: e.decisionId, task: e.active && e.active.plan && e.active.plan.title, status: 'abandoned', at: new Date(now).toISOString() }].slice(-40);
+        this.state.active = e.active;
+        this.log('owner', 'Tache archivee sur ta decision ' + d.id + ' (worktree conserve)');
+        this.complete('abandoned-by-owner', 'The worktree changed while the task waited; the owner archived it');
+        return true;
+      }
+      e.worktree = e.worktree && fs.existsSync(e.worktree.path) ? { ...e.worktree, head: git(e.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(e.worktree.path) } : e.worktree;
+    }
+    const problems = [];
+    if (e.worktree) {
+      if (!fs.existsSync(e.worktree.path)) problems.push('le worktree n existe plus');
+      else {
+        let branch = null, head = null; try { branch = git(e.worktree.path, ['rev-parse', '--abbrev-ref', 'HEAD']); head = git(e.worktree.path, ['rev-parse', 'HEAD']); } catch (_) {}
+        if (e.worktree.branch && branch !== e.worktree.branch) problems.push('la branche est ' + branch + ' au lieu de ' + e.worktree.branch);
+        if (head !== e.worktree.head) problems.push('le commit a change');
+        else if (worktreeFingerprint(e.worktree.path) !== e.worktree.fingerprint) problems.push('des fichiers ont change pendant l attente');
+        const allowedProtected = e.request.category === 'protected-zone';
+        const a0 = e.active || {};
+        if (!allowedProtected && a0.baseSha) { const hits = guard.protectedHits(guard.changedPaths(e.worktree.path, a0.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths); if (hits.length) problems.push('chemins proteges modifies : ' + hits.slice(0, 4).join(', ')); }
+      }
+    }
+    if (problems.length) {
+      const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change pendant l attente', body: 'Tache : ' + ((e.active && e.active.plan && e.active.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nTa reponse precedente (' + d.id + ') est gardee. Reprendre continue avec le worktree tel qu il est maintenant ; Archiver retire la tache (worktree conserve).',
+        options: [{ id: 'resume', label: 'Reprendre quand meme' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + e.id,
+        meta: { pilot: this.id, pilotLabel: this.def.label, task: (e.active && e.active.plan && e.active.plan.title) || '', stage: e.stage, category: e.request.category, suspendedId: e.id, kind: 'conflict' } });
+      if (c.error) return false;
+      e.firstDecisionId = e.firstDecisionId || e.decisionId; e.decisionId = c.decision.id; e.kind = 'conflict'; e.problems = problems;
+      this.log('owner', 'La tache en attente ne reprend pas : ' + problems.join('; ') + '. Nouvelle question ' + c.decision.id);
+      this.save();
+      return false;
+    }
+    const answer = e.kind === 'conflict' && e.firstDecisionId ? store.get(e.firstDecisionId) || d : d;
+    const base = this.ownerBase();
+    if (base && e.mainBase && base !== e.mainBase) e.baseMoved = e.mainBase.slice(0, 10) + ' -> ' + base.slice(0, 10);
+    // Claimed exactly once: the entry leaves the waiting list in the same save that makes the task active again.
+    this.state.suspended = list.filter((x) => x !== e);
+    this.state.suspendedLog = [...(this.state.suspendedLog || []), { id: e.id, decisionId: answer.id, task: e.active && e.active.plan && e.active.plan.title, question: e.request.question,
+      status: answer.status === 'dismissed' || (answer.answer && answer.answer.choice === 'refuse') ? 'refused' : 'resumed', by: answer.answer ? answer.answer.by : null, at: new Date(now).toISOString() }].slice(-40);
+    this.applyOwnerAnswer(e, answer, now);
     return true;
   }
   qwenCanTake(plan) {
@@ -1869,7 +2049,7 @@ class MindAutopilot {
   popQueued(now = Date.now(), allowPaid = true) {
     const q = this.state.queue = this.state.queue || [], a = this.state.active;
     while (q.length && a) {
-      const idx = this.pickQueued(allowPaid);
+      const idx = this.pickQueuedFree(allowPaid);
       if (idx < 0) break;
       const item = q.splice(idx, 1)[0];
       if (this.state.history.some(h => h.key === item.key && h.outcome === 'completed')) continue;
@@ -1884,6 +2064,19 @@ class MindAutopilot {
   }
   advance(raw, now = Date.now()) {
     const a = this.state.active;
+    if (['plan-review', 'implement', 'repair', 'code-review', 'coach'].includes(a.stage)) {
+      const req = owner.parseRequest(raw);
+      if (req) {
+        // What the agent already did is still checked: a request never excuses a change to the user's checkout or a review that edited files.
+        if ((a.stage === 'implement' || a.stage === 'repair') && a.mainFingerprint && worktreeFingerprint(this.state.repoPath, { head: false }) !== a.mainFingerprint) {
+          throw new Error('The main checkout changed during ' + a.stage + '; stopped for inspection: ' + this.state.repoPath);
+        }
+        if (a.stage === 'code-review' && a.worktree && worktreeFingerprint(a.worktree.path) !== a.reviewFingerprint) throw new Error('Codex review modified the worktree; review voided. Inspect ' + a.worktree.path);
+        return this.ownerRequest(a, req, a.stage, now);
+      }
+      // After a refusal the agent may find no allowed way: the task ends as refused, the pilot goes on.
+      if ((a.stage === 'implement' || a.stage === 'repair') && (a.ownerRefused || []).length && /^\s*NO_CHANGE/i.test(String(raw || ''))) return this.complete('owner-refused', raw);
+    }
     if (a.stage === 'discover') {
       const plan = parsePlan(raw);
       if (a.currentProvider === 'ollama-mind') {
@@ -1916,6 +2109,11 @@ class MindAutopilot {
       a.lastRaw = null;
       if (plan.decision === 'NO_TASK') return this.complete('no-task');
       if (this.state.history.some(h => h.key === taskKey(plan) && h.outcome === 'completed')) return this.complete('duplicate');
+      if (this.namedFiles(plan).some((x) => this.suspendedFiles().has(x))) {
+        this.enqueue([plan, ...parsePlanList(raw).slice(1)], now);
+        this.log('owner', 'Plan mis en file : il touche les fichiers d une tache en attente de ta decision (' + plan.title.slice(0, 90) + ')');
+        return this.complete('deferred-conflict');
+      }
       a.plan = plan;
       this.enqueue(parsePlanList(raw).slice(1), now);
       this.log('plan', '[' + plan.category + '] ' + plan.title);
@@ -1949,7 +2147,11 @@ class MindAutopilot {
         throw new Error('No Git changes despite Claude completion. Claude said: ' + String(raw || '').replace(/\s+/g, ' ').slice(0, 600));
       }
       const hits = guard.protectedHits(guard.changedPaths(a.worktree.path, a.baseSha, { skip: this.def.linkDirs }), this.def.protectedPaths);
-      if (hits.length) throw new Error('Protected path modified during ' + a.stage + ': ' + hits.slice(0, 6).join(', ') + '. Inspect ' + a.worktree.path);
+      if (hits.length) {
+        const req = { category: 'protected-zone', question: 'La tache a modifie des chemins proteges : ' + hits.slice(0, 6).join(', ') + '. Autoriser exactement ce changement ?',
+          consequences: 'Autoriser : le changement passe aux controles puis a la revue independante. Refuser : la tache doit retirer ces modifications, ou elle s arrete.' };
+        if (!(a.ownerAsks && a.ownerAsks[owner.operationKey(req)] && a.ownerAsks[owner.operationKey(req)].answered === 'allowed')) return this.ownerRequest(a, req, a.stage, now, { resumeAt: 'verify' });
+      }
       // The deep profile always passes through the gate: the diff lint runs
       // even when the repository has no check command configured.
       if (this.def.verify.length || this.profile.deep || this.def.behavior.required) return this.startVerify();
@@ -2170,6 +2372,7 @@ class MindAutopilot {
       }
       if (!this.state.active) {
         this.state.discoveryTimes = this.state.discoveryTimes.filter(t => budget.dayOf(t) === budget.dayOf(now));
+        if (this.resumeAnswered(now)) return this.snapshot();
         const queued = (this.state.queue || []).length, qwenNext = queued > 0 && this.pickQueued(false) >= 0;
         const paidBlocked = !this.def.capacity && this.paidUnitsToday(now) >= this.limits.dailyCompletions;
         if (now < this.state.nextAt || (paidBlocked && !qwenNext) || (!queued && this.state.discoveryTimes.length >= this.limits.dailyDiscoveries)) return this.snapshot();
@@ -2346,6 +2549,49 @@ function mountMindAutopilot(addRoute, json, deps) {
   };
   addRoute('GET', '/api/mind/autopilot', route((p) => ({ ...p.snapshot(), pilots: list() })));
   addRoute('POST', '/api/mind/autopilot/configure', route((p, body) => p.configure(body)));
+  // Mes decisions: every request of every pilot, with its task and state; the answer goes to the EXACT suspended task (pilot + suspended id + decision id).
+  const decisionsView = () => {
+    const store = require('../decisions/decisions').sharedStore(deps.repoRoot);
+    const items = [], log = [];
+    for (const p of peers()) {
+      for (const e of p.state.suspended || []) {
+        const d = store.get(e.decisionId);
+        items.push({ pilot: p.id, pilotLabel: p.def.label, suspendedId: e.id, decisionId: e.decisionId, kind: e.kind || 'request', task: (e.active && e.active.plan && e.active.plan.title) || null, stage: e.stage,
+          category: e.request.category, categoryLabel: owner.CATEGORIES[e.request.category] || e.request.category, question: e.request.question, consequences: e.request.consequences, problems: e.problems || null,
+          options: d ? d.options : [], allowText: d ? d.allowText : false, decisionStatus: d ? d.status : 'missing', answer: d ? d.answer : null,
+          status: !d ? 'question-lost' : d.status === 'pending' ? (e.kind === 'conflict' ? 'conflict' : 'waiting') : 'answered-resume-pending', at: e.at, worktree: e.worktree ? e.worktree.path : null, branch: e.worktree ? e.worktree.branch : null });
+      }
+      for (const x of (p.state.suspendedLog || []).slice(-15)) log.push({ pilot: p.id, pilotLabel: p.def.label, ...x });
+    }
+    log.sort((x, y) => String(y.at).localeCompare(String(x.at)));
+    return { items, history: log.slice(0, 30), categories: owner.CATEGORIES, alwaysAsk: owner.ALWAYS_ASK, policies: Object.fromEntries(peers().map((p) => [p.id, p.def.decisionPolicy || {}])) };
+  };
+  addRoute('GET', '/api/mind/autopilot/decisions', (_req, res) => json(res, decisionsView()));
+  addRoute('POST', '/api/mind/autopilot/decisions/answer', async (req, res) => {
+    try {
+      const body = await readBody(req);
+      const p = pilots.get(String(body.pilot || ''));
+      if (!p) throw new Error('unknown pilot');
+      const r = p.answerOwner(body, req.remoteAuthed ? 'phone' : 'ui');
+      if (!r.ok) return json(res, r, r.status || 400);
+      try { if (deps.broadcast) deps.broadcast({ type: 'decisions-changed' }); } catch (_) {}
+      setTimeout(() => { p.tick().catch(() => {}); }, 50);
+      json(res, { ok: true, decision: r.decision, view: decisionsView() });
+    } catch (e) { json(res, { ok: false, error: e.message }, 400); }
+  });
+  // The owner's policy for one category of one pilot: 'auto' or 'ask'. Sensitive categories cannot be set to 'auto'.
+  addRoute('POST', '/api/mind/autopilot/decision-policy', route((p, body) => {
+    const cat = String(body.category || ''), mode = body.mode === 'auto' ? 'auto' : 'ask';
+    if (!owner.CATEGORIES[cat]) throw new Error('unknown category');
+    if (mode === 'auto' && owner.ALWAYS_ASK.includes(cat)) throw new Error('this category always asks the owner');
+    const all = readDefs(); const def = { ...(all[p.id] || p.def) };
+    const policy = { ...owner.normalizePolicy(def.decisionPolicy) }; if (mode === 'auto') policy[cat] = 'auto'; else delete policy[cat];
+    def.decisionPolicy = policy; all[p.id] = def;
+    fs.mkdirSync(path.dirname(defsFile), { recursive: true });
+    const tmp = defsFile + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify({ pilots: all }, null, 2)); fs.renameSync(tmp, defsFile);
+    p.applyDefinition(def); p.log('owner', 'Politique de decision : ' + cat + ' = ' + mode); p.save(); return p.snapshot();
+  }));
   addRoute('POST', '/api/mind/autopilot/fallback', route((p, body) => {
     if (!['default', 'gas-saver'].includes(p.id)) throw new Error('Fallback is only available for default and gas-saver');
     if (p.state.enabled || p.state.active) throw new Error('Stop and archive this pilot before changing fallback permissions');
@@ -2390,13 +2636,15 @@ function mountMindAutopilot(addRoute, json, deps) {
       const def = { label: body.label, profile: body.profile, verify: body.verify || [], governance: body.governance || '',
         linkDirs: body.linkDirs || [], protectedPaths: body.protectedPaths || [],
         schedule: body.schedule || null, ambition: body.ambition, sources: body.sources || null, fallback: body.fallback || {},
-        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null, behavior: body.behavior };
+        stepMinutes: body.stepMinutes, baseRef: body.baseRef || null, localBrief: body.localBrief || null, capacity: body.capacity === undefined ? null : body.capacity, limits: body.limits || null, behavior: body.behavior, decisionPolicy: body.decisionPolicy };
       const existing = pilots.get(id);
       if (existing && (existing.state.enabled || existing.state.active)) throw new Error('Stop this pilot and archive its current task before changing its definition');
       // ONE read of the disk decides the gate that is kept (for the live pilot AND for the file written below). A form that does not know the
       // gate must not erase it: the value on disk wins (an activation script may have changed it since this process started), else the one in memory.
       const all = readDefs();
       if (body.behavior === undefined) def.behavior = all[id] ? all[id].behavior : existing ? existing.def.behavior : undefined;
+      // A form that does not send the decision policy keeps it (the owner set it from Mes decisions).
+      if (body.decisionPolicy === undefined) def.decisionPolicy = all[id] ? all[id].decisionPolicy : existing ? existing.def.decisionPolicy : undefined;
       if (existing) existing.applyDefinition(def); else pilots.set(id, make(id, def));
       all[id] = pilots.get(id).def;
       fs.mkdirSync(path.dirname(defsFile), { recursive: true });

@@ -3269,6 +3269,38 @@
   @keyframes apcPulse { 0%,100% { box-shadow:0 0 0 0 rgba(137,180,250,.5); } 50% { box-shadow:0 0 0 6px rgba(137,180,250,0); } }
 `;
 
+  // dashboard/public/mind-ui/src/autopilot-decisions.js
+  var DECISION_STATUS = {
+    waiting: { label: "Attend ta reponse", tone: "var(--yellow)" },
+    conflict: { label: "Le worktree a change : ta reponse est demandee", tone: "var(--red)" },
+    "answered-resume-pending": { label: "Repondu : reprise au prochain passage du pilote", tone: "var(--accent)" },
+    "question-lost": { label: "Question perdue : elle sera reposee", tone: "var(--red)" }
+  };
+  var HISTORY_LABEL = { resumed: "Reprise apres ta reponse", refused: "Refusee : la tache reprend sans cette operation", abandoned: "Archivee sur ta decision" };
+  function decisionCard(it, esc2, busy) {
+    const st = DECISION_STATUS[it.status] || { label: it.status, tone: "var(--subtext0)" };
+    const ids = ' data-pilot="' + esc2(it.pilot) + '" data-sus="' + esc2(it.suspendedId) + '" data-dec="' + esc2(it.decisionId) + '"';
+    const open = it.status === "waiting" || it.status === "conflict";
+    const buttons = open ? (it.options || []).map((o) => '<button class="tab-bar-btn' + (o.id === "allow" || o.id === "resume" ? " ap-primary" : o.id === "refuse" || o.id === "abandon" ? " ap-danger" : "") + '"' + ids + ' data-choice="' + esc2(o.id) + '" onclick="MindAutopilot.answerDecision(this)" ' + (busy ? "disabled" : "") + ">" + esc2(o.label) + "</button>").join(" ") : "";
+    const text = open && it.allowText ? '<label class="ap-form" style="margin-top:8px;">Reponse personnalisee (facultative)<textarea id="apDecText-' + esc2(it.suspendedId) + '" maxlength="1000" placeholder="Precise ta reponse, ou donne une condition"></textarea></label><button class="tab-bar-btn"' + ids + ' data-choice="" onclick="MindAutopilot.answerDecision(this)" ' + (busy ? "disabled" : "") + ">Envoyer seulement le texte</button>" : "";
+    return '<article class="ap-card ap-decision" aria-label="Decision ' + esc2(it.decisionId) + '"><div class="ap-status"><span class="ap-dot" style="background:' + st.tone + '"></span><b>' + esc2(it.pilotLabel || it.pilot) + '</b><span class="ap-tag">' + esc2(it.categoryLabel || it.category) + '</span><span class="ap-muted">' + esc2(st.label) + '</span></div><div class="ap-note">Tache : <b>' + esc2(it.task || "-") + "</b> (etape " + esc2(it.stage || "-") + ", en attente depuis " + esc2(it.at ? new Date(it.at).toLocaleString("fr-CA") : "-") + ')</div><p style="margin:8px 0;font-size:14px;color:var(--text);">' + esc2(it.question) + "</p>" + (it.consequences ? '<div class="ap-note"><b>Consequences :</b> ' + esc2(it.consequences) + "</div>" : "") + (it.problems && it.problems.length ? '<div class="ap-err">' + esc2(it.problems.join("; ")) + "</div>" : "") + (it.answer ? '<div class="ap-note">Ta reponse : ' + esc2([it.answer.choice, it.answer.text].filter(Boolean).join(" / ")) + " (" + esc2(it.answer.by || "") + ")</div>" : "") + (it.worktree ? '<div class="ap-note ap-path">' + esc2(it.worktree) + (it.branch ? " (" + esc2(it.branch) + ")" : "") + "</div>" : "") + (buttons || text ? '<div class="ap-btns" style="margin-top:8px;">' + buttons + "</div>" + text : "") + "</article>";
+  }
+  function policyHtml(view, pilot, esc2, busy) {
+    const cats = view.categories || {}, always = new Set(view.alwaysAsk || []), pol = (view.policies || {})[pilot] || {};
+    const rows = Object.entries(cats).map(([id, label]) => {
+      const locked = always.has(id);
+      return "<tr><td>" + esc2(label) + "</td><td>" + (locked ? '<span class="ap-muted">Toujours me demander</span>' : '<select data-cat="' + esc2(id) + '" onchange="MindAutopilot.setPolicy(this)" ' + (busy ? "disabled" : "") + '><option value="ask"' + (pol[id] !== "auto" ? " selected" : "") + '>Me demander</option><option value="auto"' + (pol[id] === "auto" ? " selected" : "") + ">Autoriser automatiquement</option></select>") + "</td></tr>";
+    }).join("");
+    return '<details><summary>Politique de decision de ce pilote (par categorie)</summary><p class="ap-note">Une categorie automatique est autorisee sans te demander, et la decision reste enregistree. Supprimer des donnees, les secrets, contourner une verification, une zone protegee, PleinSens et les deploiements te sont toujours demandes.</p><table class="ap-table"><tbody>' + rows + "</tbody></table></details>";
+  }
+  function decisionsHtml(view, pilot, esc2, busy, message) {
+    if (!view) return '<section class="ap-card" id="apDecisions"><div class="ap-title">Mes decisions</div><div class="ap-muted">Chargement...</div></section>';
+    const items = view.items || [];
+    const open = items.filter((x) => x.status === "waiting" || x.status === "conflict");
+    const history = (view.history || []).slice(0, 8).map((h) => "<tr><td>" + esc2(h.at ? new Date(h.at).toLocaleString("fr-CA") : "-") + "</td><td>" + esc2(h.pilotLabel || h.pilot) + "</td><td>" + esc2(h.task || "-") + "</td><td>" + esc2(HISTORY_LABEL[h.status] || h.status) + (h.by ? " (" + esc2(h.by) + ")" : "") + "</td></tr>").join("");
+    return '<section class="ap-card" id="apDecisions" aria-labelledby="apDecTitle"><div class="ap-title" id="apDecTitle">Mes decisions (' + open.length + ' a repondre)</div><p class="ap-note">Une tache qui attend ta decision est mise de cote : le pilote continue avec d autres taches, puis la reprend apres ta reponse.</p>' + (message ? '<div class="ap-msg" role="status" aria-live="polite">' + esc2(message) + "</div>" : "") + (items.length ? items.map((it) => decisionCard(it, esc2, busy)).join("") : '<div class="ap-muted">Aucune tache n attend ta decision.</div>') + (history ? '<details><summary>Decisions recentes</summary><table class="ap-table"><tbody>' + history + "</tbody></table></details>" : "") + policyHtml(view, pilot, esc2, busy) + "</section>";
+  }
+
   // dashboard/public/mind-ui/src/autopilot.js
   var snapshots = createSnapshotStore();
   var statusRequests = makeLatest();
@@ -3362,6 +3394,7 @@
     });
     if (ap.loopView) loadLoopDetail();
     loadClair();
+    loadDecisions();
     try {
       const results = await Promise.all(["default", "gas-saver"].map(async (id) => {
         const r = await fetch("/api/mind/autopilot?pilot=" + encodeURIComponent(id), { cache: "no-store", signal: controller.signal });
@@ -3392,6 +3425,17 @@
       if (ap.loadingPilot === pilot) ap.loadingPilot = null;
     }
     paint();
+  }
+  var decisionRequests = makeLatest();
+  function loadDecisions() {
+    const current = decisionRequests.start();
+    return fetch("/api/mind/autopilot/decisions", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).then((d) => {
+      if (current() && d && d.items) {
+        ap.decisions = d;
+        paint();
+      }
+    }).catch(() => {
+    });
   }
   var detailRequests = makeLatest();
   var clairRequests = makeLatest();
@@ -3471,6 +3515,42 @@
     },
     refresh() {
       return load();
+    },
+    // The answer names the pilot, the suspended task AND the decision: the server sends it to that task only, once.
+    async answerDecision(btn) {
+      if (ap.busy || !btn) return;
+      const sus = btn.dataset.sus, choice = btn.dataset.choice || null;
+      const box = document.getElementById("apDecText-" + sus);
+      const text = box ? box.value.trim() : "";
+      if (!choice && !text) {
+        ap.decisionMessage = "Ecris une reponse ou choisis un bouton.";
+        paint();
+        return;
+      }
+      ap.busy = true;
+      ap.decisionMessage = "Envoi de ta reponse...";
+      paint();
+      try {
+        const r = await fetch("/api/mind/autopilot/decisions/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pilot: btn.dataset.pilot, suspendedId: sus, decisionId: btn.dataset.dec, choice, text: text || void 0 })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.ok === false) throw new Error(d.code === "ALREADY_ANSWERED" ? "cette question a deja une reponse" : d.code === "STALE" || d.code === "NOT_WAITING" ? "la question a change ou n attend plus : la liste est actualisee" : d.error || "HTTP " + r.status);
+        if (d.view) ap.decisions = d.view;
+        ap.decisionMessage = "Reponse enregistree : la tache reprendra au prochain passage du pilote.";
+      } catch (e) {
+        ap.decisionMessage = "Reponse non envoyee : " + e.message;
+      } finally {
+        ap.busy = false;
+        await loadDecisions();
+        paint();
+      }
+    },
+    setPolicy(sel) {
+      if (!sel) return;
+      return act("Politique", () => call("/api/mind/autopilot/decision-policy", { category: sel.dataset.cat, mode: sel.value })).then(loadDecisions);
     },
     // Scrolls to the full detail card of the selected pilot (the "Voir le detail" button of the summary card).
     detail() {
@@ -3782,6 +3862,7 @@
         <p>${interventions} pilote(s) a examiner : erreurs, interruptions ou releves bloquees.</p>
         <p>${["default", "gas-saver"].map((id) => snapshots.get(id)).filter((p) => p && p.enabled).length} pilotes actifs | ${["default", "gas-saver"].map((id) => snapshots.get(id)).filter((p) => p && p.status === "running").length} taches en cours | ${["default", "gas-saver"].reduce((n, id) => n + (snapshots.get(id)?.today?.completed || 0), 0)} travaux locaux termines aujourd'hui</p>
         <p role="status" aria-live="polite">${ap.readError || !ap.lastRead || Date.now() - ap.lastRead > 45e3 ? "Etat perime ou inaccessible" : "Derniere lecture fiable : " + esc(when(ap.lastRead))}</p>
+        ${decisionsHtml(ap.decisions, ap.pilot, esc, ap.busy, ap.decisionMessage)}
         ${ap.loopView ? "" : cardHtml(cardModel(s), esc, ap.busy)}
         <div class="ap-grid" aria-label="Pilotes">
           ${["default", "gas-saver"].map(pilotCard).join("")}

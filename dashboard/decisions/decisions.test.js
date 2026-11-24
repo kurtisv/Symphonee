@@ -49,7 +49,7 @@ test('answering: a known choice, free text, and the refusals', () => {
   assert.match(s.answer(d.id, {}).error, /choice or some text/);
   assert.match(s.answer(d.id, { choice: 'o1', text: 'et en plus' }).error, /choice only/);
   const a = ok(s.answer(d.id, { choice: 'o2' }));
-  assert.equal(a.status, 'answered'); assert.deepEqual(a.answer, { choice: 'o2', text: null });
+  assert.equal(a.status, 'answered'); assert.deepEqual(a.answer, { choice: 'o2', text: null, by: 'ui' });
   assert.equal(s.answer(d.id, { choice: 'o1' }).code, 409, 'only the first answer counts');
   assert.equal(s.answer('dec_00000000', { choice: 'o1' }).code, 404);
   const free = ok(s.create({ title: 'Libre' }));

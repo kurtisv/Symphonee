@@ -55,8 +55,12 @@ function normalizeNew(input) {
   if (!options.length && !allowText) return { error: 'a question needs options or allowText' };
   const termId = b.termId == null || b.termId === '' ? null : String(b.termId);
   if (termId && !TERM_RE.test(termId)) return { error: 'termId is not a valid terminal id' };
-  return { value: { title, body: clean(b.body, LIMITS.body, true), options, allowText, from: clean(b.from, LIMITS.from) || null, ref: clean(b.ref, LIMITS.ref) || null, termId } };
+  // Optional plain-data context (an autopilot names its pilot, task, stage, category and consequences): fixed keys, bounded strings.
+  const meta = {};
+  for (const k of META_KEYS) if (b.meta && b.meta[k] != null) meta[k] = clean(b.meta[k], k === 'consequences' ? 1500 : 300, true);
+  return { value: { title, body: clean(b.body, LIMITS.body, true), options, allowText, from: clean(b.from, LIMITS.from) || null, ref: clean(b.ref, LIMITS.ref) || null, termId, meta } };
 }
+const META_KEYS = ['pilot', 'pilotLabel', 'task', 'stage', 'category', 'consequences', 'suspendedId', 'kind'];
 
 // The store keeps decisions in memory and mirrors them to a JSON file.
 function createStore({ file, now = Date.now, newId = () => 'dec_' + crypto.randomBytes(4).toString('hex') } = {}) {
@@ -110,7 +114,9 @@ function createStore({ file, now = Date.now, newId = () => 'dec_' + crypto.rando
       if (choice !== null && !d.options.some((o) => o.id === choice)) return { error: 'unknown choice' };
       if (choice === null && !text) return { error: 'answer with a choice or some text' };
       if (text && !d.allowText) return { error: 'this question takes a choice only' };
-      d.status = 'answered'; d.answeredAt = now(); d.answer = { choice, text: text || null };
+      // Who answered (the page, the phone, or a policy the owner set): recorded, never used to decide.
+      const by = ['ui', 'phone', 'bureau', 'policy'].includes(b.by) ? b.by : 'ui';
+      d.status = 'answered'; d.answeredAt = now(); d.answer = { choice, text: text || null, by };
       save();
       return { decision: d };
     },
@@ -134,10 +140,18 @@ function hintFor(d) {
   return clean('[DECISION ANSWERED ' + d.id + '] ' + (d.status === 'dismissed' ? 'dismissed by the user' : said) + '. Read it: GET /api/decisions/item?id=' + d.id, 300);
 }
 
+// ONE store per file in the process: the routes and the autopilot read and write the same decisions (two copies in memory would overwrite each other).
+const shared = new Map();
+function sharedStore(repoRoot) {
+  const file = path.join(repoRoot, '.symphonee', 'decisions.json');
+  if (!shared.has(file)) shared.set(file, createStore({ file }));
+  return shared.get(file);
+}
+
 function mountDecisions(addRoute, json, deps) {
   const { repoRoot, broadcast, inject } = deps;
   const { readBody } = require('../lib/http-helpers');
-  const store = createStore({ file: path.join(repoRoot, '.symphonee', 'decisions.json') });
+  const store = sharedStore(repoRoot);
   const body = (req) => readBody(req).catch(() => ({}));
   const changed = () => { try { broadcast && broadcast({ type: 'decisions-changed' }); } catch (_) { /* nobody listening */ } };
   const reply = (res, r, status) => (r.error ? json(res, { error: r.error }, r.code || 400) : json(res, { ok: true, decision: r.decision }, status || 200));
@@ -169,4 +183,4 @@ function mountDecisions(addRoute, json, deps) {
   return store;
 }
 
-module.exports = { LIMITS, clean, normalizeNew, createStore, hintFor, mountDecisions };
+module.exports = { LIMITS, clean, normalizeNew, createStore, sharedStore, hintFor, mountDecisions };
