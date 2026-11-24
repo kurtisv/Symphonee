@@ -63,7 +63,7 @@ function add(root, input) {
   const entry = {
     id: s.id, scope: cut(s.scope, 120) || null, title: cut(s.title, 240), files, keywords,
     minKeywords: Number.isInteger(s.minKeywords) ? Math.max(1, Math.min(s.minKeywords, keywords.length)) : Math.min(2, keywords.length),
-    fileBlobs: blobs, conditions: cut(s.conditions, 600), guidance,
+    fileBlobs: blobs, newFiles: (Array.isArray(s.newFiles) ? s.newFiles : []).map((f) => cut(f, 300).replace(/\\/g, '/')).filter(Boolean).slice(0, 12), conditions: cut(s.conditions, 600), guidance,
     evidence: { proof, source: cut(s.evidence && s.evidence.source, 200), verifiedAt: cut(s.evidence && s.evidence.verifiedAt, 40) || new Date().toISOString() },
     createdBy: cut(s.createdBy, 60) || 'unknown', createdAt: new Date().toISOString(), uses: 0, confirmed: 0, failed: 0, retired: false,
   };
@@ -126,6 +126,8 @@ function find(root, { scope, plan, namedFiles, repoPath, baseSha }) {
     const hits = (s.keywords || []).filter((k) => text.includes(k)).length;
     if (hits < (s.minKeywords || 0)) { why.push(s.id + ': the task does not look like it (' + hits + '/' + s.minKeywords + ' keywords)'); continue; }
     const stale = Object.entries(s.fileBlobs || {}).filter(([f, b]) => !baseSha || !repoPath || blobOf(repoPath, baseSha, f) !== b).map(([f]) => f);
+    const clash = (s.newFiles || []).filter((f) => baseSha && repoPath && blobOf(repoPath, baseSha, f));
+    if (clash.length) { why.push(s.id + ': ' + clash.join(', ') + ' already exists'); continue; }
     if (stale.length) { why.push(s.id + ': ' + stale.join(', ') + ' changed since the solution was verified'); continue; }
     return { solution: s, reason: 'applies' };
   }
@@ -153,9 +155,11 @@ function fromCommit({ repoPath, baseSha, commit, plan, scope, proof, createdBy, 
   if (bad.length) return { ok: false, reason: 'a comment added by the change addresses an assistant: ' + bad[0].slice(0, 80) };
   const guidance = head + String(diff.stdout);
   if (guidance.length > GUIDANCE_MAX) return { ok: false, reason: 'the change is longer than ' + GUIDANCE_MAX + ' characters' };
-  const blobs = {}; for (const f of source) { const b = blobOf(repoPath, baseSha, f); if (!b) return { ok: false, reason: f + ' did not exist at the base (a new file has no condition to check)' }; blobs[f] = b; }
+  // Every file of the diff is a condition: source and existing tests/docs must be as they were; a file the change CREATES must still not exist.
+  const blobs = {}, newFiles = [];
+  for (const f of changed) { const b = blobOf(repoPath, baseSha, f); if (b) blobs[f] = b; else if (source.includes(f)) return { ok: false, reason: f + ' did not exist at the base (a new source file has no condition to check)' }; else newFiles.push(f); }
   const words = [...new Set(String(plan && plan.title || '').toLowerCase().match(/[a-z_][a-z0-9_]{5,}/g) || [])].slice(0, 6);
-  return { ok: true, solution: { id: 'auto-' + crypto.createHash('sha256').update(String(commit)).digest('hex').slice(0, 10), scope, title: plan && plan.title, files: source, fileBlobs: blobs,
+  return { ok: true, solution: { id: 'auto-' + crypto.createHash('sha256').update(String(commit)).digest('hex').slice(0, 10), scope, title: plan && plan.title, files: source, fileBlobs: blobs, newFiles,
     keywords: words, minKeywords: Math.min(2, words.length), conditions: 'Same files with the same content as when verified (commit ' + String(commit).slice(0, 10) + '); the same kind of task.', guidance,
     evidence: { proof, source: 'commit ' + String(commit).slice(0, 10) }, createdBy: createdBy || 'autopilot' } };
 }
