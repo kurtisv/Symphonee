@@ -504,3 +504,16 @@ test('a worktree already gone when the task is suspended: recorded as missing, t
     assert.equal(f.spawns.filter((x) => x.task === 'A' && x.stage === 'implement').length, 1, 'never replayed');
   } finally { f.cleanup(); }
 });
+
+test('automatic policy never applies when the task already lost its worktree: the task is set aside instead', () => {
+  const f = setup({ def: { decisionPolicy: { dependency: 'auto' } } });
+  try {
+    const base = gitc(f.repo, 'rev-parse', 'HEAD');
+    const a = { stage: 'implement', plan: { title: 'Task Z', objective: 'x', evidence: [] }, worktree: { path: path.join(f.root, 'gone'), branch: 'b' }, baseSha: base, repairs: 0 };
+    f.pilot.state.active = a; f.pilot.state.enabled = true;
+    f.pilot.ownerRequest(a, { category: 'dependency', question: 'Add left-pad?', consequences: '' }, 'implement');
+    assert.equal(f.pilot.state.suspended.length, 1, 'suspended, not resumed by the policy');
+    assert.equal(f.pilot.state.suspended[0].worktree.missing, true);
+    assert.equal(f.pilot.decisionStore().get(f.pilot.state.suspended[0].decisionId).status, 'pending');
+  } finally { f.cleanup(); }
+});

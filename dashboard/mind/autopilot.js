@@ -1367,7 +1367,8 @@ class MindAutopilot {
       // A task that HAD a worktree keeps that fact even when the folder is already gone (it can then only be archived, never replayed).
       worktree: a.worktree ? (fs.existsSync(a.worktree.path) ? { path: a.worktree.path, branch: a.worktree.branch || null, head: git(a.worktree.path, ['rev-parse', 'HEAD']), fingerprint: worktreeFingerprint(a.worktree.path) } : { path: a.worktree.path, missing: true }) : null,
       mainBase: this.ownerBase(), active: null };
-    if (owner.decide(this.def.decisionPolicy, req) === 'auto') {
+    // Automatic only when the task's worktree is intact: a task that lost its work is set aside (it can then only be archived).
+    if (owner.decide(this.def.decisionPolicy, req) === 'auto' && !(entry.worktree && entry.worktree.missing)) {
       const auto = store.answer(d.id, { choice: 'allow', text: 'Politique automatique du proprietaire pour la categorie ' + req.category, by: 'policy' });
       if (!auto.error) {
         this.log('owner', 'Autorisation donnee par ta politique (' + req.category + ') : ' + req.question.slice(0, 120));
