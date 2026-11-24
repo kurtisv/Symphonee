@@ -128,23 +128,34 @@ async function runVerify(cwd, commands, { onStart, beforeEach } = {}) {
     if (beforeEach) { try { beforeEach(c); } catch (_) {} }
     const t0 = Date.now();
     const r = await new Promise((resolve) => {
-      let out = '', done = false, timedOut = false;
+      let out = '', done = false, timedOut = false, errs = 0, carry = '';
       let proc;
       try {
         proc = spawn(c.cmd[0], c.cmd.slice(1), { cwd: c.cwd ? path.join(cwd, c.cwd) : cwd, windowsHide: true, shell: false,
           env: { ...process.env, CI: '1', FORCE_COLOR: '0', NO_COLOR: '1' } });
       } catch (e) { return resolve({ code: -1, out: String(e.message), timedOut: false }); }
       if (onStart) { try { onStart(proc, c); } catch (_) {} }
-      const keep = (d) => { out += d.toString(); if (out.length > 200000) out = out.slice(-100000); };
+      // Compiler errors are counted as the output streams (a match must END in the new chunk, so none is counted twice or missed at a
+      // chunk boundary): the 200000-character buffer below only bounds memory, it does not decide the count.
+      const keep = (d) => {
+        const chunk = d.toString(), text = carry + chunk;
+        // counted at its FIRST digit: that digit lies in one chunk only, whatever the split
+        for (const m of text.matchAll(/error TS\d/g)) if (m.index + m[0].length > carry.length) errs++;
+        carry = text.slice(-12);
+        out += chunk; if (out.length > 200000) out = out.slice(-100000);
+      };
       proc.stdout.on('data', keep); proc.stderr.on('data', keep);
       const timer = setTimeout(() => { timedOut = true; killTree(proc); }, c.timeoutMs);
-      const finish = (code) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, out, timedOut }); };
+      const finish = (code) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, out, timedOut, errs }); };
       proc.on('error', (e) => { out += '\n' + e.message; finish(-1); });
       proc.on('close', (code) => finish(code));
     });
     const ok = r.code === 0 && !r.timedOut;
+    const clean = ok ? '' : r.out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
     results.push({ name: c.name, ok, code: r.code, ms: Date.now() - t0, timedOut: r.timedOut,
-      tail: ok ? '' : r.out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').slice(-6000) });
+      // counted while the output streams: neither the 6000-character tail nor the memory buffer limits the count
+      errors: ok ? 0 : r.errs || 0,
+      tail: clean.slice(-6000) });
     if (!ok) break;
   }
   return { ok: results.length > 0 && results.every(x => x.ok), results };

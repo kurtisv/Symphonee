@@ -671,3 +671,95 @@ test('error-context lines are masked BEFORE they are cut, so a secret straddling
   assert.doesNotMatch(lm.prompts[1], /gate-secret/, 'no prefix of the secret reaches the model');
   assert.doesNotMatch(lm.prompts[1], /4242/);
 });
+
+// Codex round 1 of the teacher lot: a falling number of errors is progress even when the normalised signature is unchanged
+test('teacher: a falling number of errors is measured progress, so it is not handed over as "the same failure"', async () => {
+  const r = repo();
+  let n = 0;
+  const line = "src/t.ts(1,1): error TS2339: Property 'zz' does not exist on type 'Rec'.\n";
+  const edit = (i) => 'EDIT a.js\n<<<<<<< SEARCH\nmodule.exports = ' + (i === 0 ? '1' : String(i)) + ';\n=======\nmodule.exports = ' + (i + 1) + ';\n>>>>>>> REPLACE\nRUN';
+  const lm = fakeLm(Array.from({ length: 9 }, (_, i) => edit(i)).concat(['STUCK x']));
+  const out = await run(r, lm, { dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: false, results: [{ name: 'types', ok: false, tail: line.repeat(26 - n++) }] }) } });
+  assert.doesNotMatch(String(out.summary), /same failure persists/);
+  assert.equal(out.switches, 0, 'no strategy switch while the error count keeps falling');
+});
+
+test('teacher: a file Qwen created (not in git diff) is part of the hand-over evidence, masked', async () => {
+  const r = repo();
+  const lm = fakeLm(['CREATE new.test.js\n<<<<<<< CONTENT\nconst v = "visible-line";\nconst k = "Zq7Xk29LmN4pRtW8";\n>>>>>>> END\nRUN', 'RUN', 'RUN', 'RUN', 'RUN']);
+  fs.writeFileSync(path.join(r.dir, '.gitignore'), '.env\n'); // like a real repository: the secret file is ignored
+  fs.writeFileSync(path.join(r.dir, '.env'), 'API_TOKEN=Zq7Xk29LmN4pRtW8\n');
+  const out = await run(r, lm);
+  assert.equal(out.state, 'blocked');
+  assert.match(String(out.teach), /\+\+\+ NEW FILE new\.test\.js/);
+  assert.match(String(out.teach), /visible-line/);
+  assert.doesNotMatch(String(out.teach), /Zq7Xk29LmN4pRtW8/);
+});
+
+test('behaviour gate: DONE is refused while a source change has no test, and accepted once a test file comes with it', async () => {
+  const r = repo();
+  fs.mkdirSync(path.join(r.dir, 'src'));
+  fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a }\nmodule.exports = { add }\n');
+  const g = (...a) => cp.spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: r.dir, encoding: 'utf8' });
+  g('add', '.'); g('commit', '-qm', 'src'); r.base = g('rev-parse', 'HEAD').stdout.trim();
+  const edit = 'EDIT src/add.js\n<<<<<<< SEARCH\nfunction add(a, b) { return a }\n=======\nfunction add(a, b) { return a + b }\n>>>>>>> REPLACE\nRUN\nDONE fixed';
+  const test = 'CREATE src/add.test.js\n<<<<<<< CONTENT\nconst t = require("node:test");\nt("adds", () => {});\n>>>>>>> END\nRUN\nDONE fixed with a test';
+  const lm = fakeLm([edit, test, 'STUCK x']);
+  const out = await run(r, lm, { behavior: { required: true, sourceDirs: ['src/'], lintOnly: true },
+    dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
+  assert.equal(out.state, 'completed');
+  assert.match(lm.prompts[1], /DONE refused: BEHAVIOUR TEST REQUIRED: you changed src\/add\.js but no test file/);
+  assert.doesNotMatch(lm.prompts[2] || '', /BEHAVIOUR TEST REQUIRED/, 'once the test file exists the refusal is gone');
+});
+
+test('behaviour gate: without the option (or with required false) DONE is accepted as before', async () => {
+  const r = repo();
+  fs.mkdirSync(path.join(r.dir, 'src'));
+  fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a }\n');
+  const g = (...a) => cp.spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: r.dir, encoding: 'utf8' });
+  g('add', '.'); g('commit', '-qm', 'src'); r.base = g('rev-parse', 'HEAD').stdout.trim();
+  const lm = fakeLm(['EDIT src/add.js\n<<<<<<< SEARCH\nfunction add(a, b) { return a }\n=======\nfunction add(a, b) { return a + b }\n>>>>>>> REPLACE\nRUN\nDONE fixed']);
+  const out = await run(r, lm, { dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
+  assert.equal(out.state, 'completed');
+});
+
+test('behaviour gate: when a REQUIRED gate breaks, DONE is refused (fail closed), not accepted', async () => {
+  const r = repo();
+  const g = (...a) => cp.spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: r.dir, encoding: 'utf8' });
+  fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 1;\n'); g('add', '.'); g('commit', '-qm', 'x'); r.base = g('rev-parse', 'HEAD').stdout.trim();
+  const broken = new Proxy({ required: true }, { get(target, key) { if (key === 'required') return true; throw new Error('boom ' + String(key)); } });
+  const lm = fakeLm(['EDIT a.js\n<<<<<<< SEARCH\nmodule.exports = 1;\n=======\nmodule.exports = 2;\n>>>>>>> REPLACE\nRUN\nDONE ok', 'STUCK x']);
+  const out = await run(r, lm, { behavior: broken, dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
+  assert.notEqual(out.state, 'completed');
+  assert.match(lm.prompts[1], /DONE refused: BEHAVIOUR GATE ERROR/);
+});
+
+// 2026-11-24: guidance and findings used to be glued to the objective, which the worker cuts at 1800 characters:
+// Qwen saw almost nothing of what Claude wrote (replays 7-9 were run with a guidance that was mostly invisible).
+test('Claude guidance and findings are separate prompt sections and are NOT cut with a long objective', async () => {
+  const r = repo();
+  const lm = fakeLm(['STUCK x']);
+  const guidance = '1. ROOT CAUSE: ' + 'g'.repeat(2500) + ' 6. KEY STATEMENTS: const sentSet = new Set(batch) TAILMARK-GUIDANCE';
+  const findings = 'LOCAL VERIFICATION FAILED: ' + 'f'.repeat(1500) + ' TAILMARK-FINDINGS';
+  await run(r, lm, { task: { title: 't', objective: 'o'.repeat(3000), findings, guidance, files: [] } });
+  assert.match(lm.prompts[0], /FINDINGS TO FIX \(from the repository checks or the code review\):/);
+  assert.match(lm.prompts[0], /TAILMARK-FINDINGS/);
+  assert.match(lm.prompts[0], /GUIDANCE FROM CLAUDE \(your senior assistant\) - follow it exactly\. If it contains a test file/);
+  assert.match(lm.prompts[0], /TAILMARK-GUIDANCE/, 'the end of the guidance (the key statements) reaches the model');
+  assert.ok(lm.prompts[0].length <= LIMITS.promptChars + 400, 'the prompt stays inside the context budget');
+});
+
+test('when the prompt is too long, memory and old notes give way first: Claude guidance (with its test file) stays whole', async () => {
+  const r = repo();
+  const guidance = 'KEY ' + 'g'.repeat(5000) + ' TAILMARK-GUIDANCE-WHOLE';
+  const findings = 'FINDINGS ' + 'f'.repeat(6800) + ' TAILMARK-FINDINGS';
+  const notes = Array.from({ length: 8 }, (_, i) => 'NOTE ' + 'NOTE-' + i + ' ' + 'n'.repeat(250)).join('\n');
+  const lm = fakeLm([notes + '\nREAD a.js', 'STUCK x']);
+  await run(r, lm, { memoryText: 'MEMORY-BLOCK ' + 'm'.repeat(1700), task: { title: 't', objective: 'o'.repeat(1700), findings, guidance, files: [] } });
+  const p = lm.prompts[1];
+  assert.ok(p, 'a second turn happened');
+  assert.match(p, /TAILMARK-GUIDANCE-WHOLE/, 'the end of the guidance is still there');
+  assert.ok(p.length <= LIMITS.promptChars + 3500, 'inside the budget');
+  assert.doesNotMatch(p, /MEMORY-BLOCK/, 'memory was sacrificed first');
+  assert.doesNotMatch(p, /NOTE-0 /, 'the oldest notes were sacrificed too');
+});

@@ -25,11 +25,14 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const cp = require('node:child_process');
+const symbols = require('./qwen-symbols');
+// Fail closed: when the gate is REQUIRED and breaks, the task is not reported finished (the model is told the behaviour is not verified).
+const behaviorLint = async (cwd, base, cfg) => { try { return await require('../mind/behavior-gate').lint(cwd, base, cfg); } catch (e) { return cfg && cfg.required ? ['BEHAVIOUR GATE ERROR: the behaviour of this change could not be verified (' + String(e && e.message || e).slice(0, 120) + ').'] : []; } };
 
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({
   actionsPerTurn: 4, readChars: 5000, grepHits: 20, listEntries: 60, editFileBytes: 120000, newFileBytes: 60000, noteChars: 300, planSteps: 6,
-  maxTurns: 80, maxSwitches: 3, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 11000, maxTokens: 2000, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
+  maxTurns: 80, maxSwitches: 1, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 15000, maxTokens: 2000, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
 });
 const sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
 const clip = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '\n...[cut]' : String(s));
@@ -343,6 +346,16 @@ function errorContext(ctx, tail) {
   }
   return out.length ? '\nWHERE THE CHECK FAILED (the real lines, > marks the reported line; line numbers are not part of the code):\n' + hide(clip(out.join('\n'), 1800)) : '';
 }
+// Right after a write: calls to a name that exists nowhere else in the repository are most likely invented. Never blocks the edit.
+function inventedNames(ctx, a, located) {
+  try {
+    const items = symbols.unknownCalls(ctx.worktree, located.replace, a.search, ctx.secret);
+    if (!items.length) return ''; // the common case costs one bounded search and NO secret scan
+    const hide = ctx.maskNow(); // a fresh scan: before the first RUN no masker exists yet, and a secret may have been written since the last one
+    return hide(symbols.unknownCallsNote(items, hide));
+  } catch { return ''; } // no masker, no note
+}
+
 function doEdit(ctx, a) {
   confine(ctx.worktree, a.file, ctx.secret); // a file the model may not READ must not be answered with its content either (hints)
   const { rel, abs } = confine(ctx.worktree, a.file, ctx.prot, true);
@@ -357,7 +370,7 @@ function doEdit(ctx, a) {
   const next = located.next;
   if (next === text) return { err: 'EDIT ' + rel + ': the replacement is identical to the original' };
   fs.writeFileSync(abs, crlf ? next.replace(/\n/g, '\r\n') : next);
-  return { ok: 'EDIT ' + rel + ': applied (' + a.search.split('\n').length + ' line(s) replaced by ' + located.replace.split('\n').length + ')' + (located.note ? ' - note: ' + located.note : ''), file: rel };
+  return { ok: 'EDIT ' + rel + ': applied (' + a.search.split('\n').length + ' line(s) replaced by ' + located.replace.split('\n').length + ')' + (located.note ? ' - note: ' + located.note : '') + inventedNames(ctx, a, located), file: rel };
 }
 function doCreate(ctx, a, mine) {
   const { rel, abs } = confine(ctx.worktree, a.file, ctx.prot, true);
@@ -378,6 +391,9 @@ function changedNow(ctx, skip) {
   const a = git(ctx.worktree, ['diff', '--name-only', ctx.base]).out.split('\n').filter(Boolean), b = git(ctx.worktree, ['ls-files', '--others', '--exclude-standard']).out.split('\n').filter(Boolean);
   return [...new Set([...a, ...b])].filter((f) => !(skip || []).some((d) => f === d || f.startsWith(d + '/')));
 }
+// How many problems the first failing check reports: a number that falls from one RUN to the next is measured progress, even when the normalised signature (digits replaced) looks the same.
+const failureCount = (results) => { const bad = (results || []).find((r) => !r.ok); return bad ? (Number.isFinite(bad.errors) ? bad.errors : (String(bad.tail || '').match(/error TS\d+/g) || []).length) : 0; }; // compiler errors only: one per problem and stable. Test-runner output is too variable to count (a limit, kept on purpose)
+function sawProgress(s, results) { const n = failureCount(results), better = s.lastFailCount != null && n < s.lastFailCount; s.lastFailCount = n; return better; }
 const failureSig = (results) => { const bad = (results || []).find((r) => !r.ok); return bad ? bad.name + ':' + sha(String(bad.tail || '').replace(/\d+(\.\d+)?/g, '#').replace(/\s+/g, ' ').slice(-400)).slice(0, 12) : null; };
 
 const PROTOCOL = [
@@ -391,20 +407,56 @@ const PROTOCOL = [
   'Read before you edit. Make small changes. Use RUN after each change. Say DONE only after RUN passed. If you are blocked, say STUCK and why: a stronger developer will take over. Paths are relative to the repository root. Secret files (.env, keys, credentials) are not available. Restricted files can be READ for context but never changed.',
 ].join('\n');
 
+function realNames(ctx, tail) {
+  try { return symbols.fromErrors(ctx.worktree, tail, ctx.secret, () => ctx.lastRedact || ctx.maskNow(), ctx.readLines); } catch { return ''; }
+}
+
+// What a senior developer needs to teach instead of redo: the failing check, what really exists in the repository, and the code as it is now.
+// Built once, when Qwen stops for lack of progress (not on every turn). Everything is masked, secret and protected paths are left out.
+function teachEvidence(ctx, s) {
+  try {
+    const failing = s.runs.filter((r) => !r.ok), last = failing.at(-1);
+    const tail = last ? last.results.filter((x) => !x.ok).map((x) => x.name + ':\n' + String(x.tail || '')).join('\n') : '';
+    const hide = ctx.lastRedact || ctx.maskNow();
+    const files = s.changed.filter((f) => !ctx.secret.some((re) => re.test(f)) && !ctx.prot.some((re) => re.test(f))).slice(0, 4); // a protected file cannot be changed by Qwen: it is never part of Qwen's diff
+    const tracked = files.filter((f) => !(s.created || []).includes(f));
+    const diff = tracked.length ? git(ctx.worktree, ['diff', '--no-color', '-U2', ctx.base, '--', ...tracked]).out : '';
+    const fresh = (s.created || []).filter((f) => !ctx.secret.some((re) => re.test(f)) && !ctx.prot.some((re) => re.test(f))).slice(0, 2)
+      .map((f) => { let body = null; try { body = ctx.readLines(f, 1, 40); } catch { body = null; } return body ? '+++ NEW FILE ' + f + '\n' + body.map((l) => '+' + l).join('\n') : ''; }).filter(Boolean).join('\n');
+    return [
+      'FAILING CHECK (' + failing.length + ' failing run(s); last signature repeated ' + (s.sameSigStreak || 0) + ' time(s) since the last change of strategy):',
+      clip(hide(tail), 1100) + realNames(ctx, tail),
+      'QWEN CODE AS IT IS NOW (' + (files.join(', ') || 'no file') + ', diff against the start of the task):',
+      clip(hide([diff, fresh].filter(Boolean).join('\n')), 1700) || '(no change)',
+    ].join('\n');
+  } catch { return ''; }
+}
+
 function buildPrompt(s, task, memoryText, lastObs, demand) {
+  const s0 = s;
   const runNudge = s.needsRun ? 'NEXT STEP: you changed files and have not run the checks since. Use RUN now (the host runs the repository checks). Do NOT READ the file again. If RUN fails, fix what it reports and RUN again; say DONE only after RUN passed.' : '';
-  const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN.' : '');
-  const parts = [PROTOCOL,
+  const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN. Use ONLY function, type and property names you saw in text you READ; if you need another one, GREP for it first (the host warns you when a name exists nowhere in the repository).' : '');
+  const guidanceBlock = task.guidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it exactly. If it contains a test file (FILE: <path>), create that file with CREATE:\n' + clip(task.guidance, 9000) : '';
+  // lv 0 = everything; 1 = no memory; 2 = fewer notes and tried approaches; 3 = shorter findings. Guidance is never part of the cuts below.
+  const compose = (lv, withGuidance = true) => [PROTOCOL,
     'TASK: ' + task.title + '\n' + clip(task.objective, 1800) + (task.files && task.files.length ? '\nFiles the plan mentions: ' + task.files.slice(0, 8).join(', ') : ''),
-    memoryText ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
-    s.plan.length ? 'PLAN:\n' + s.plan.map((p, i) => (i + 1) + '. [' + (p.done ? 'x' : ' ') + '] ' + p.text).join('\n') : 'No plan yet: start with PLAN lines.',
-    s.notes.length ? 'YOUR NOTES:\n' + s.notes.slice(-8).map((n) => '- ' + n).join('\n') : '',
-    s.strategies.length ? 'APPROACHES ALREADY TRIED THAT FAILED:\n' + s.strategies.slice(-4).map((x, i) => (i + 1) + '. ' + x).join('\n') : '',
-    s.changed.length ? 'FILES YOU CHANGED: ' + s.changed.slice(0, 10).join(', ') : '',
-    demand || '', nudge,
-    'LAST RESULTS:\n' + (lastObs || '(none yet)')];
-  let p = parts.filter(Boolean).join('\n\n');
-  if (p.length > LIMITS.promptChars) { const head = p.slice(0, p.indexOf('LAST RESULTS:')); p = clip(head, LIMITS.promptChars - 3500) + '\n\nLAST RESULTS:\n' + tailClip(lastObs, 3300); }
+    // Their own sections and their own budget (a long objective used to push them out of what the model saw).
+    task.findings ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + clip(task.findings, lv >= 3 ? 2500 : 7000) : '',
+    withGuidance ? guidanceBlock : '',
+    memoryText && lv < 1 ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
+    s0.plan.length ? 'PLAN:\n' + s0.plan.map((p, i) => (i + 1) + '. [' + (p.done ? 'x' : ' ') + '] ' + p.text).join('\n') : 'No plan yet: start with PLAN lines.',
+    s0.notes.length ? 'YOUR NOTES:\n' + s0.notes.slice(lv >= 2 ? -3 : -8).map((n) => '- ' + n).join('\n') : '',
+    s0.strategies.length ? 'APPROACHES ALREADY TRIED THAT FAILED:\n' + s0.strategies.slice(lv >= 2 ? -2 : -4).map((x, i) => (i + 1) + '. ' + x).join('\n') : '',
+    s0.changed.length ? 'FILES YOU CHANGED: ' + s0.changed.slice(0, 10).join(', ') : '',
+    demand || '', nudge].filter(Boolean).join('\n\n');
+  let p = compose(0) + '\n\nLAST RESULTS:\n' + (lastObs || '(none yet)');
+  if (p.length > LIMITS.promptChars) {
+    const budget = LIMITS.promptChars - 3500;
+    let head = compose(0);
+    for (let lv = 1; lv <= 3 && head.length > budget; lv++) head = compose(lv);
+    if (head.length > budget) head = clip(compose(3, false), budget - guidanceBlock.length - 2) + (guidanceBlock ? '\n\n' + guidanceBlock : ''); // last resort: the guidance stays whole, the rest is cut
+    p = head + '\n\nLAST RESULTS:\n' + tailClip(lastObs, 3300);
+  }
   return p;
 }
 
@@ -415,6 +467,13 @@ async function runRepoWorker(opts) {
   const runVerifyRaw = dep.runVerify || require('../mind/autopilot-verify').runVerify;
   // prot: never written (pilot list + secrets). secret: never read either (secrets + optional extra list).
   const ctx = { worktree: path.resolve(opts.worktree), base: opts.base, prot: compile([...(opts.protectedPatterns || []), ...SECRET_PATTERNS]), secret: compile([...SECRET_PATTERNS, ...(opts.readProtectedPatterns || [])]) };
+  ctx.maskNow = () => secretMask(ctx.worktree, opts.readProtectedPatterns || [])();
+  // The only file read the symbol lookup does: same confinement as READ (protected paths, symbolic links), regular file, size-limited.
+  ctx.readLines = (rel, from, count) => {
+    const { abs } = confine(ctx.worktree, rel, ctx.secret);
+    const st = fs.lstatSync(abs); if (!st.isFile() || st.isSymbolicLink() || st.size > 400000) return null;
+    return fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n').split('\n').slice(from - 1, from - 1 + count);
+  };
   if (!opts.profile || opts.profile.mode !== 'text') throw new Error('Not a text-only developer profile');
   // Check output reaches the prompt: secret values are masked first (they are re-read at every RUN, a test may create one).
   const runVerify = async (cwd, cmds) => {
@@ -495,11 +554,11 @@ async function runRepoWorker(opts) {
           else {
             s.idleRuns = 0; s.lastDiffHash = h;
             const v = await runVerify(ctx.worktree, opts.verify || []);
-            ranResult = { ok: v.ok, results: v.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, timedOut: x.timedOut, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() };
+            ranResult = { ok: v.ok, results: v.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, timedOut: x.timedOut, errors: x.errors, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() };
             s.runs.push(ranResult); s.runs = s.runs.slice(-6);
-            obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)) + (v.ok ? '' : errorContext(ctx, (v.results.find((x) => !x.ok) || {}).tail)) + '\n[RUN RESULT: ' + (v.ok ? 'PASSED' : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name) + ']');
+            obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)) + (v.ok ? '' : errorContext(ctx, (v.results.find((x) => !x.ok) || {}).tail) + realNames(ctx, (v.results.find((x) => !x.ok) || {}).tail)) + '\n[RUN RESULT: ' + (v.ok ? 'PASSED' : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name) + ']');
             const sig = failureSig(ranResult.results);
-            if (v.ok) s.sameSigStreak = 0; else if (sig === s.lastRunSig) s.sameSigStreak++; else s.sameSigStreak = 1;
+            const progressed = v.ok ? false : sawProgress(s, v.results); if (v.ok) { s.sameSigStreak = 0; s.lastFailCount = null; } else if (sig === s.lastRunSig && !progressed) s.sameSigStreak++; else s.sameSigStreak = 1;
             s.lastRunSig = v.ok ? null : sig;
           }
         } else if (a.type === 'done') claimedDone = a.text || 'done';
@@ -540,23 +599,26 @@ async function runRepoWorker(opts) {
     if (claimedStuck) {
       const failing = s.runs.filter((r) => !r.ok).length;
       if (s.stuckRefusals < 2 && s.turns < 8 && failing < 3 && s.changed.length) { s.stuckRefusals++; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'STUCK refused (' + s.stuckRefusals + '/2): you have tried only ' + failing + ' time(s) to make the checks pass. Read the failure above carefully, find what differs from what you expected, and fix it with EDIT or a new CREATE of your own file.'; s.observations.push(lastObs); s.observations = s.observations.slice(-3); saveSession(opts.sessionFile, s); continue; }
-      return finish('blocked', 'The model declared itself stuck: ' + clip(claimedStuck, 400));
+      return finish('blocked', 'The model declared itself stuck: ' + clip(claimedStuck, 400), { teach: teachEvidence(ctx, s) });
     }
     if (claimedDone !== null) {
       if (!s.changed.length && !changedNow(ctx, opts.skipDirs).length) { demand = 'DONE refused: you changed nothing. Make the change, or say STUCK.'; lastObs = (lastObs ? lastObs + '\n\n' : '') + 'DONE refused: nothing was changed yet. Write the change with an EDIT or CREATE block (see the worked examples).'; saveSession(opts.sessionFile, s); continue; }
       const v = ran && ranResult && s.lastDiffHash === diffHash(ctx) ? ranResult : null;
       let check = v;
-      if (!check) { const r = await runVerify(ctx.worktree, opts.verify || []); check = { ok: r.ok, results: r.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() }; s.runs.push(check); s.lastDiffHash = diffHash(ctx); }
-      if (check.ok) return finish('completed', clip(claimedDone, 500), { verified: check });
+      if (!check) { const r = await runVerify(ctx.worktree, opts.verify || []); check = { ok: r.ok, results: r.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, errors: x.errors, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() }; s.runs.push(check); s.lastDiffHash = diffHash(ctx); }
+      // The checks are green. Without a test that reproduces the problem the task is not finished (replay 9: tsc green, behaviour wrong).
+      const bf = check.ok && opts.behavior && opts.behavior.required ? await behaviorLint(ctx.worktree, ctx.base, opts.behavior) : [];
+      if (check.ok && !bf.length) return finish('completed', clip(claimedDone, 500), { verified: check });
+      if (check.ok) { lastObs = 'DONE refused: ' + bf[0]; s.observations.push(lastObs); saveSession(opts.sessionFile, s); continue; }
       lastObs = 'DONE refused: the host verification FAILED at ' + (check.results.find((x) => !x.ok) || {}).name + ':\n' + ((check.results.find((x) => !x.ok) || {}).tail || '').slice(-1800);
-      s.observations.push(lastObs); const sig = failureSig(check.results); s.sameSigStreak = sig === s.lastRunSig ? s.sameSigStreak + 1 : 1; s.lastRunSig = sig;
+      s.observations.push(lastObs); const sig = failureSig(check.results); s.sameSigStreak = sig === s.lastRunSig && !sawProgress(s, check.results) ? s.sameSigStreak + 1 : 1; s.lastRunSig = sig;
     }
     // No progress: the same verification failure again and again, or RUN without changes.
-    if (s.idleRuns >= LIMITS.idleRunsBeforeStuck) return finish('blocked', 'No progress: RUN repeated ' + s.idleRuns + ' times with no change to the code');
+    if (s.idleRuns >= LIMITS.idleRunsBeforeStuck) return finish('blocked', 'No progress: RUN repeated ' + s.idleRuns + ' times with no change to the code', { teach: teachEvidence(ctx, s) });
     if (s.sameSigStreak >= LIMITS.sameFailureBeforeSwitch) {
       s.strategies.push(clip(s.notes.at(-1) || ('the approach on ' + (s.changed.slice(-2).join(', ') || 'the code') + ' (same failure ' + s.sameSigStreak + ' times)'), 200));
       s.switches++; s.sameSigStreak = 0;
-      if (s.switches > LIMITS.maxSwitches) return finish('blocked', 'The same failure persists after ' + LIMITS.maxSwitches + ' changes of strategy');
+      if (s.switches > LIMITS.maxSwitches) return finish('blocked', 'The same failure persists after ' + LIMITS.maxSwitches + ' change of strategy', { teach: teachEvidence(ctx, s) });
       demand = 'STRATEGY SWITCH REQUIRED (' + s.switches + '/' + LIMITS.maxSwitches + '): the same failure repeated ' + LIMITS.sameFailureBeforeSwitch + ' times. Do NOT repeat your approach. First write a NOTE saying what you will do differently (another function, another cause, or undo your last edit by editing it back), then act.';
       ev('switch', 'strategy switch ' + s.switches);
     }

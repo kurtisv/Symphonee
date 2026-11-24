@@ -120,7 +120,7 @@ test('the same failure three times forces a different strategy, which is recorde
   const { lm, o } = opts(t, r, [wrong(0), wrong(1), wrong(2), 'NOTE the first edits just count up; the cause is the operator\nEDIT src/add.js\n<<<<<<< SEARCH\n  return 3;\n=======\n  return a + b;\n>>>>>>> REPLACE\nRUN', 'DONE fixed with the operator'], { base: r.base });
   const out = await W.runRepoWorker(o);
   assert.equal(out.state, 'completed'); assert.equal(out.switches, 1);
-  assert.match(lm.seen[3], /STRATEGY SWITCH REQUIRED \(1\/3\)/); assert.match(lm.seen[4], /APPROACHES ALREADY TRIED THAT FAILED/);
+  assert.match(lm.seen[3], /STRATEGY SWITCH REQUIRED \(1\/1\)/); assert.match(lm.seen[4], /APPROACHES ALREADY TRIED THAT FAILED/);
   assert.equal(out.strategies.length, 1);
 });
 
@@ -130,7 +130,12 @@ test('a persistent failure after the allowed switches is handed back as blocked,
   for (let i = 0; i < 20; i++) replies.push(`EDIT src/add.js\n<<<<<<< SEARCH\n  return ${i === 0 ? 'a - b' : 'a - b + ' + (i - 1)};\n=======\n  return a - b + ${i};\n>>>>>>> REPLACE\nRUN`);
   const { o } = opts(t, r, replies);
   const out = await W.runRepoWorker(o);
-  assert.equal(out.state, 'blocked'); assert.match(out.summary, /same failure persists after 3 changes of strategy/); assert.equal(out.switches, 4);
+  // 2026-11-23: hand over after ONE change of strategy that did not change the failure (6 identical failures), not after three:
+  // each local turn costs about 30 s, so waiting for three switches used the whole 25-minute slot without ever asking Claude.
+  assert.equal(out.state, 'blocked'); assert.match(out.summary, /same failure persists after 1 change of strategy/); assert.equal(out.switches, 2);
+  assert.match(String(out.teach), /FAILING CHECK \(\d+ failing run/, 'the hand-over carries the evidence a teacher needs');
+  assert.match(String(out.teach), /QWEN CODE AS IT IS NOW \(src\/add\.js/);
+  assert.match(String(out.teach), /\+\s+return a - b \+ \d+/, 'the diff shows what Qwen wrote');
 });
 
 test('format drift: repeated answers outside the protocol stop the run', async t => {

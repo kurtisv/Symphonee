@@ -14,6 +14,7 @@ const localBrief = require('./local-brief');
 const capacity = require('./usage-capacity');
 const lessons = require('./lessons');
 const guard = require('./autopilot-verify');
+const behaviorGate = require('./behavior-gate');
 const tq = require('./qwen-teaching');
 const freellmTeacher = require('./freellm-teacher');
 const applicability = require('./lesson-applicability');
@@ -202,15 +203,20 @@ const WORK_CATEGORIES = Object.freeze(['correctness', 'performance', 'quality', 
 const STAGES = Object.freeze(['discover', 'plan-review', 'implement', 'code-review', 'repair', 'coach']);
 // Decision of 2026-11-22: Qwen writes the code; when it fails, Claude first ANALYSES and GUIDES it
 // (read-only), Qwen tries again, and Claude only takes the correction over if Qwen is still stuck.
+// Claude's guidance can carry a complete test file: one size for what is stored, sent and shown to Qwen (a size, not a limit on Claude's help).
+const GUIDANCE_MAX = 9000;
 const COACH_PROMPT = [
-  'Claude, senior technical assistant of a small local developer (Qwen, 4B parameters, 8k context, edits files with exact SEARCH/REPLACE blocks).',
+  'Claude, senior technical assistant of a small local developer (Qwen, 9B parameters, 8k context, edits files with exact SEARCH/REPLACE blocks).',
   'Qwen could not finish the approved task below. READ-ONLY: do not edit, create or delete any file, do not commit. Your job is to help Qwen succeed by itself.',
-  'Inspect the relevant files and the current diff, find the root cause of the failure, then answer with SHORT, concrete guidance (at most 30 lines):',
-  '1. ROOT CAUSE: what is actually wrong (file:line).',
-  '2. FIX: the exact change to make, file by file, small enough for Qwen (quote the exact existing lines to search for when an edit failed).',
-  '3. TEST: the exact test command and the expected result.',
-  '4. LESSON: one sentence Qwen should remember to avoid this mistake next time.',
-  'Do not write the whole solution as a patch; give Qwen what it needs to write it.'].join('\n');
+  'Inspect the relevant files and the current diff, find the root cause of the failure, then answer with SHORT, concrete guidance (at most 40 lines).',
+  'When the failure is a DESIGN problem (identity, ordering, concurrency, persistence, a rule that must hold in several places) do not just repair the line the compiler names: Qwen repeats the same wrong idea.',
+  'Read every place that creates, reassigns, copies or reads the data involved, state which invariant your fix relies on, and verify it holds in EACH place (file:line). Say which obvious alternative you rejected and why. Use only names that exist in the repository.',
+  '1. ROOT CAUSE: what is actually wrong (file:line), and why Qwen\'s repeated attempt cannot work.',
+  '2. DESIGN REASONING: the invariants you checked and where, the alternative you rejected.',
+  '3. FIX: the exact change to make, in order, small enough for Qwen (quote the exact existing lines to search for when an edit failed).',
+  '4. TEST: the exact command, and a FUNCTIONAL check of the behaviour (a passing type check alone does not prove the task is done).',
+  '5. LESSON: one sentence Qwen should remember, and the conditions under which it applies (and when it does NOT).',
+  '6. KEY STATEMENTS: the exact code (at most 10 lines in total) of the one or two statements where a small model typically goes wrong, quoted so that Qwen can copy them. Replay of 2026-11-23: with reasoning alone the 9B wrote `batch.map(e => e.id)` instead of `new Set(batch)` and put a retry inside the guarded block. 7. BEHAVIOUR TEST: when the repository has a test runner, the COMPLETE content of ONE test file (at most 40 lines, in a fenced block, first line `FILE: <path>`) that reproduces the problem with a concrete sequence of events, FAILS on the old code for the right functional reason (an assertion, not a missing import) and PASSES once the fix is in. Qwen will create it with CREATE; the host then checks that it fails on the old code and passes on the new. Use only names that exist in the repository. Do not write the whole solution as a patch.'].join('\n');
 const PILOT_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // Fixture environment refusals that happen before the developer runs.
 const ENV_FAILURE = /^(Insufficient free RAM|LM Studio unavailable|.* context is not loaded|Vulkan GPU is not verified)/;
@@ -491,6 +497,8 @@ class MindAutopilot {
     this.def = { label: String(def.label || (this.id === 'default' ? 'Principale' : this.id)).slice(0, 60), profile,
       verify: guard.validCommands(def.verify || []),
       linkDirs: (def.linkDirs || []).map(String).slice(0, 8),
+      // Behaviour gate (see behavior-gate.js): a source change needs a test that fails on the old code and passes on the change.
+      behavior: behaviorGate.normalize(def.behavior), // an invalid REQUIRED gate stays invalid on purpose: every change is then refused with the reason (fail closed)
       protectedPaths: (def.protectedPaths || []).map(String).slice(0, 60),
       // Repository-specific process rules (risk levels, design sheets, lot
       // files...), injected into every stage so the loop follows them.
@@ -966,10 +974,10 @@ class MindAutopilot {
   // Records a mistake once (repeats are counted) for this pilot AND repository,
   // then teaches Mind what is not taught yet (gate lessons included). Never throws.
   lessonScope() { return lessons.scopeOf(this.id, this.state.repoName); }
-  learn(kind, text, source) {
+  learn(kind, text, source, extra = {}) {
     if (this.qwenFixture) return; // fixture observations go to an isolated Mind space, never to repository lessons
     try {
-      const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source });
+      const r = lessons.record(this.repoRoot, { scope: this.lessonScope(), kind, text, source, ...extra });
       if (r.entry) this.log('lesson', (r.isNew ? 'Nouvelle lecon ' : 'Lecon repetee (' + r.entry.count + ') ') + '[' + kind + '] ' + r.entry.text.slice(0, 160));
     } catch (_) {}
     this.teachLessons();
@@ -1097,7 +1105,7 @@ class MindAutopilot {
       // noShell: Read/Grep/Glob only. With a shell a command could change a file outside the fingerprinted checkout.
       task = this.orch.spawnHeadless({ ...opts, cli, cwd, autoPermit: false, readOnly: true, noShell: true, sandbox: 'read-only',
         prompt: [repoPin(cwd, this.state.repoPath), COACH_PROMPT, 'Approved plan: ' + JSON.stringify(a.plan),
-          'WHAT BLOCKED QWEN (errors, review findings, its notes):\n' + String(a.coachFindings || '').slice(0, 6000)].join('\n\n') });
+          'WHAT BLOCKED QWEN (errors, review findings, its notes):\n' + String(a.coachFindings || '').slice(0, 8000)].join('\n\n') });
     } else if (qwenStage && qwenStage.ok) {
       task = this.spawnQwenRepoStage(stage, qwenStage, now, opts);
     } else if (stage === 'implement') {
@@ -1198,6 +1206,30 @@ class MindAutopilot {
     if (bytes > q.maxBytes) return { ok: false, reason: 'files total ' + bytes + ' bytes (limit ' + q.maxBytes + ')' };
     return { ok: true, files };
   }
+  // Claude taught, Qwen applied, the checks and the independent review passed: only now is the method worth keeping.
+  // Cause, reasoning and conditions are Claude's own words (not paraphrased); the proof is what actually passed.
+  recordTaughtLesson(a, outcome) {
+    if (outcome !== 'completed' || !a || !a.coachGuidance || a.implementer !== 'qwen' || this.qwenFixture) return;
+    const checks = a.verify && a.verify.ok ? a.verify.results.map((r) => r.name) : [];
+    // The only road to 'completed' is: checks passed (a.verify.ok) -> independent review PASS -> the reviewed change is committed (a.commit).
+    if (!checks.length || !a.commit) return; // never certify a method that was not verified
+    const g = String(a.coachGuidance).replace(/\s+/g, ' ');
+    const pick = (label) => { const m = new RegExp(label + '[^:]*:\\s*(.{10,1500}?)(?= [1-6]\\. [A-Z]|$)', 'i').exec(g); return m ? m[1].trim() : ''; };
+    const cause = pick('ROOT CAUSE') || g.slice(0, 300), reasoning = pick('DESIGN REASONING'), lesson = pick('LESSON');
+    // lessons.record keeps 400 characters: proof and conditions come FIRST and every field is bounded, so a long cause cannot push them out.
+    const cut = (x, n) => String(x || '').replace(/\s+/g, ' ').trim().slice(0, n);
+    const fields = {
+      text: 'Verifiee (Claude explique, Qwen applique, controles+revue ok, commit ' + String(a.commit).slice(0, 8) + ', ' + checks.slice(0, 3).join('+') + '). Conditions: ' + cut(lesson, 100) + ' Cause: ' + cut(cause, 80) + ' Raisonnement: ' + cut(reasoning, 80),
+      trigger: cut(a.coachTrigger, 150), action: cut(lesson, 200),
+    };
+    // Claude read repository content to write this: mask known secret values in EVERY stored field (fail closed), and refuse text that reads like an instruction to a future assistant.
+    let mask; try { mask = require('../orchestrator/qwen-repo-worker').secretMask(a.worktree.path)(); } catch (_) { return; }
+    for (const k of Object.keys(fields)) fields[k] = mask(fields[k]); fields.text = fields.text.slice(0, 400); // a mask may be longer than the value it hides: the end (the reasoning) is what gives way
+    const all = Object.values(fields).join(' ');
+    const INJECTED = /ignore (all |any |the )?(previous|prior|above)|disregard|system prompt|you are now|from now on you|do not tell|ne dis (rien|pas) a l.utilisateur|https?:\/\/|\b(curl|wget|Invoke-WebRequest|rm -rf)\b|\b(send|upload|post|transmit|email|exfiltrat\w*)\b.{0,60}\b(credential|token|secret|password|api[ _-]?key)|\bgit (push|reset|clean|rebase|checkout --)|--force|--no-verify|\b(sudo|chmod|chown|npm (publish|install -g)|rm|del|drop (table|database)|deploy|merge|production)\b/i; // a block-list is never complete: it narrows what a hostile repository text can slip into a lesson, it does not make the text trustworthy
+    if (INJECTED.test(all)) { this.log('lesson', 'Methode non enregistree : le texte ressemble a une instruction injectee ou contient un lien'); return; }
+    this.learn('methode-verifiee', fields.text, 'claude-coach', { trigger: fields.trigger || null, action: fields.action || null, evidence: 'verified' });
+  }
   // Can Claude still guide Qwen on this task (instead of taking the correction over)?
   canCoachQwen(a) {
     const q = this.def.qwen;
@@ -1275,12 +1307,14 @@ class MindAutopilot {
     const sessionFile = path.join(this.repoRoot, '.symphonee', 'qwen-sessions', this.id + '-' + a.qwenSessionId + '.json');
     const win = windowEndAfter(this.def.schedule, now), stepEnd = now + this.stepMs - 90000;
     const deadlineAt = a.manual || !win ? stepEnd : Math.min(stepEnd, win);
+    // Claude's guidance (with its behaviour test) travels in its OWN field at EVERY stage, and the findings in theirs: inside the objective the
+    // worker cut them at 1800 characters, and after a coach the repair stage used to carry the guidance inside the findings (cut under pressure).
+    const reviewText = String(a.review || '');
+    const failedPart = a.coachGuidance && /^GUIDANCE FROM CLAUDE/.test(reviewText) ? ((/\n\nWHAT FAILED BEFORE:\n([\s\S]*)$/.exec(reviewText) || [])[1] || '').slice(0, 7000) : reviewText.slice(0, 7000);
     const objective = [String(a.plan.objective || ''), (a.plan.evidence || []).length ? 'Evidence: ' + JSON.stringify(a.plan.evidence).slice(0, 700) : '',
-      repair ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + String(a.review || '').slice(0, 3500) : '',
-      !repair && a.coachGuidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it:\n' + String(a.coachGuidance).slice(0, 3000) : '',
       'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
-    return this.orch.spawnQwenInWorktree({ from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
-      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
+    return this.orch.spawnQwenInWorktree({ behavior: this.def.behavior, from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
+      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, findings: repair ? failedPart : '', guidance: a.coachGuidance ? String(a.coachGuidance).slice(0, GUIDANCE_MAX) : '', files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
       memoryText: this.qwenRealMemory(q).text, sessionFile, deadlineAt,
       // Linked before the first RUN so the repository's own checks can find their dependencies.
       onWorktree: (wt) => { a.worktree = wt; const top = repoTopLevel(wt.path); if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed'); a.links = guard.linkDirs(this.state.repoPath, wt.path, this.def.linkDirs); } });
@@ -1332,7 +1366,10 @@ class MindAutopilot {
     // Claude first guides Qwen (read-only), Qwen tries again; the takeover below is the last resort.
     if (this.canCoachQwen(a)) {
       a.coachFindings = 'Qwen stopped during ' + a.stage + ': ' + why + '\nIts notes: ' + ((e.notes || []).slice(-5).join(' | ') || 'none')
-        + '\nApproaches it tried: ' + ((e.strategies || []).join(' | ') || 'none') + (a.review ? '\nEarlier findings:\n' + String(a.review).slice(0, 3000) : '');
+        + '\nApproaches it tried: ' + ((e.strategies || []).join(' | ') || 'none')
+        + (e.teach ? '\nEVIDENCE COLLECTED BY THE HOST (real check output, what really exists, Qwen\'s current diff):\n' + String(e.teach).slice(0, 4800) : '')
+        + (a.review ? '\nEarlier findings:\n' + String(a.review).slice(0, 3000) : '');
+      a.coachTrigger = String(why).slice(0, 200);
       this.learn('blockage', 'Le developpeur local (Qwen) a ete bloque sur "' + (a.plan?.title || '') + '" : ' + why, 'qwen-local');
       this.log('qwen', 'Qwen blocked (' + why.slice(0, 160) + '); Claude analyses the errors and guides Qwen before any takeover');
       this.dispatch('coach', now); return true;
@@ -1733,6 +1770,7 @@ class MindAutopilot {
       const endedAt = Math.max((last && last.completedAt) || 0, Date.now());
       this.state.pendingCosts = [...(this.state.pendingCosts || []), { before: a.usageBefore, launchedAt: a.launchedAt || null, endedAt, done: {} }].slice(-20);
     }
+    this.recordTaughtLesson(a, outcome);
     this.state.history.push({ category: a.plan?.category || null,
       title: a.plan?.title || '(discovery)', objective: a.plan?.objective || null,
       evidence: a.plan?.evidence || [],
@@ -1855,7 +1893,7 @@ class MindAutopilot {
       if (hits.length) throw new Error('Protected path modified during ' + a.stage + ': ' + hits.slice(0, 6).join(', ') + '. Inspect ' + a.worktree.path);
       // The deep profile always passes through the gate: the diff lint runs
       // even when the repository has no check command configured.
-      if (this.def.verify.length || this.profile.deep) return this.startVerify();
+      if (this.def.verify.length || this.profile.deep || this.def.behavior.required) return this.startVerify();
       return this.dispatch('code-review', now);
     }
     if (a.stage === 'code-review') {
@@ -1887,7 +1925,7 @@ class MindAutopilot {
       && worktreeFingerprint(a.coachCwd, a.coachCwd === this.state.repoPath ? { head: false } : undefined) !== a.coachFingerprint) {
       throw new Error('Files changed during Claude\'s read-only guidance; stopped for inspection: ' + a.coachCwd);
     }
-    const guidance = String(raw || '').trim().slice(0, 4000);
+    const guidance = String(raw || '').trim().slice(0, GUIDANCE_MAX);
     a.qwenCoached = (a.qwenCoached || 0) + 1;
     if (!guidance) { a.qwenFailed = true; a.implementer = 'claude-after-qwen'; this.log('qwen', 'Claude returned no guidance; Claude takes the correction over'); return this.dispatch(a.worktree ? 'repair' : 'implement', now); }
     a.coachGuidance = guidance;
@@ -1918,14 +1956,22 @@ class MindAutopilot {
     // Every check of this gate (proof runs, checks, retries) scans for secrets as it starts (see secretMask).
     const runV = (dir, cmds, o = {}) => guard.runVerify(dir, cmds, { ...o, beforeEach: () => { if (mask && mask.observe) { try { mask.observe(); } catch (_) {} } } });
     Promise.resolve().then(async () => {
-      const lint = guard.diffLint(cwd, base);
+      const lint = [...guard.diffLint(cwd, base), ...(await behaviorGate.lint(cwd, base, this.def.behavior))];
       if (lint.length) return { ok: false, results: [], lint };
-      if (!this.def.verify.length) return { ok: true, results: [], lint: [] };
+      if (!this.def.verify.length && !this.def.behavior.required) return { ok: true, results: [], lint: [] };
       const onStart = (proc, c) => {
         this._verifyProc = proc;
         if (this.state.active === a && a.verify) { a.verify.current = c.name; try { this.save(); } catch (_) {} }
       };
-      return { ...(await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) })), lint: [] };
+      let vr = this.def.verify.length ? await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) }) : { ok: true, results: [] };
+      // The checks are green: the tests of the change must also FAIL on the old code (red) and pass on the new (green).
+      if (vr.ok && this.def.behavior.required && this.def.behavior.testCmd.length) {
+        const rg = await behaviorGate.redGreen({ cwd, base, config: this.def.behavior, linkFrom: this.state.repoPath, redact: (x) => { const m = mask ? mask() : null; return m ? m(x) : ''; } });
+        // The message may carry test output: it is NOT logged here. It travels in the verification result, which is masked at one point below.
+        this.log('verify', 'Behaviour gate ' + (rg.skipped ? 'skipped' : rg.ok ? 'PASSED' : 'FAILED') + (rg.skipped ? '' : ' (' + ((rg.tests || []).length || 0) + ' test file(s); red ' + (rg.red ? 'yes' : 'no') + ', green ' + (rg.green ? 'yes' : 'no') + ')'));
+        if (!rg.ok) vr = { ...vr, ok: false, results: [...(vr.results || []), { name: 'behavior-red-green', ok: false, code: 1, ms: rg.ms || 0, timedOut: false, errors: 0, tail: String(rg.message).slice(-6000) }] };
+      }
+      return { ...vr, lint: [] };
     }).catch(e => ({ ok: false, results: [{ name: 'verification', ok: false, code: -1, ms: 0, timedOut: false, tail: String(e.message || e) }], lint: [] }))
       .then((r) => {
         // The single masking point. Without a mask (scan module failed to load) nothing but the counts goes on.
@@ -1981,11 +2027,12 @@ class MindAutopilot {
       return this.dispatch('code-review');
     }
     const failed = v.results.find(r => !r.ok);
-    const why = v.lint.length ? 'The diff weakens verification:\n- ' + v.lint.join('\n- ')
+    const noTest = v.lint.length && v.lint.every((x) => /^BEHAVIOUR TEST/.test(x));
+    const why = v.lint.length ? (noTest ? 'The change has no behaviour test:\n- ' : 'The diff weakens verification:\n- ') + v.lint.join('\n- ')
       : 'Check "' + failed.name + '" failed' + (failed.timedOut ? ' (timed out)' : ' (exit ' + failed.code + ')') + '. Output tail:\n' + failed.tail;
     this.trace('verify', { ok: false, failed: v.lint.length ? 'lint' : failed.name, detail: String(v.lint.length ? v.lint.join('; ') : failed.tail).replace(/\s+/g, ' ').slice(-300) });
     this.log('verify', 'Local verification FAILED: ' + (v.lint.length ? v.lint.join('; ') : failed.name));
-    this.learn('verification', v.lint.length ? 'Le diff affaiblissait la verification : ' + v.lint.join('; ')
+    this.learn('verification', v.lint.length ? (noTest ? 'Un changement de code sans test de comportement (un test qui echoue avant et passe apres) est refuse : ' : 'Le diff affaiblissait la verification : ') + v.lint.join('; ')
       : 'La verification locale "' + failed.name + '" echouait apres la modification : la lancer avant de terminer.', 'verification locale : ' + (a.plan?.title || ''));
     a.review = 'LOCAL VERIFICATION FAILED (run by Symphonee, not by a reviewer).\n' + why; a.repairs++;
     if (a.repairs > this.limits.repairs) return this.complete('verify-failed', why);
