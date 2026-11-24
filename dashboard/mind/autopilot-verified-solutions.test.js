@@ -250,3 +250,17 @@ test('round 4 of the review: a non-code source file (json) changed with a test i
     assert.equal(made.ok, false);
   } finally { r.cleanup(); }
 });
+
+test('round 7 of the review: a renamed and edited test is never captured with its original path left out', async () => {
+  const r = repo();
+  try {
+    fs.mkdirSync(path.join(r.dir, 'src', '__tests__'), { recursive: true });
+    fs.writeFileSync(path.join(r.dir, 'src', '__tests__', 'old.test.js'), 'line1\nline2\nline3\nline4\nline5\nline6\n'); r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 't');
+    const base = r.g('rev-parse', 'HEAD');
+    r.g('mv', 'src/__tests__/old.test.js', 'src/__tests__/renamed.test.js'); fs.appendFileSync(path.join(r.dir, 'src', '__tests__', 'renamed.test.js'), 'line7\n');
+    fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 2;\n'); r.g('add', '.'); r.g('-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'fix');
+    const made = vs.fromCommit({ repoPath: r.dir, baseSha: base, commit: r.g('rev-parse', 'HEAD'), plan, scope: 'gas-saver', proof: ['x'], gate: await gateOf(r.dir, base, ['.']) });
+    assert.equal(made.ok, false, 'a rename is refused: the gate sees only the destination, so the original path would not be covered');
+    assert.match(made.reason, /neither source nor test/);
+  } finally { r.cleanup(); }
+});

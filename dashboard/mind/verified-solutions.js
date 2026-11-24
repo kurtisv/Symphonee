@@ -137,9 +137,9 @@ function find(root, { scope, plan, namedFiles, repoPath, baseSha }) {
 // A solution drawn from a task Claude finished after Qwen gave up: only from a change that passed everything (checks, behaviour gate, review, commit).
 // The diff is the "independent solution": bounded, and never stored when it does not fit (a truncated diff would mislead Qwen).
 function fromCommit({ repoPath, baseSha, commit, plan, scope, proof, createdBy, gate }) {
-  const diff = spawnSync('git', ['diff', '--no-color', '-U3', baseSha, commit], { cwd: repoPath, encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+  const diff = spawnSync('git', ['diff', '--no-renames', '--no-color', '-U3', baseSha, commit], { cwd: repoPath, encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
   if (diff.status !== 0) return { ok: false, reason: 'git diff failed' };
-  const names = spawnSync('git', ['diff', '--name-only', baseSha, commit], { cwd: repoPath, encoding: 'utf8', timeout: 20000, windowsHide: true });
+  const names = spawnSync('git', ['diff', '--no-renames', '--name-only', baseSha, commit], { cwd: repoPath, encoding: 'utf8', timeout: 20000, windowsHide: true });
   const changed = String(names.stdout || '').split('\n').filter(Boolean);
   // The behaviour gate's own classification of this very change (behavior-gate.classify): what it calls source and tests, nothing else.
   if (!gate || !Array.isArray(gate.source) || !Array.isArray(gate.tests)) return { ok: false, reason: 'the behaviour gate classification is required' };
