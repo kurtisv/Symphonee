@@ -45,7 +45,10 @@ function target() { // the runtime files this branch adds or changes relative to
   const base = git('merge-base', 'origin/master', 'HEAD').trim();
   const changes = git('diff', '--name-status', base, 'HEAD').split('\n').filter(Boolean).map((l) => l.split('\t')).filter(([, f]) => runtime(f));
   const bad = changes.filter(([s]) => !['M', 'A'].includes(s)); if (bad.length) throw new Error('Unsupported change kinds: ' + JSON.stringify(bad));
-  return { base, files: changes.map(([s, f]) => ({ status: s, file: f })) };
+  // Once the branch is merged into master the diff is empty: the files that were installed are then the reference list.
+  const listed = new Set(changes.map(([, f]) => f)), extra = [];
+  for (const m of manifests()) for (const f of [...(m.modified || []), ...(m.added || [])]) if (!listed.has(f) && !NEVER.has(f)) { listed.add(f); try { git('cat-file', '-e', 'HEAD:' + f); extra.push([m.modified && m.modified.includes(f) ? 'M' : 'A', f]); } catch (_) { /* no longer in the tree: nothing to compare */ } }
+  return { base, files: [...changes, ...extra].map(([s, f]) => ({ status: s, file: f })) };
 }
 // What the live copy of a file must be for it to be safe to overwrite: what we installed last, else master's version.
 function expectedLive(f, status, chain) {
