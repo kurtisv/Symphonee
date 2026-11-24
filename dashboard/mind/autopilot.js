@@ -1077,6 +1077,7 @@ class MindAutopilot {
     }
     // The coach is used up (or off): an independent solution already verified on this same code is handed to Qwen before any takeover.
     if (stage === 'repair' && qwenStage && !qwenStage.ok && a.implementer === 'qwen' && /repair attempts used/.test(qwenStage.reason) && this.relayVerifiedSolution(a, now, String(a.review || ''))) return;
+    if (stage === 'repair' && qwenStage && !qwenStage.ok && a.implementer === 'qwen') a.claudeRepaired = true; // Claude writes this repair: it is not Qwen's success
     if (qwenStage && !qwenStage.ok) { this.log('qwen', 'Qwen not used for ' + stage + ': ' + qwenStage.reason); if (stage === 'implement' && this.state.active.implementer !== 'claude-after-qwen') this.state.active.implementer = 'claude'; }
     // Reserve before launch; even failed spawns remain charged to avoid uncounted calls.
     const held = cli === 'codex' && a.reviewHold && this.state.budgetCalls.find(c => c.ref === a.reviewHold && !c.settled && !c.taskId && budget.dayOf(c.at) === budget.dayOf(now));
@@ -1246,11 +1247,11 @@ class MindAutopilot {
       // Only what Qwen did with the relayed solution counts: confirmed when Qwen itself finished; failed when Claude had to take over after it or the gates rejected it
       // (an environment or budget stop says nothing about the solution).
       if (a.relayedSolution) {
-        if (outcome === 'completed' && a.implementer === 'qwen') verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'completed');
-        else if (a.implementer === 'claude-after-qwen' || ['review-rejected', 'verify-failed'].includes(outcome)) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'failed');
+        if (outcome === 'completed' && a.implementer === 'qwen' && !a.claudeRepaired) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'completed');
+        else if (a.implementer === 'claude-after-qwen' || a.claudeRepaired || ['review-rejected', 'verify-failed'].includes(outcome)) verifiedSolutions.recordOutcome(this.repoRoot, a.relayedSolution, 'failed');
       }
       // Kept only when the behaviour gate (test red on the base, green on the change) is required for this pilot and the checks passed: otherwise "verified" would be a claim.
-      if (outcome !== 'completed' || !a.commit || a.implementer !== 'claude-after-qwen' || !a.verify || !a.verify.ok || !a.worktree || !(this.def.behavior && this.def.behavior.required)) return;
+      if (outcome !== 'completed' || !a.commit || !(a.implementer === 'claude-after-qwen' || a.claudeRepaired) || !a.verify || !a.verify.ok || !a.worktree || !(this.def.behavior && this.def.behavior.required && !this.def.behavior.lintOnly)) return;
       const proof = [...a.verify.results.map((r) => 'check ' + r.name), ...(this.def.behavior && this.def.behavior.required ? ['behaviour test red then green'] : []), 'independent review PASS', 'commit ' + String(a.commit).slice(0, 10)];
       const made = verifiedSolutions.fromCommit({ repoPath: a.worktree.path, baseSha: a.baseSha, commit: a.commit, plan: a.plan, scope: this.lessonScope(), proof, createdBy: 'autopilot' });
       if (!made.ok) { this.log('lesson', 'Correction not kept as a verified solution: ' + made.reason); return; }
