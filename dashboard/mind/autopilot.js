@@ -1457,7 +1457,7 @@ class MindAutopilot {
     if (!problems.length) return true;
     const store = this.decisionStore(), id = 'sus_' + crypto.randomBytes(5).toString('hex');
     const c = store.create({ title: (this.def.label || this.id) + ' : le worktree a change avant la reprise', body: 'Tache : ' + ((a.plan && a.plan.title) || '') + '\nProbleme : ' + problems.join('; ') + '\n\nReprendre repose la question sur le nouvel etat ; Archiver retire la tache (worktree conserve).',
-      options: [{ id: 'resume', label: 'Reprendre (reposer la question)' }, { id: 'abandon', label: 'Archiver la tache' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + id,
+      options: cur ? [{ id: 'resume', label: 'Reprendre (reposer la question)' }, { id: 'abandon', label: 'Archiver la tache' }] : [{ id: 'abandon', label: 'Archiver la tache (son worktree a disparu)' }], allowText: false, from: 'autopilot:' + this.id, ref: 'suspend:' + id,
       meta: { pilot: this.id, pilotLabel: this.def.label, task: (a.plan && a.plan.title) || '', stage: a.waitingStage, category: 'other', suspendedId: id, kind: 'conflict' } });
     if (c.error) throw new Error('The owner question could not be recorded (' + c.error + ')');
     const last = a.ownerResuming || {};
@@ -1465,7 +1465,7 @@ class MindAutopilot {
     const stage = a.waitingStage; a.waitingStage = null; a.parkReason = null; a.ownerPark = null; a.ownerResuming = null;
     this.state.suspended = [...(this.state.suspended || []), { id, decisionId: c.decision.id, key: last.key || null, kind: 'conflict', problems, priorAnswer: last.answer || null,
       request: last.request || { category: 'other', question: 'Reprise de la tache', consequences: '' }, stage, at: new Date(now).toISOString(), status: 'waiting', files: [],
-      worktree: cur ? { path: a.worktree.path, branch: cur.branch, head: cur.head, fingerprint: cur.fingerprint } : null, mainBase: this.ownerBase(), active: JSON.parse(JSON.stringify(a)) }];
+      worktree: cur ? { path: a.worktree.path, branch: cur.branch, head: cur.head, fingerprint: cur.fingerprint } : { path: a.worktree.path, missing: true }, mainBase: this.ownerBase(), active: JSON.parse(JSON.stringify(a)) }];
     this.state.active = null;
     this.log('owner', 'Le worktree a change avant la reprise (' + problems.join('; ') + ') : tache remise de cote, question ' + c.decision.id);
     this.save();

@@ -469,3 +469,22 @@ test('a deleted worktree after a refusal: only Archiver is offered, and a stale 
     assert.equal(f.spawns.filter((x) => x.task === 'A' && x.stage === 'implement').length, 1, 'implementation not replayed');
   } finally { f.cleanup(); }
 });
+
+test('a worktree deleted AFTER the answer was claimed: archive only, never a resume without the work', async () => {
+  const f = setup({ refuseThenNoChange: true });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0];
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'refuse' });
+    f.pilot.resumeAnswered(Date.now());
+    gitc(f.repo, 'worktree', 'remove', '--force', e.worktree.path);
+    f.pilot.state.nextAt = 0; await f.pilot.tick();
+    const c = f.pilot.state.suspended.find((x) => x.kind === 'conflict');
+    assert.ok(c && c.worktree && c.worktree.missing);
+    assert.deepEqual(f.pilot.decisionStore().get(c.decisionId).options.map((o) => o.id), ['abandon']);
+    c.answer = { id: c.decisionId, status: 'answered', answer: { choice: 'resume', by: 'ui' } };
+    f.pilot.state.active = null; f.pilot.resumeAnswered(Date.now());
+    assert.equal(f.pilot.state.history.find((h) => /Task A/.test(h.title)).outcome, 'abandoned-by-owner');
+  } finally { f.cleanup(); }
+});
