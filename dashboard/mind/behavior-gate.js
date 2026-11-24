@@ -82,9 +82,10 @@ function cleanEnv() { const e = { ...process.env, CI: '1', FORCE_COLOR: '0', NO_
 function runCmd(cmd, cwd, files, timeoutMs) {
   const full = cmd.flatMap((x) => (x === '{files}' ? files : [x]));
   return new Promise((resolve) => {
-    let out = '', done = false, timedOut = false, proc, grace = null;
-    const end = (code) => { if (done) return; done = true; clearTimeout(timer); if (grace) clearTimeout(grace); resolve({ code, out, timedOut }); };
-    try { proc = cp.spawn(full[0], full.slice(1), { cwd, windowsHide: true, shell: false, env: cleanEnv() }); } catch (e) { return resolve({ code: -1, out: String(e.message), timedOut: false }); }
+    let out = '', done = false, timedOut = false, proc, grace = null, started = false;
+    const end = (code) => { if (done) return; done = true; clearTimeout(timer); if (grace) clearTimeout(grace); resolve({ code, out, timedOut, started }); };
+    try { proc = cp.spawn(full[0], full.slice(1), { cwd, windowsHide: true, shell: false, env: cleanEnv() }); } catch (e) { return resolve({ code: -1, out: String(e.message), timedOut: false, started: false }); }
+    proc.on('spawn', () => { started = true; });
     const keep = (d) => { out += d.toString(); if (out.length > 200000) out = out.slice(-100000); };
     proc.stdout.on('data', keep); proc.stderr.on('data', keep);
     const timer = setTimeout(() => {
@@ -93,7 +94,7 @@ function runCmd(cmd, cwd, files, timeoutMs) {
       try { proc.stdout.destroy(); proc.stderr.destroy(); } catch { /* ignore */ }
       grace = setTimeout(() => end(-1), 3000);
     }, timeoutMs);
-    proc.on('error', (e) => { out += '\n' + e.message; end(-1); });
+    proc.on('error', (e) => { out += '\n' + e.message; started = started && false; end(-1); });
     proc.on('close', (code) => end(code === null ? -1 : code));
   });
 }
@@ -106,6 +107,15 @@ async function removeScratch(repo, tmp, links) {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
   await git(repo, ['worktree', 'prune']); // a directory that is gone must not stay registered
   return rm.status === 0 || !fs.existsSync(tmp);
+}
+// True when a file or any parent folder (below the scratch root) is a symbolic link / junction: writing there would go elsewhere.
+function underSymlink(root, rel) {
+  let cur = path.resolve(root);
+  for (const part of posix(rel).split('/').filter(Boolean)) {
+    cur = path.join(cur, part);
+    try { if (fs.lstatSync(cur).isSymbolicLink()) return true; } catch { return false; } // not there yet: nothing to follow
+  }
+  return false;
 }
 // Red then green. `ok` is true only when the tests fail on the base (for a behavioural reason) and pass on the change.
 async function redGreen({ cwd, base, config, linkFrom = null }) {
@@ -128,8 +138,9 @@ async function redGreen({ cwd, base, config, linkFrom = null }) {
       if (!to.startsWith(path.resolve(tmp) + path.sep)) continue; // never outside the scratch checkout
       if (fs.existsSync(from) && !fs.existsSync(to)) { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.symlinkSync(from, to, 'junction'); links.push(d); }
     }
-    for (const f of tests) { if (cfg.linkDirs.some((d) => f === d || f.startsWith(d + '/'))) return { ok: false, message: 'behaviour gate refused a test located under a linked folder (' + f + '): it would be written through the link' }; const to = path.resolve(tmp, f); if (!to.startsWith(path.resolve(tmp) + path.sep)) return { ok: false, message: 'behaviour gate refused a test path outside the checkout: ' + f }; fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(path.join(cwd, f), to); }
+    for (const f of tests) { if (cfg.linkDirs.some((d) => f === d || f.startsWith(d + '/'))) return { ok: false, message: 'behaviour gate refused a test located under a linked folder (' + f + '): it would be written through the link' }; const to = path.resolve(tmp, f); if (!to.startsWith(path.resolve(tmp) + path.sep)) return { ok: false, message: 'behaviour gate refused a test path outside the checkout: ' + f }; if (underSymlink(tmp, f)) return { ok: false, message: 'behaviour gate refused a test path that goes through a symbolic link of the base: ' + f }; fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(path.join(cwd, f), to); }
     const red = await runCmd(cfg.testCmd, tmp, tests, cfg.timeoutMs);
+    if (!red.started) return { ok: false, red: false, green: false, message: 'BEHAVIOUR TEST COULD NOT RUN on the old code (the test command did not start: ' + String(red.out).trim().split('\n').pop().slice(0, 200) + '). Check def.behavior.testCmd and linkDirs.', tests, scratch: tmp };
     const green = await runCmd(cfg.testCmd, cwd, tests, cfg.timeoutMs);
     const wrongReason = red.code !== 0 && !red.timedOut && !cfg.allowLoadErrorRed && LOAD_ERROR.test(red.out) && !/(AssertionError|expect\(|Expected[: ]|Received[: ])/.test(red.out); // an ASSERTION failed: that is behaviour. A failed file summary alone (✖, FAIL, not ok) also appears when the file cannot load.
     const ok = red.code !== 0 && !red.timedOut && !wrongReason && green.code === 0;
@@ -144,4 +155,4 @@ async function redGreen({ cwd, base, config, linkFrom = null }) {
   } finally { if (!(await removeScratch(top, tmp, links))) console.warn('[behavior-gate] scratch checkout left behind: ' + tmp); }
 }
 
-module.exports = { normalize, changed, classify, lint, redGreen, safeLink };
+module.exports = { normalize, changed, classify, lint, redGreen, safeLink, underSymlink };

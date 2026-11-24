@@ -213,3 +213,25 @@ test('normalize is idempotent (the autopilot stores the normalised config and th
     assert.deepEqual(once.invalid, []);
   }
 });
+
+test('a test command that cannot even start is NOT a red run (it would pass any change)', async () => {
+  const r = repo();
+  try {
+    fix(r.dir); behaviourTest(r.dir);
+    const out = await gate.redGreen({ cwd: r.dir, base: r.base, config: { ...CFG, testCmd: ['./definitely-not-a-command-xyz', '{files}'] } });
+    assert.equal(out.ok, false); assert.equal(out.red, false);
+    assert.match(out.message, /BEHAVIOUR TEST COULD NOT RUN on the old code \(the test command did not start/);
+  } finally { r.clean(); }
+});
+
+test('underSymlink: a path through a link that the base contains is detected, a plain path is not', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bgate-sl-')), outside = fs.mkdtempSync(path.join(os.tmpdir(), 'bgate-out-'));
+  try {
+    fs.mkdirSync(path.join(root, 'src')); fs.writeFileSync(path.join(root, 'src', 'plain.test.js'), 'x');
+    fs.symlinkSync(outside, path.join(root, 'src', 'linked'), 'junction');
+    assert.equal(gate.underSymlink(root, 'src/linked/a.test.js'), true);
+    assert.equal(gate.underSymlink(root, 'src/linked'), true);
+    assert.equal(gate.underSymlink(root, 'src/plain.test.js'), false);
+    assert.equal(gate.underSymlink(root, 'src/new/dir/b.test.js'), false);
+  } finally { try { fs.rmdirSync(path.join(root, 'src', 'linked')); } catch { /* ignore */ } fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+});
