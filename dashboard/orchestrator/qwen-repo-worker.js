@@ -29,10 +29,14 @@ const cp = require('node:child_process');
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({
   actionsPerTurn: 4, readChars: 5000, grepHits: 20, listEntries: 60, editFileBytes: 120000, newFileBytes: 60000, noteChars: 300, planSteps: 6,
-  maxTurns: 80, maxSwitches: 3, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 11000, maxTokens: 1600, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
+  maxTurns: 80, maxSwitches: 3, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 11000, maxTokens: 2000, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
 });
 const sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
 const clip = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '\n...[cut]' : String(s));
+// Keeps the END (where the most recent and most important results are placed).
+const tailClip = (s, n) => (String(s).length > n ? '[cut]...\n' + String(s).slice(-(n - 9)) : String(s));
+// Keeps the beginning (what it is) and the end (where it failed, the appended context): a RUN entry holds both.
+const midClip = (s, n) => (String(s).length > n ? String(s).slice(0, 200) + '\n...[cut]...\n' + String(s).slice(-(n - 220)) : String(s));
 
 // ── path confinement ────────────────────────────────────────────────────
 // Two levels (decision of 2026-11-22): the pilot's protected paths can be READ for context but never changed;
@@ -77,28 +81,62 @@ function secretValues(worktree, secretRe) {
   }
   for (const rel of files) {
     let text; try { const abs = path.join(worktree, rel); if (fs.statSync(abs).size > 262144) { incomplete = true; continue; } text = fs.readFileSync(abs, 'utf8'); } catch { incomplete = true; continue; }
-    // Assigned values down to 6 characters (a short password); below that a value is too common to mask safely
-    // ("true", "3000", "dev") and would blank out ordinary test output.
-    for (const m of text.matchAll(/^\s*(?:export\s+)?[A-Za-z_][\w.-]*\s*[=:]\s*["']?([^"'\r\n#]+?)["']?\s*,?\s*$/gm)) { const v = m[1].trim(); if (v.length >= 6 && !COMMON_VALUE.test(v)) out.add(v); }
-    // JSON values in both their written form and their decoded form ("abc#def" is printed as abc#def).
-    for (const m of text.matchAll(/"(?:[^"\\]|\\.)+"\s*:\s*"((?:[^"\\]|\\.){6,})"/g)) { out.add(m[1]); try { const d = JSON.parse('"' + m[1] + '"'); if (d.length >= 6) out.add(d); } catch (_) {} }
-    // Unquoted values after ":" or "=" (a JSON number {"pin": 123456}, a YAML scalar), from 6 characters.
-    for (const m of text.matchAll(/[=:]\s*([^\s,"'{}\[\]]{6,})/g)) if (!COMMON_VALUE.test(m[1])) out.add(m[1]);
-    // A quoted value keeps everything between its quotes, # included (TOKEN="abc#def").
-    for (const m of text.matchAll(/[=:]\s*(["'])((?:(?!\1).){6,})\1/g)) out.add(m[2]);
-    // Whatever the format (a bare token, a PEM body, a YAML value): every whole line and every long word of a secret file.
+    // What is masked (2026-11-23): a value that LOOKS like a secret (a digit, mixed case, or a special character) or any value
+    // carried by a sensitive key (password, token, secret, key...), from 6 characters. Plain lowercase words of config files
+    // ("services", "development", "completed") are structure, not secrets: masking them blanked ordinary test output
+    // (src/__tests__/[REDACTED]/...). A bare list item ("- abc def") is a value by structure and is always masked.
+    const add = (v, sens) => { v = String(v).trim(); if (v.length >= 6 && (sens || TOKEN_LIKE(v))) out.add(v); };
+    const addJson = (raw, sens) => { add(raw, sens); try { add(JSON.parse('"' + raw + '"'), sens); } catch (_) {} };
+    // The items of an inline array value: ["a", 'b', c]
+    const itemsOf = (raw) => { const r = []; const body = raw.replace(/^\s*\[/, '').replace(/\]\s*[,;]?\s*$/, ''); for (const m of body.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|([^,\s][^,]*)/g)) r.push((m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]).trim()); return r; };
+    // Is the position inside a bracket ('[' or '{', quotes honoured) opened by a sensitive key, at any depth of the same line?
+    const sensStackAt = (line, pos) => {
+      const stack = []; let q = null;
+      for (let i = 0; i < pos && i < line.length; i++) {
+        const c = line[i];
+        if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+        if (c === '"' || c === "'") { q = c; continue; }
+        if (c === '[' || c === '{') { const km = /["']?([A-Za-z_][\w.-]*)["']?\s*[:=]\s*$/.exec(line.slice(0, i)); stack.push(!!km && SENSITIVE_KEY.test(km[1])); }
+        else if (c === ']' || c === '}') stack.pop();
+      }
+      return stack.some(Boolean);
+    };
+    // Is the value that starts at `pos` introduced by a sensitive key (KEY: value, KEY=value, anywhere in the line)?
+    const sensKeyBefore = (line, pos) => { const km = /["']?([A-Za-z_][\w.-]*)["']?\s*[:=]\s*[\[{]?\s*$/.exec(line.slice(0, pos)); return !!km && SENSITIVE_KEY.test(km[1]); };
+    const KV = /^(?:-\s+)?(?:export\s+)?["']?([A-Za-z_][\w.-]*)["']?\s*[:=]\s*(.*?)\s*,?$/;
+    const open = []; // indentation of sensitive keys whose value continues on the following (deeper) lines
     for (const line of text.split(/\r?\n/)) {
-      const t = line.trim(); if (t.length >= 6 && !/^-----(BEGIN|END) /.test(t) && !/^#/.test(t)) out.add(t); // same 6-char floor as assigned values
-      // Every quoted string and every word of 6+ characters, whatever the structure (arrays, lists, nested objects).
-      // Double-quoted strings honour backslash escapes (an escaped \" does not end them) and are added decoded too.
-      for (const q of t.matchAll(/"((?:[^"\\]|\\.){6,})"/g)) { out.add(q[1]); try { const d = JSON.parse('"' + q[1] + '"'); if (d.length >= 6) out.add(d); } catch (_) {} }
-      for (const q of t.matchAll(/(['`])((?:(?!\1).){6,})\1/g)) out.add(q[2]);
-      // The value part of a line, whatever precedes it: "- abc def" (YAML list), "key: abc def", "key = abc def".
-      const val = t.replace(/^-\s+/, '').replace(/^[\w.-]+\s*[:=]\s*/, '').replace(/^["']|["'],?$/g, '').trim();
-      if (val.length >= 6) out.add(val);
-      const bare = val.replace(/\s+#.*$/, '').replace(/^["']|["']$/g, '').trim(); // without an inline "# comment"
-      if (bare.length >= 6) out.add(bare);
-      for (const w of t.split(/[\s=:,;"'`\[\]{}()]+/)) if (w.length >= 6) out.add(w);
+      const t = line.trim(); if (!t || /^#/.test(t) || /^-----(BEGIN|END) /.test(t)) continue;
+      const indent = line.length - line.trimStart().length;
+      while (open.length && (indent < open[open.length - 1] || (indent === open[open.length - 1] && !/^-\s/.test(t)))) open.pop();
+      const inherited = open.length > 0;
+      const kv = KV.exec(t);
+      const item = !kv && /^-\s+(.+)$/.exec(t);
+      // 0) inside the value of a sensitive key (block scalar, multi-line array or mapping): every content line is a value
+      if (inherited) { add(t.replace(/^-\s+/, '').replace(/[,;]$/, '').replace(/^["']|["']$/g, '').replace(/\s+#.*$/, ''), true); }
+      // 1) KEY=value / key: value / "key": value / - key: value : the value, without quotes or an inline comment; arrays item by item
+      if (kv) {
+        const sens = SENSITIVE_KEY.test(kv[1]) || inherited; let v = kv[2];
+        if (/^\s*\[/.test(v)) { for (const it of itemsOf(v)) addJson(it, sens); }
+        else { const q = /^(["'])((?:(?!\1).)*)\1/.exec(v); v = q ? q[2] : v.replace(/\s+#.*$/, ''); addJson(v, sens); }
+        // The value continues on the next lines: empty, a block scalar (| >), or an array/object opened and not closed on this line.
+        const unclosed = (kv[2].match(/[\[{]/g) || []).length > (kv[2].match(/[\]}]/g) || []).length;
+        if (SENSITIVE_KEY.test(kv[1]) && (kv[2] === '' || /^[|>][+-]?$/.test(kv[2]) || unclosed)) open.push(indent);
+      }
+      // 2) a bare list item: always a value
+      if (item) { add(item[1].replace(/\s+#.*$/, '').replace(/^["']|["']$/g, ''), true); }
+      // 3) every quoted string that is not a key; inside an array it takes the sensitivity of the key that opened the array
+      for (const m of t.matchAll(/"((?:[^"\\]|\\.)+)"(\s*:)?/g)) { if (m[2]) continue; addJson(m[1], inherited || sensStackAt(t, m.index) || sensKeyBefore(t, m.index)); }
+      for (const m of t.matchAll(/(['`])((?:(?!\1).)+)\1/g)) add(m[2], inherited || sensStackAt(t, m.index) || sensKeyBefore(t, m.index));
+      // 4) unquoted values after ':' or '=' (a JSON number, a YAML scalar)
+      for (const m of t.matchAll(/[=:]\s*([^\s,"'{}\[\]]{6,})/g)) add(m[1], inherited || sensStackAt(t, m.index) || sensKeyBefore(t, m.index + 1));
+      // 5) a line that is neither a pair nor a prose sentence: a bare token or a PEM body line
+      if (!kv && !item && !/\s/.test(t)) add(t, false);
+      // 6) token-shaped words of the line (key names and snake_case identifiers are structure: dropped first)
+      // Inside a bracket opened by a sensitive key (or an indented continuation of one) EVERY word is a value, whatever its shape.
+      const blank = (m) => ' '.repeat(m.length);
+      const tv = t.replace(/["']?[A-Za-z_][\w.-]*["']?\s*:/g, blank).replace(/^(?:-\s+)?(?:export\s+)?[A-Za-z_][\w.-]*=/, blank);
+      for (const m of tv.matchAll(/[^\s=:,;"'`\[\]{}()]+/g)) { const w = m[0]; if (w.length < 6) continue; if (inherited || sensStackAt(t, m.index) || (TOKEN_LIKE(w) && !/^[A-Za-z]+(_[A-Za-z]+)+$/.test(w))) out.add(w); }
     }
     if (out.size > 5000) { incomplete = true; break; }
   }
@@ -112,6 +150,8 @@ const SAFE_LINE = /^\s*ℹ (tests|suites|pass|fail|cancelled|skipped|todo) \d+\s
 // Nothing of 6+ characters from a secret file is exempt ("password: production" is a secret too): masking an
 // ordinary word in Qwen's view of the output costs readability only. Under 6 characters values are not masked.
 const COMMON_VALUE = /^$/;
+const TOKEN_LIKE = (v) => /\d/.test(v) || (/[A-Z]/.test(v) && /[a-z]/.test(v)) || /[^A-Za-z0-9 ]/.test(v);
+const SENSITIVE_KEY = /((^|[^a-z])keys?([^a-z]|$)|pass|secret|token|api[_-]?key|access[_-]?key|private|credential|auth|(^|[^a-z])pin([^a-z]|$)|bearer|signature|salt|cert|licen[cs]e)/i;
 const redactWith = (values) => (s) => {
   let t = String(s || '');
   if (values.incomplete) t = '[output reduced to test results: the secret scan of this worktree was incomplete]\n' + t.split(/\r?\n/).filter((l) => SAFE_LINE.test(l)).join('\n');
@@ -177,7 +217,16 @@ function parseActions(text) {
       i = j; continue;
     }
     if ((m = /^LIST\s+(\S.*?)\s*$/.exec(line)) || /^LIST\s*$/.test(line)) { actions.push({ type: 'list', dir: m ? m[1] : '.' }); continue; }
-    if ((m = /^READ\s+(\S+)(?:\s+(\d+)-(\d+))?\s*$/.exec(line))) { actions.push({ type: 'read', file: m[1], from: m[2] ? Number(m[2]) : 1, to: m[3] ? Number(m[3]) : null }); continue; }
+    // READ <path> [from-to]. A small model writes the range in its own words ("from 260 to 350", "lines 260..350", "from-265 to-320",
+    // "from-to=1-350"); seen 2026-11-23: every such request was rejected as "no action", so it never reached the code it needed.
+    // Whatever follows the path: two numbers are a range, one number is a start line; no number is a plain READ.
+    // (anything else after the path, e.g. a sentence, is not a READ: the line stays unrecognised, as before)
+    if ((m = /^READ\s+`?([^\s`]+)`?(.*)$/.exec(line)) && m[2].replace(/\b(from|to|lines?|through|until|range)\b/gi, '').replace(/[^A-Za-z]/g, '') === '') {
+      const nums = (m[2].match(/\d+/g) || []).map(Number);
+      let from = 1, to = null;
+      if (nums.length >= 2) { from = Math.min(nums[0], nums[1]) || 1; to = Math.max(nums[0], nums[1]); } else if (nums.length === 1) from = nums[0] || 1;
+      actions.push({ type: 'read', file: m[1], from, to }); continue;
+    }
     if ((m = /^GREP\s+(.+?)(?:\s+IN\s+(\S+))?\s*$/.exec(line))) { actions.push({ type: 'grep', text: m[1].replace(/^["'`]|["'`]$/g, ''), dir: m[2] || '.' }); continue; }
     if (/^RUN\s*$/.test(line)) { actions.push({ type: 'run' }); continue; }
     if ((m = /^NOTE\s+(.+)$/.exec(line))) { actions.push({ type: 'note', text: m[1] }); continue; }
@@ -220,7 +269,27 @@ function doGrep(ctx, a) {
 // Exact unique match first. Two narrow fallbacks, each still requiring ONE unique match:
 // (1) the READ line numbers were copied into SEARCH (and REPLACE); (2) only trailing spaces differ.
 const LINE_NO = /^\s*\d+ /;
-function locateSearch(text, search, replace) {
+// A "SEARCH not found" with nothing else makes a small model repeat itself (seen 2026-11-23: 13 failed EDITs of code it
+// had never read, lines 275-300 of a 429-line file, 27 turns, nothing changed). Tell it WHERE the code really is and show it.
+function whereHint(text, search, full = true) {
+  const tl = text.split('\n');
+  const show = (at) => {
+    if (!full) return ' (READ the file around line ' + (at + 1) + ' to see the real text; the lines were already shown once in this answer)';
+    const from = Math.max(0, at - 2), to = Math.min(tl.length, from + 16);
+    // Each line is cut (a minified line must not fill the observation) and the whole block stays small.
+    return clip(tl.slice(from, to).map((l, i) => String(from + i + 1).padStart(4) + ' ' + clip(l, 160)).join('\n'), 1800);
+  };
+  for (const w of search.split('\n').map((l) => l.trim()).filter((l) => l.length >= 8)) {
+    const at = tl.findIndex((l) => l.trim() === w);
+    if (at >= 0) return ' Your SEARCH is close to line ' + (at + 1) + ' (the line "' + clip(w, 70) + '" is there).' + (full ? ' The real text around it (copy SEARCH from here, never from memory; line numbers are NOT part of the code):\n' : '') + show(at);
+  }
+  for (const w of (search.match(/[A-Za-z_][A-Za-z0-9_]{5,}/g) || []).sort((x, y) => y.length - x.length)) {
+    const at = tl.findIndex((l) => l.includes(w));
+    if (at >= 0) return ' The name "' + clip(w, 60) + '" first appears at line ' + (at + 1) + '.' + (full ? ' The real text around it (copy SEARCH from here, never from memory; line numbers are NOT part of the code):\n' : '') + show(at);
+  }
+  return ' Nothing from your SEARCH text appears in this file: you are guessing code you have not READ, or this is the wrong file. Use GREP <word> to find where the code is, then READ that line range.';
+}
+function locateSearch(text, search, replace, opts) {
   const exact = text.split(search).length - 1;
   if (exact === 1) return { next: text.replace(search, () => replace), replace };
   if (exact > 1) return { err: 'the SEARCH text occurs ' + exact + ' times; add surrounding lines so that it is unique.' };
@@ -241,16 +310,49 @@ function locateSearch(text, search, replace) {
     return { next: out.join('\n'), replace, note: 'matched ignoring trailing spaces' };
   }
   if (hits.length > 1) return { err: 'the SEARCH text occurs ' + hits.length + ' times; add surrounding lines so that it is unique.' };
-  return { err: 'the SEARCH text was not found. Copy it exactly from READ output (without the line numbers), whitespace included.' };
+  return { err: 'the SEARCH text was not found. Copy it exactly from READ output (without the line numbers), whitespace included.' + whereHint(text, search, !opts || opts.fullHint !== false) };
+}
+// A failed check names a file and a line; a small model then re-READS the top of the file instead (seen 2026-11-23: the type error was
+// at line 291, the model read lines 1-140 again and again). Show the real lines around the reported line, for readable files only.
+// The observations of one turn are cut to the prompt budget WITHOUT losing the parts the model must see: a RUN result, a format error,
+// a refusal. The long ones (READ output, hints) share what is left.
+function fitObs(obs, max) {
+  const all = obs.join('\n\n'); if (all.length <= max) return all;
+  const prio = (o) => /^(RUN |FORMAT ERROR|REFUSED|YOUR ANSWER|DONE refused|STUCK refused)/.test(o);
+  let hi = obs.filter(prio); const lo = obs.filter((o) => !prio(o));
+  let seenFmt = 0; // many malformed blocks say the same thing: keep the first two (by position, duplicates included)
+  hi = hi.filter((o) => !/^FORMAT ERROR/.test(o) || ++seenFmt <= 2);
+  const hiText = hi.map((o) => midClip(o, 2800)).join('\n\n');
+  const per = Math.floor(Math.max(300, max - hiText.length - 2) / Math.max(1, lo.length));
+  const loText = lo.map((o) => clip(o, per)).join('\n\n');
+  const out = (loText ? loText + '\n\n' : '') + hiText;
+  return out.length > max ? tailClip(out, max) : out;
+}
+function errorContext(ctx, tail) {
+  const seen = new Set(), out = [], hide = ctx.lastRedact || ((x) => x);
+  const re = /([A-Za-z0-9_@.\/\\-]+\.(?:tsx?|jsx?|mjs|cjs))[(:](\d+)(?:[,:]\d+)?\)?/g;
+  for (const m of String(tail || '').matchAll(re)) {
+    if (out.length >= 2) break;
+    const rel = m[1].replace(/\\/g, '/').replace(/^\.\//, ''), line = Number(m[2]), key = rel + ':' + line;
+    if (seen.has(key) || /(^|\/)node_modules\//.test(rel)) continue; seen.add(key);
+    let abs; try { abs = confine(ctx.worktree, rel, ctx.secret).abs; } catch { continue; }
+    let lines; try { if (fs.statSync(abs).size > 400000) continue; lines = fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n').split('\n'); } catch { continue; }
+    if (!(line >= 1 && line <= lines.length)) continue;
+    const from = Math.max(0, line - 6), to = Math.min(lines.length, line + 5);
+    out.push(rel + ' around line ' + line + ':\n' + lines.slice(from, to).map((l, i) => String(from + i + 1).padStart(4) + (from + i + 1 === line ? '>' : ' ') + ' ' + clip(hide(l), 160)).join('\n')); // masked BEFORE the cut: a value cut in two would no longer be recognised
+  }
+  return out.length ? '\nWHERE THE CHECK FAILED (the real lines, > marks the reported line; line numbers are not part of the code):\n' + hide(clip(out.join('\n'), 1800)) : '';
 }
 function doEdit(ctx, a) {
+  confine(ctx.worktree, a.file, ctx.secret); // a file the model may not READ must not be answered with its content either (hints)
   const { rel, abs } = confine(ctx.worktree, a.file, ctx.prot, true);
   let st; try { st = fs.statSync(abs); } catch { return { err: 'EDIT ' + rel + ': no such file (use CREATE for a new file)' }; }
   if (!st.isFile() || st.size > LIMITS.editFileBytes) return { err: 'EDIT ' + rel + ': not an editable file' };
   const raw = fs.readFileSync(abs, 'utf8'); if (raw.includes('\0')) return { err: 'EDIT ' + rel + ': binary file' };
   const crlf = raw.includes('\r\n'), text = raw.replace(/\r\n/g, '\n');
   if (!a.search.trim()) return { err: 'EDIT ' + rel + ': the SEARCH text is empty' };
-  const located = locateSearch(text, a.search, a.replace);
+  const located = locateSearch(text, a.search, a.replace, { fullHint: !ctx.hintShown });
+  if (located.err && /SEARCH text was not found/.test(located.err)) ctx.hintShown = true; // later misses of this answer get the one-line pointer only
   if (located.err) return { err: 'EDIT ' + rel + ': ' + located.err };
   const next = located.next;
   if (next === text) return { err: 'EDIT ' + rel + ': the replacement is identical to the original' };
@@ -290,7 +392,8 @@ const PROTOCOL = [
 ].join('\n');
 
 function buildPrompt(s, task, memoryText, lastObs, demand) {
-  const nudge = s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN.' : '';
+  const runNudge = s.needsRun ? 'NEXT STEP: you changed files and have not run the checks since. Use RUN now (the host runs the repository checks). Do NOT READ the file again. If RUN fails, fix what it reports and RUN again; say DONE only after RUN passed.' : '';
+  const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN.' : '');
   const parts = [PROTOCOL,
     'TASK: ' + task.title + '\n' + clip(task.objective, 1800) + (task.files && task.files.length ? '\nFiles the plan mentions: ' + task.files.slice(0, 8).join(', ') : ''),
     memoryText ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
@@ -301,7 +404,7 @@ function buildPrompt(s, task, memoryText, lastObs, demand) {
     demand || '', nudge,
     'LAST RESULTS:\n' + (lastObs || '(none yet)')];
   let p = parts.filter(Boolean).join('\n\n');
-  if (p.length > LIMITS.promptChars) { const head = p.slice(0, p.indexOf('LAST RESULTS:')); p = clip(head, LIMITS.promptChars - 3500) + '\n\nLAST RESULTS:\n' + clip(lastObs, 3300); }
+  if (p.length > LIMITS.promptChars) { const head = p.slice(0, p.indexOf('LAST RESULTS:')); p = clip(head, LIMITS.promptChars - 3500) + '\n\nLAST RESULTS:\n' + tailClip(lastObs, 3300); }
   return p;
 }
 
@@ -318,7 +421,7 @@ async function runRepoWorker(opts) {
     // Scanned before EVERY check and after the last: a check may create a secret that a later one prints then deletes.
     const mask = secretMask(ctx.worktree, opts.readProtectedPatterns || []);
     const v = await runVerifyRaw(cwd, cmds, { beforeEach: () => mask.observe() });
-    const redact = mask();
+    const redact = mask(); ctx.lastRedact = redact;
     return { ...v, results: (v.results || []).map((x) => ({ ...x, tail: redact(x.tail) })) };
   };
   const s = (opts.sessionFile && loadSession(opts.sessionFile)) || freshSession();
@@ -355,16 +458,20 @@ async function runRepoWorker(opts) {
     } catch (e) { s.turns--; return finish('interrupted', 'Model call failed (' + String(e.message || e).slice(0, 80) + '); progress saved'); }
     const u = json.usage || {}; s.usage.input += u.prompt_tokens || 0; s.usage.output += u.completion_tokens || 0; s.usage.calls++;
     const { actions, errors } = parseActions(json.choices?.[0]?.message?.content);
-    const obs = [];
+    const obs = []; ctx.hintShown = false;
+    // The model server says when an answer hit the token limit. A block that is cut is not closed, so it was ignored: say
+    // so plainly (seen 2026-11-23: a whole new test file written as ONE block, cut 7 times in a row, task lost).
+    if (json.choices?.[0]?.finish_reason === 'length') obs.push('YOUR ANSWER WAS CUT OFF at the length limit (' + LIMITS.maxTokens + ' tokens): what came after the cut was lost and a block that was not closed was ignored (see the results below for what was applied). Write a SMALLER step: to add a new file, CREATE it with a first small version (a few short tests), RUN, then add more with a short EDIT. Never write the whole file in one answer.');
     for (const e of errors) obs.push('FORMAT ERROR: ' + e);
-    if (!actions.length && !errors.length) obs.push('FORMAT ERROR: no action found. Write one action per line, for example: READ src/file.js');
+    const rawAnswer = String(json.choices?.[0]?.message?.content || '').trim();
+    if (!actions.length && !errors.length) obs.push('FORMAT ERROR: no action found' + (rawAnswer ? ' in what you wrote ("' + clip(rawAnswer.replace(/\s+/g, ' '), 90) + '")' : ': your answer was empty') + '. Write one action per line, starting the line with the keyword, for example: READ src/file.js 260-350  |  GREP flushEvents  |  RUN');
     if (errors.length || !actions.length) s.formatErrors++; else s.formatErrors = 0;
     if (s.formatErrors >= LIMITS.formatErrorsBeforeStuck) return finish('blocked', 'The model keeps answering outside the protocol (' + s.formatErrors + ' turns in a row)');
     // Empty answers alternating with valid turns never reach the in-a-row limit above: count them over a window.
-    s.emptyRecent = [...s.emptyRecent, !actions.length && !errors.length].slice(-LIMITS.emptyTurnsWindow);
+    s.emptyRecent = [...s.emptyRecent, !actions.length && !errors.length && !rawAnswer].slice(-LIMITS.emptyTurnsWindow); // truly empty only: text without an action is a format error, counted by formatErrors
     const empties = s.emptyRecent.filter(Boolean).length;
     if (empties >= LIMITS.emptyTurnsBeforeStuck) return finish('blocked', 'The model returned ' + empties + ' empty answers in its last ' + s.emptyRecent.length + ' turns');
-    if (!actions.length && !errors.length) obs.push('Your last answer was EMPTY (' + empties + '/' + LIMITS.emptyTurnsBeforeStuck + ' before hand-over). Answer with action lines only: EDIT/CREATE to change code, RUN to test, or STUCK <reason>.');
+    if (!actions.length && !errors.length && !rawAnswer) obs.push('Your last answer was EMPTY (' + empties + '/' + LIMITS.emptyTurnsBeforeStuck + ' before hand-over). Answer with action lines only: EDIT/CREATE to change code, RUN to test, or STUCK <reason>.');
 
     let ran = false, ranResult = null, claimedDone = null, claimedStuck = null, executed = 0, protectedStuck = null, overLimit = false; const closers = new Set();
     for (const a of actions) {
@@ -377,12 +484,12 @@ async function runRepoWorker(opts) {
         if (a.type === 'list') obs.push(doList(ctx, a));
         else if (a.type === 'read') { const r = doRead(ctx, a); obs.push(r); if (!/: (no such file|not a file|file too large|binary)/.test(r)) s.reads++; }
         else if (a.type === 'grep') obs.push(doGrep(ctx, a));
-        else if (a.type === 'edit' || a.type === 'create') { const r = a.type === 'edit' ? doEdit(ctx, a) : doCreate(ctx, a, s.created); obs.push(r.err || r.ok); if (r.file && !s.changed.includes(r.file)) s.changed.push(r.file); if (r.created && !s.created.includes(r.file)) s.created.push(r.file); }
+        else if (a.type === 'edit' || a.type === 'create') { const r = a.type === 'edit' ? doEdit(ctx, a) : doCreate(ctx, a, s.created); obs.push(r.err || r.ok); if (r.ok) s.needsRun = true; if (r.file && !s.changed.includes(r.file)) s.changed.push(r.file); if (r.created && !s.created.includes(r.file)) s.created.push(r.file); }
         else if (a.type === 'note') { s.notes.push(clip(a.text, LIMITS.noteChars)); s.notes = s.notes.slice(-12); obs.push('NOTE saved'); }
         else if (a.type === 'plan') { if (s.plan.length < LIMITS.planSteps) s.plan.push({ text: clip(a.text, 160), done: false }); obs.push('PLAN step ' + s.plan.length + ' recorded'); }
         else if (a.type === 'stepdone') { if (s.plan[a.n - 1]) s.plan[a.n - 1].done = true; obs.push('Step ' + a.n + ' marked done'); }
         else if (a.type === 'run') {
-          ran = true;
+          ran = true; s.needsRun = false;
           const h = diffHash(ctx);
           if (s.lastDiffHash === h && s.runs.length) { s.idleRuns++; obs.push('RUN skipped: nothing changed since the last RUN (' + s.idleRuns + '/' + LIMITS.idleRunsBeforeStuck + '). Change the code first.'); ranResult = s.runs.at(-1); }
           else {
@@ -390,7 +497,7 @@ async function runRepoWorker(opts) {
             const v = await runVerify(ctx.worktree, opts.verify || []);
             ranResult = { ok: v.ok, results: v.results.map((x) => ({ name: x.name, ok: x.ok, ms: x.ms, timedOut: x.timedOut, tail: x.ok ? '' : clip(String(x.tail || '').slice(-1800), 1800) })), at: now() };
             s.runs.push(ranResult); s.runs = s.runs.slice(-6);
-            obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)));
+            obs.push('RUN ' + (v.ok ? 'PASSED: ' + v.results.map((x) => x.name).join(', ') : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name + ':\n' + ((v.results.find((x) => !x.ok) || {}).tail || '').slice(-1800)) + (v.ok ? '' : errorContext(ctx, (v.results.find((x) => !x.ok) || {}).tail)) + '\n[RUN RESULT: ' + (v.ok ? 'PASSED' : 'FAILED at ' + (v.results.find((x) => !x.ok) || {}).name) + ']');
             const sig = failureSig(ranResult.results);
             if (v.ok) s.sameSigStreak = 0; else if (sig === s.lastRunSig) s.sameSigStreak++; else s.sameSigStreak = 1;
             s.lastRunSig = v.ok ? null : sig;
@@ -416,7 +523,7 @@ async function runRepoWorker(opts) {
     if (bad.length) { for (const f of bad) { git(ctx.worktree, ['checkout', '--', f]); try { if (!git(ctx.worktree, ['ls-files', '--error-unmatch', f]).ok) fs.rmSync(path.join(ctx.worktree, f), { force: true }); } catch (_) {} } obs.push('REFUSED: changes to protected path(s) were reverted: ' + bad.slice(0, 4).join(', ')); ev('protected', bad.join(', ')); }
     if (protectedStuck) { s.observations.push(clip(obs.join('\n\n'), 6500)); s.observations = s.observations.slice(-3); return finish('blocked', 'The model needs the protected file ' + protectedStuck + ', which it may not use that way (refused ' + s.protectedAsks[protectedStuck] + ' times)'); }
 
-    lastObs = clip(obs.join('\n\n'), 6500); s.observations.push(lastObs); s.observations = s.observations.slice(-3);
+    lastObs = fitObs(obs, 6500); s.observations.push(lastObs); s.observations = s.observations.slice(-3);
     // Diagnostics that survive restarts: what each turn asked for and what came back.
     const turnSig = sha(actions.map((a) => a.type + ':' + (a.file || a.dir || a.text || a.n || '') + ':' + (a.search || '').length + ':' + (a.content || '').length).join('|') + '#' + lastObs.slice(0, 400));
     s.log.push({ turn: s.turns, acts: actions.map((a) => a.type + (a.file || a.dir ? ' ' + (a.file || a.dir) : '')).join('; ').slice(0, 160), errors: errors.length, obs: lastObs.replace(/\s+/g, ' ').slice(0, 140) }); s.log = s.log.slice(-60);
@@ -469,4 +576,4 @@ function secretMask(worktree, extraPatterns = []) {
   mask.observe = observe;
   return mask;
 }
-module.exports = { secretMask, runRepoWorker, parseActions, locateSearch, confine, LIMITS, PROTOCOL, failureSig, secretValues, SECRET_PATTERNS };
+module.exports = { fitObs, secretMask, runRepoWorker, parseActions, locateSearch, confine, LIMITS, PROTOCOL, failureSig, secretValues, SECRET_PATTERNS };
