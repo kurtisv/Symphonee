@@ -353,6 +353,27 @@ test('a refusal followed by a worktree change is never lost: resuming applies th
   } finally { f.cleanup(); }
 });
 
+test('a refusal, claimed, then a worktree change before the stage starts: resuming still applies the refusal', async () => {
+  const f = setup({ refuseThenNoChange: true });
+  try {
+    f.pilot.configure({ enabled: true, goal: 'tests', allowWorktreeWrites: true });
+    await drive(f.pilot, () => (f.pilot.state.suspended || []).length === 1);
+    const e = f.pilot.state.suspended[0], first = e.decisionId;
+    f.pilot.answerOwner({ suspendedId: e.id, decisionId: e.decisionId, choice: 'refuse' });
+    f.pilot.resumeAnswered(Date.now());
+    fs.writeFileSync(path.join(e.worktree.path, 'index.test.js'), 'changed after the claim\n');
+    f.pilot.state.nextAt = 0; await f.pilot.tick();
+    const c = f.pilot.state.suspended.find((x) => x.kind === 'conflict');
+    assert.ok(c && c.priorAnswer && c.priorAnswer.id === first);
+    f.pilot.state.active = null;
+    f.pilot.answerOwner({ suspendedId: c.id, decisionId: c.decisionId, choice: 'resume' });
+    f.pilot.resumeAnswered(Date.now());
+    assert.equal(f.pilot.state.suspended.length, 0, 'not asked again');
+    assert.equal(f.pilot.state.suspendedLog.slice(-1)[0].status, 'refused');
+    assert.ok(f.pilot.state.active.ownerRefused.length >= 1);
+  } finally { f.cleanup(); }
+});
+
 test('an automatic answer that cannot be written goes to the owner (the task is suspended, not resumed as refused)', async () => {
   const f = setup({ def: { decisionPolicy: { dependency: 'auto' } } });
   try {

@@ -1415,7 +1415,7 @@ class MindAutopilot {
     // launch goes through the tick's usual gates (window, budget, peers).
     a.waitingStage = stage; a.stage = 'budget-wait'; a.parkReason = 'owner';
     a.ownerPark = a.worktree && fs.existsSync(a.worktree.path) ? this.worktreeState(a.worktree.path) : null;
-    a.ownerResuming = { key: entry.key, request: entry.request };
+    a.ownerResuming = { key: entry.key, request: entry.request, answer: JSON.parse(JSON.stringify(d)) };
     a.ownerMainBase = entry.mainBase || null; // compared with the base at the moment the stage really starts
     this.state.nextAt = Math.min(this.state.nextAt || now, now);
     this.save();
@@ -1463,7 +1463,7 @@ class MindAutopilot {
     const last = a.ownerResuming || {};
     this.unlinkActive(a); a.links = [];
     const stage = a.waitingStage; a.waitingStage = null; a.parkReason = null; a.ownerPark = null; a.ownerResuming = null;
-    this.state.suspended = [...(this.state.suspended || []), { id, decisionId: c.decision.id, key: last.key || null, kind: 'conflict', problems,
+    this.state.suspended = [...(this.state.suspended || []), { id, decisionId: c.decision.id, key: last.key || null, kind: 'conflict', problems, priorAnswer: last.answer || null,
       request: last.request || { category: 'other', question: 'Reprise de la tache', consequences: '' }, stage, at: new Date(now).toISOString(), status: 'waiting', files: [],
       worktree: cur ? { path: a.worktree.path, branch: cur.branch, head: cur.head, fingerprint: cur.fingerprint } : null, mainBase: this.ownerBase(), active: JSON.parse(JSON.stringify(a)) }];
     this.state.active = null;
