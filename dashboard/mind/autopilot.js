@@ -214,7 +214,7 @@ const COACH_PROMPT = [
   '3. FIX: the exact change to make, in order, small enough for Qwen (quote the exact existing lines to search for when an edit failed).',
   '4. TEST: the exact command, and a FUNCTIONAL check of the behaviour (a passing type check alone does not prove the task is done).',
   '5. LESSON: one sentence Qwen should remember, and the conditions under which it applies (and when it does NOT).',
-  '6. KEY STATEMENTS: the exact code (at most 10 lines in total) of the one or two statements where a small model typically goes wrong, quoted so that Qwen can copy them. Replay of 2026-11-23: with reasoning alone the 9B wrote `batch.map(e => e.id)` instead of `new Set(batch)` and put a retry inside the guarded block. Do not write the whole solution as a patch.'].join('\n');
+  '6. KEY STATEMENTS: the exact code (at most 10 lines in total) of the one or two statements where a small model typically goes wrong, quoted so that Qwen can copy them. Replay of 2026-11-23: with reasoning alone the 9B wrote `batch.map(e => e.id)` instead of `new Set(batch)` and put a retry inside the guarded block. 7. BEHAVIOUR TEST: when the repository has a test runner, the COMPLETE content of ONE test file (at most 40 lines, in a fenced block, first line `FILE: <path>`) that reproduces the problem with a concrete sequence of events, FAILS on the old code for the right functional reason (an assertion, not a missing import) and PASSES once the fix is in. Qwen will create it with CREATE; the host then checks that it fails on the old code and passes on the new. Use only names that exist in the repository. Do not write the whole solution as a patch.'].join('\n');
 const PILOT_ID = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // Fixture environment refusals that happen before the developer runs.
 const ENV_FAILURE = /^(Insufficient free RAM|LM Studio unavailable|.* context is not loaded|Vulkan GPU is not verified)/;
@@ -1305,12 +1305,11 @@ class MindAutopilot {
     const sessionFile = path.join(this.repoRoot, '.symphonee', 'qwen-sessions', this.id + '-' + a.qwenSessionId + '.json');
     const win = windowEndAfter(this.def.schedule, now), stepEnd = now + this.stepMs - 90000;
     const deadlineAt = a.manual || !win ? stepEnd : Math.min(stepEnd, win);
+    // The findings and Claude's guidance travel as their own fields: inside the objective the worker cut them at 1800 characters.
     const objective = [String(a.plan.objective || ''), (a.plan.evidence || []).length ? 'Evidence: ' + JSON.stringify(a.plan.evidence).slice(0, 700) : '',
-      repair ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + String(a.review || '').slice(0, 3500) : '',
-      !repair && a.coachGuidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it:\n' + String(a.coachGuidance).slice(0, 3000) : '',
       'Keep the change minimal and correct. Do not touch secrets, configuration, authentication, billing or CI. Add or update a test when it fits.'].filter(Boolean).join('\n');
     return this.orch.spawnQwenInWorktree({ behavior: this.def.behavior, from: 'mind-autopilot', space: this.state.space, timeout: this.stepMs, repoPath: this.state.repoPath, branch, startPoint: a.baseSha,
-      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
+      existingWorktree: a.worktree || null, task: { title: a.plan.title, objective, findings: repair ? String(a.review || '').slice(0, 7000) : '', guidance: !repair && a.coachGuidance ? String(a.coachGuidance).slice(0, 6000) : '', files: q.files }, verify: this.def.verify, protectedPatterns: this.def.protectedPaths, skipDirs: this.def.linkDirs,
       memoryText: this.qwenRealMemory(q).text, sessionFile, deadlineAt,
       // Linked before the first RUN so the repository's own checks can find their dependencies.
       onWorktree: (wt) => { a.worktree = wt; const top = repoTopLevel(wt.path); if (!top || top === this.state.repoPath) throw new Error('Worktree isolation check failed'); a.links = guard.linkDirs(this.state.repoPath, wt.path, this.def.linkDirs); } });
@@ -1921,7 +1920,7 @@ class MindAutopilot {
       && worktreeFingerprint(a.coachCwd, a.coachCwd === this.state.repoPath ? { head: false } : undefined) !== a.coachFingerprint) {
       throw new Error('Files changed during Claude\'s read-only guidance; stopped for inspection: ' + a.coachCwd);
     }
-    const guidance = String(raw || '').trim().slice(0, 4000);
+    const guidance = String(raw || '').trim().slice(0, 6000);
     a.qwenCoached = (a.qwenCoached || 0) + 1;
     if (!guidance) { a.qwenFailed = true; a.implementer = 'claude-after-qwen'; this.log('qwen', 'Claude returned no guidance; Claude takes the correction over'); return this.dispatch(a.worktree ? 'repair' : 'implement', now); }
     a.coachGuidance = guidance;

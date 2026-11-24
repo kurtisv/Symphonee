@@ -733,3 +733,18 @@ test('behaviour gate: when a REQUIRED gate breaks, DONE is refused (fail closed)
   assert.notEqual(out.state, 'completed');
   assert.match(lm.prompts[1], /DONE refused: BEHAVIOUR GATE ERROR/);
 });
+
+// 2026-11-24: guidance and findings used to be glued to the objective, which the worker cuts at 1800 characters:
+// Qwen saw almost nothing of what Claude wrote (replays 7-9 were run with a guidance that was mostly invisible).
+test('Claude guidance and findings are separate prompt sections and are NOT cut with a long objective', async () => {
+  const r = repo();
+  const lm = fakeLm(['STUCK x']);
+  const guidance = '1. ROOT CAUSE: ' + 'g'.repeat(2500) + ' 6. KEY STATEMENTS: const sentSet = new Set(batch) TAILMARK-GUIDANCE';
+  const findings = 'LOCAL VERIFICATION FAILED: ' + 'f'.repeat(1500) + ' TAILMARK-FINDINGS';
+  await run(r, lm, { task: { title: 't', objective: 'o'.repeat(3000), findings, guidance, files: [] } });
+  assert.match(lm.prompts[0], /FINDINGS TO FIX \(from the repository checks or the code review\):/);
+  assert.match(lm.prompts[0], /TAILMARK-FINDINGS/);
+  assert.match(lm.prompts[0], /GUIDANCE FROM CLAUDE \(your senior assistant\) - follow it exactly\. If it contains a test file/);
+  assert.match(lm.prompts[0], /TAILMARK-GUIDANCE/, 'the end of the guidance (the key statements) reaches the model');
+  assert.ok(lm.prompts[0].length <= LIMITS.promptChars + 400, 'the prompt stays inside the context budget');
+});

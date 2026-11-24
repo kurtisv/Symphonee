@@ -221,3 +221,23 @@ test('a lesson that tells the next session to push, reset, force or deploy is re
     assert.equal(p.lessons.length, 1, 'a normal lesson still passes');
   } finally { r.cleanup(); }
 });
+
+test('the repair/implement call sends Claude guidance and findings as their own task fields, and the behaviour config', () => {
+  const r = repo();
+  try {
+    const guidance = 'ROOT CAUSE: x. 6. KEY STATEMENTS: const s = new Set(batch) END-GUIDANCE';
+    const a = { stage: 'implement', plan: { ...plan, objective: 'o'.repeat(2500) }, implementer: 'qwen', worktree: { path: r.dir }, baseSha: r.base, coachGuidance: guidance };
+    const p = pilot(r, a);
+    p.stepMs = 600000; p.repoRoot = r.dir; p.id = 'default'; p.profile = {}; p.state.repoPath = r.dir; // a real directory: the fingerprint runs git there
+    p.def.behavior = { required: true, sourceDirs: ['src/'] };
+    p.qwenRealMemory = () => ({ text: '' });
+    let seen = null; p.orch = { spawnQwenInWorktree: (o) => { seen = o; return { id: 't' }; } };
+    p.spawnQwenRepoStage('implement', { files: ['a.js'] }, Date.now(), {});
+    assert.equal(seen.task.guidance, guidance);
+    assert.doesNotMatch(seen.task.objective, /END-GUIDANCE/, 'guidance is not glued to the objective (the worker cuts that at 1800)');
+    assert.deepEqual(seen.behavior, { required: true, sourceDirs: ['src/'] });
+    a.stage = 'repair'; a.review = 'LOCAL VERIFICATION FAILED: boom END-FINDINGS';
+    p.spawnQwenRepoStage('repair', { files: ['a.js'] }, Date.now(), {});
+    assert.match(seen.task.findings, /END-FINDINGS/); assert.equal(seen.task.guidance, '');
+  } finally { r.cleanup(); }
+});

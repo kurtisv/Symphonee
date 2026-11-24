@@ -32,7 +32,7 @@ const behaviorLint = async (cwd, base, cfg) => { try { return await require('../
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({
   actionsPerTurn: 4, readChars: 5000, grepHits: 20, listEntries: 60, editFileBytes: 120000, newFileBytes: 60000, noteChars: 300, planSteps: 6,
-  maxTurns: 80, maxSwitches: 1, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 11000, maxTokens: 2000, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
+  maxTurns: 80, maxSwitches: 1, repeatTurnsBeforeDemand: 3, maxRepeatDemands: 2, noChangeDemandTurns: 12, noChangeStuckTurns: 26, ramWaitMs: 180000, ramPollMs: 10000, sameFailureBeforeSwitch: 3, idleRunsBeforeStuck: 3, formatErrorsBeforeStuck: 6, protectedAsksBeforeStuck: 3, emptyTurnsWindow: 8, emptyTurnsBeforeStuck: 4, promptChars: 15000, maxTokens: 2000, minFreeRamBytes: 1.5 * 1024 * 1024 * 1024,
 });
 const sha = (x) => crypto.createHash('sha256').update(String(x), 'utf8').digest('hex');
 const clip = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '\n...[cut]' : String(s));
@@ -437,6 +437,9 @@ function buildPrompt(s, task, memoryText, lastObs, demand) {
   const nudge = runNudge || (s.reads > 0 && !s.changed.length ? 'NEXT STEP: you have read what you need. Do NOT read again and do NOT say DONE yet: write the change now with an EDIT or CREATE block exactly like the worked examples, then use RUN. Use ONLY function, type and property names you saw in text you READ; if you need another one, GREP for it first (the host warns you when a name exists nowhere in the repository).' : '');
   const parts = [PROTOCOL,
     'TASK: ' + task.title + '\n' + clip(task.objective, 1800) + (task.files && task.files.length ? '\nFiles the plan mentions: ' + task.files.slice(0, 8).join(', ') : ''),
+    // Their own sections and their own budget (a long objective used to push them out of what the model saw).
+    task.findings ? 'FINDINGS TO FIX (from the repository checks or the code review):\n' + clip(task.findings, 7000) : '',
+    task.guidance ? 'GUIDANCE FROM CLAUDE (your senior assistant) - follow it exactly. If it contains a test file (FILE: <path>), create that file with CREATE:\n' + clip(task.guidance, 6000) : '',
     memoryText ? clip(memoryText, 1800) : '', // the caller supplies the heading: verified methods and unverified observations are labelled differently
     s.plan.length ? 'PLAN:\n' + s.plan.map((p, i) => (i + 1) + '. [' + (p.done ? 'x' : ' ') + '] ' + p.text).join('\n') : 'No plan yet: start with PLAN lines.',
     s.notes.length ? 'YOUR NOTES:\n' + s.notes.slice(-8).map((n) => '- ' + n).join('\n') : '',
