@@ -26,7 +26,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const cp = require('node:child_process');
 const symbols = require('./qwen-symbols');
-const behaviorLint = (cwd, base, cfg) => { try { return require('../mind/behavior-gate').lint(cwd, base, cfg); } catch { return []; } }; // a failure of the gate never blocks a finished task
+// Fail closed: when the gate is REQUIRED and breaks, the task is not reported finished (the model is told the behaviour is not verified).
+const behaviorLint = (cwd, base, cfg) => { try { return require('../mind/behavior-gate').lint(cwd, base, cfg); } catch (e) { return cfg && cfg.required ? ['BEHAVIOUR GATE ERROR: the behaviour of this change could not be verified (' + String(e && e.message || e).slice(0, 120) + ').'] : []; } };
 
 const BASE_URL = 'http://127.0.0.1:1234';
 const LIMITS = Object.freeze({

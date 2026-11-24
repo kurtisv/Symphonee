@@ -722,3 +722,14 @@ test('behaviour gate: without the option (or with required false) DONE is accept
   const out = await run(r, lm, { dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
   assert.equal(out.state, 'completed');
 });
+
+test('behaviour gate: when a REQUIRED gate breaks, DONE is refused (fail closed), not accepted', async () => {
+  const r = repo();
+  const g = (...a) => cp.spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: r.dir, encoding: 'utf8' });
+  fs.writeFileSync(path.join(r.dir, 'a.js'), 'module.exports = 1;\n'); g('add', '.'); g('commit', '-qm', 'x'); r.base = g('rev-parse', 'HEAD').stdout.trim();
+  const broken = new Proxy({ required: true }, { get(target, key) { if (key === 'required') return true; throw new Error('boom ' + String(key)); } });
+  const lm = fakeLm(['EDIT a.js\n<<<<<<< SEARCH\nmodule.exports = 1;\n=======\nmodule.exports = 2;\n>>>>>>> REPLACE\nRUN\nDONE ok', 'STUCK x']);
+  const out = await run(r, lm, { behavior: broken, dependencies: { fetch: lm.fetch, freemem: () => 64 * 1024 ** 3, runVerify: async () => ({ ok: true, results: [{ name: 'types', ok: true }] }) } });
+  assert.notEqual(out.state, 'completed');
+  assert.match(lm.prompts[1], /DONE refused: BEHAVIOUR GATE ERROR/);
+});

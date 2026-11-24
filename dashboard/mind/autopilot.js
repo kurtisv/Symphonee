@@ -1889,7 +1889,7 @@ class MindAutopilot {
       if (hits.length) throw new Error('Protected path modified during ' + a.stage + ': ' + hits.slice(0, 6).join(', ') + '. Inspect ' + a.worktree.path);
       // The deep profile always passes through the gate: the diff lint runs
       // even when the repository has no check command configured.
-      if (this.def.verify.length || this.profile.deep) return this.startVerify();
+      if (this.def.verify.length || this.profile.deep || this.def.behavior.required) return this.startVerify();
       return this.dispatch('code-review', now);
     }
     if (a.stage === 'code-review') {
@@ -1954,13 +1954,14 @@ class MindAutopilot {
     Promise.resolve().then(async () => {
       const lint = [...guard.diffLint(cwd, base), ...behaviorGate.lint(cwd, base, this.def.behavior)];
       if (lint.length) return { ok: false, results: [], lint };
-      if (!this.def.verify.length) return { ok: true, results: [], lint: [] };
+      if (!this.def.verify.length && !this.def.behavior.required) return { ok: true, results: [], lint: [] };
       const onStart = (proc, c) => {
         this._verifyProc = proc;
         if (this.state.active === a && a.verify) { a.verify.current = c.name; try { this.save(); } catch (_) {} }
       };
-      let vr = await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) });
+      let vr = this.def.verify.length ? await verifyWithFlakeRetry(runV, cwd, this.def.verify, { onStart, still: () => this.state.active === a, changed: guard.changedPaths(cwd, base, { skip: this.def.linkDirs }) }) : { ok: true, results: [] };
       // The checks are green: the tests of the change must also FAIL on the old code (red) and pass on the new (green).
+      if (vr.ok && this.def.behavior.required && !this.def.behavior.testCmd.length) this.log('verify', 'Behaviour gate is lint-only: no testCmd configured, the tests are required but not executed');
       if (vr.ok && this.def.behavior.required && this.def.behavior.testCmd.length) {
         const rg = await behaviorGate.redGreen({ cwd, base, config: this.def.behavior, linkFrom: this.state.repoPath });
         this.log('verify', rg.skipped ? 'Behaviour gate skipped: ' + rg.message : 'Behaviour gate ' + (rg.ok ? 'PASSED' : 'FAILED') + ': ' + String(rg.message).replace(/\s+/g, ' ').slice(0, 200));

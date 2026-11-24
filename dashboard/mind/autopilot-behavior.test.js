@@ -79,3 +79,13 @@ test('without a behaviour section nothing changes: the same weak change still re
     assert.equal(a.verify.ok, true); assert.deepEqual(p.dispatched, ['code-review']);
   } finally { r.clean(); }
 });
+
+test('a pilot with the gate required but NO ordinary check command is still gated (no bypass)', async () => {
+  const r = repo();
+  try {
+    fs.writeFileSync(path.join(r.dir, 'src/add.js'), 'function add(a, b) { return a + b }' + NL + 'module.exports = { add }' + NL);
+    fs.writeFileSync(path.join(r.dir, 'src/weak.test.js'), T("test('is a function', () => { assert.equal(typeof add, 'function') })"));
+    const { p, a } = pilot(r, BEHAVIOR); p.def.verify = []; p.startVerify(); await settle(a);
+    assert.equal(a.verify.ok, false); assert.equal(a.verify.results.at(-1).name, 'behavior-red-green'); assert.deepEqual(p.dispatched, ['repair']);
+  } finally { r.clean(); }
+});

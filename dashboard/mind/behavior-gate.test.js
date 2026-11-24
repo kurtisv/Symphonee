@@ -106,15 +106,52 @@ test('the scratch checkout is removed, and a linked folder (node_modules) is nev
     fs.writeFileSync(path.join(shared, 'keep.txt'), 'must survive');
     fs.symlinkSync(shared, path.join(r.dir, 'node_modules'), 'junction');
     fix(r.dir); behaviourTest(r.dir);
-    const before = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('behavior-gate-')).length;
     const out = await gate.redGreen({ cwd: r.dir, base: r.base, config: { ...CFG, linkDirs: ['node_modules'] } });
     assert.equal(out.ok, true, out.message);
     assert.equal(fs.readFileSync(path.join(shared, 'keep.txt'), 'utf8'), 'must survive', 'the linked folder is untouched');
-    assert.equal(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('behavior-gate-')).length, before, 'no scratch checkout left behind');
+    assert.ok(out.scratch && !fs.existsSync(out.scratch), 'no scratch checkout left behind (this call own folder; other test files run in parallel)');
   } finally { try { fs.rmdirSync(path.join(r.dir, 'node_modules')); } catch { /* ignore */ } fs.rmSync(shared, { recursive: true, force: true }); r.clean(); }
 });
 
 test('normalize: bad patterns are dropped, a command without {files} is ignored, links cannot leave the checkout', () => {
   const n = gate.normalize({ required: true, sourceDirs: ['src\\'], testPatterns: ['(', '\\.spec\\.js$'], testCmd: ['node', '--test'], linkDirs: ['node_modules', '../x', 'C:\\x'] });
   assert.deepEqual(n.sourceDirs, ['src/']); assert.deepEqual(n.testPatterns, ['\\.spec\\.js$']); assert.deepEqual(n.testCmd, []); assert.deepEqual(n.linkDirs, ['node_modules']);
+});
+
+test('fail closed: when git cannot say what changed, the gate does not say "fine"', async () => {
+  const r = repo();
+  try {
+    fix(r.dir); behaviourTest(r.dir);
+    const bad = '0000000000000000000000000000000000000000';
+    assert.match(gate.lint(r.dir, bad, CFG)[0], /BEHAVIOUR GATE COULD NOT READ THE CHANGE/);
+    const out = await gate.redGreen({ cwd: r.dir, base: bad, config: CFG });
+    assert.equal(out.ok, false); assert.match(out.message, /COULD NOT READ THE CHANGE/);
+  } finally { r.clean(); }
+});
+
+test('a deleted source file without a test is a source change too', () => {
+  const r = repo();
+  try {
+    fs.rmSync(path.join(r.dir, 'src/add.js'));
+    assert.match(gate.lint(r.dir, r.base, CFG)[0], /BEHAVIOUR TEST REQUIRED: you changed src\/add\.js/);
+  } finally { r.clean(); }
+});
+
+test('link folders cannot escape the scratch checkout, even through a/../../x', () => {
+  for (const bad of ['..', '../x', 'sub/../../outside', '/abs', 'C:/x', '.']) assert.equal(gate.safeLink(bad), false, bad);
+  for (const good of ['node_modules', 'api/node_modules']) assert.equal(gate.safeLink(good), true, good);
+  assert.deepEqual(gate.normalize({ required: true, linkDirs: ['node_modules', 'sub/../../outside'] }).linkDirs, ['node_modules']);
+});
+
+test('red for the WRONG reason (the test cannot even load on the old code) is not evidence; allowLoadErrorRed relaxes it for a brand-new module', async () => {
+  const r = repo();
+  try {
+    fix(r.dir);
+    fs.writeFileSync(path.join(r.dir, 'src/fresh.js'), 'module.exports = { two: () => 2 }' + NL);
+    fs.writeFileSync(path.join(r.dir, 'src/fresh.test.js'), "const test = require('node:test'); const assert = require('node:assert/strict'); const { two } = require('./fresh');" + NL + "test('two', () => { assert.equal(two(), 2) })" + NL);
+    const strict = await gate.redGreen({ cwd: r.dir, base: r.base, config: CFG });
+    assert.equal(strict.ok, false); assert.match(strict.message, /RED FOR THE WRONG REASON/);
+    const relaxed = await gate.redGreen({ cwd: r.dir, base: r.base, config: { ...CFG, allowLoadErrorRed: true } });
+    assert.equal(relaxed.ok, true, relaxed.message);
+  } finally { r.clean(); }
 });
