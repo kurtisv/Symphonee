@@ -364,7 +364,7 @@ function mountMind(addRoute, json, ctx) {
   let watcher = null;
   // Watch always re-ingests every Symphonee-managed repo on each tick. Mind
   // is meant to span all connected projects.
-  const triggerIncrementalUpdate = async (trigger) => {
+  const runIncrementalUpdate = async (trigger) => {
     const space = getSpace();
     const jobId = makeJobId();
     // trigger can be an array of changed file paths (file watcher) OR an
@@ -385,6 +385,15 @@ function mountMind(addRoute, json, ctx) {
       job.status = 'failed'; job.completedAt = Date.now(); job.error = err.message;
     }
   };
+
+  // Each update rewrites a graph of hundreds of MB, so triggers (file changes, saved memories, lessons) are merged
+  // and spaced out instead of each starting its own rebuild. Override the gap with SY_MIND_UPDATE_MIN_GAP_MS.
+  const updateThrottle = require('./update-throttle').createUpdateThrottle({
+    run: runIncrementalUpdate,
+    minGapMs: Number(process.env.SY_MIND_UPDATE_MIN_GAP_MS) >= 0 && process.env.SY_MIND_UPDATE_MIN_GAP_MS !== undefined ? Number(process.env.SY_MIND_UPDATE_MIN_GAP_MS) : 10 * 60 * 1000,
+    onError: (e) => console.warn('[mind/update] error:', e && e.message),
+  });
+  const triggerIncrementalUpdate = async (trigger) => updateThrottle.trigger(trigger);
 
   function startWatcher(debounceMs) {
     if (watcher) watcher.stop();
